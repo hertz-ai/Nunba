@@ -113,6 +113,23 @@ class TestAdminModels:
 # 5. SSE Events Endpoint
 # ==========================================================================
 class TestSSEEvents:
+    """The token contract of ``/api/social/events/stream`` for a node that is
+    NOT the bundled desktop.  main.py sets NUNBA_BUNDLED=1 at import and, in
+    bundled/frozen mode, deliberately lets the stream open without a token (same
+    machine, TTS push), so these tests run as the non-bundled node they describe."""
+
+    @pytest.fixture(autouse=True)
+    def _not_bundled(self, monkeypatch):
+        monkeypatch.delenv('NUNBA_BUNDLED', raising=False)
+
+    def test_sse_bundled_desktop_allows_no_token(self, client, monkeypatch):
+        monkeypatch.setenv('NUNBA_BUNDLED', '1')
+        resp = client.get('/api/social/events/stream')
+        try:
+            assert resp.status_code == 200
+        finally:
+            resp.close()
+
     def test_sse_requires_token(self, client):
         resp = client.get('/api/social/events/stream')
         assert resp.status_code == 401

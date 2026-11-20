@@ -19,7 +19,7 @@
  * landscape size and must fail for the old constant cap.
  */
 
-const APP = Cypress.env('APP_URL') || 'http://localhost:5000';
+const APP = Cypress.env('APP_URL') || `${Cypress.env('apiUrl')}`;
 
 /** Landscape desktop. 0.28 * 1920 = 537.6 -> the constraining dimension. */
 const W = 1920;
@@ -172,10 +172,14 @@ describe('#592 voice orb fills the media column in landscape', () => {
    * is never tainted.
    *
    * The ratio is deliberate rather than a pixel count: it must hold at any
-   * landscape size.  Pre-fix the lit extent was ~0.65 of the canvas
-   * (baseR = 0.25W => a circle half the canvas, plus the +70 glow); post-fix
-   * (fill = 0.38) it is ~0.91.  0.75 sits between the two, so this test is
-   * RED on the old build and GREEN on the new one.
+   * landscape size.  The resting orb is a circle of radius fill * W, so its
+   * lit extent is about 2 * fill of the canvas, plus the idle breathing.
+   * #617a first raised landscape to fill = 0.38 (~0.76 + breathing) and
+   * this bar was 0.75.  60c71c89 (2026-08-08) then set landscape to 0.30 on
+   * purpose -- 0.38 was reported too big -- (Demopage.js, the
+   * VoiceVisualizer `fill` prop: 0.25 portrait, 0.30 landscape), which
+   * paints ~0.60: CI measured 0.609.  The dot #617a was about is fill 0.25,
+   * ~0.50 plus at most ~7% breathing.  0.55 sits between the two.
    */
   it('#617a the painted orb — not just its canvas — fills the column', () => {
     cy.get('canvas', {timeout: 20000}).should('exist');
@@ -221,7 +225,7 @@ describe('#592 voice orb fills the media column in landscape', () => {
           litW / w,
           `painted orb spans ${litW}px of a ${w}px canvas ` +
           `(${(100 * litW / w).toFixed(1)}%) — it must fill the canvas, not sit as a dot inside it`,
-        ).to.be.greaterThan(0.75);
+        ).to.be.greaterThan(0.55);
         // Still round: a non-square lit box means one axis got stretched.
         expect(
           litW / litH,

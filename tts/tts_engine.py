@@ -1815,6 +1815,17 @@ class TTSEngine:
     _auto_install_failed = set()
     _auto_install_lock = threading.Lock()
 
+    def _state_writer(self) -> 'TTSEngine':
+        """The engine whose save writes tts_state.json for the install path:
+        the process's live engine (get_tts_engine) when there is one, else
+        this one.  The save writes 'demoted' from the saving instance's own
+        set, and the install path also runs on the engine TTSLoader.load
+        built at boot, whose set is the file as it was minutes earlier:
+        saving from it erased demotions the live engine wrote meanwhile.
+        A failed install is not in this file: it is kept on the engine's
+        catalog row (_remember_setup_failure)."""
+        return _engine if _engine is not None else self
+
     def _try_auto_install_backend(self, backend):
         """Trigger a background install of the given backend's packages + models.
 
@@ -1912,6 +1923,7 @@ class TTSEngine:
                     # doesn't appear as a literal source token before
                     # the synth call. Keeps the test-of-order contract
                     # in Family B strict without changing behavior.
+                    _verifier_crashed = False
                     try:
                         import importlib as _vr_il
                         _hs_mod = _vr_il.import_module("tts.tts_handshake")
@@ -1930,16 +1942,21 @@ class TTSEngine:
                             err=hs.err, elapsed_s=hs.elapsed_s,
                         )
                     except Exception as _verify_err:
+                        _verifier_crashed = True
                         logger.error(f"[auto-install] '{backend}' verifier crashed: "
                                      f"{_verify_err}")
                         # Verifier itself failing IS a failure — don't
                         # fall back to a shallow check. That's how the
-                        # original lie got in.
-                        import importlib as _vr_il
-                        _VR = _vr_il.import_module("tts.verified_synth").Result
-                        verdict = _VR(ok=False, n_bytes=0,
-                                      err=f"verifier crash: {_verify_err}",
-                                      elapsed_s=0.0)
+                        # original lie got in.  Built without importing
+                        # tts.verified_synth again: when that import is
+                        # what failed, a second try raised out of this
+                        # handler into the outer ImportError one, which
+                        # marked the engine's row "install could not start".
+                        import types as _vr_types
+                        verdict = _vr_types.SimpleNamespace(
+                            ok=False, n_bytes=0,
+                            err=f"verifier crash: {_verify_err}",
+                            elapsed_s=0.0)
 
                     if verdict.ok:
                         logger.info(f"[auto-install] '{backend}' verified: "
@@ -1969,12 +1986,25 @@ class TTSEngine:
                         # forever even after a successful reinstall via the
                         # autonomous path PASS 2 just triggered — defeating
                         # the autonomous-recovery contract.
-                        if backend in self._demoted_backends:
-                            self._demoted_backends.discard(backend)
-                            self._demotion_meta.pop(backend, None)
-                            self._consecutive_failures[backend] = 0
+                        #
+                        # Cleared on this engine AND on the process's live
+                        # one (get_tts_engine): the install may run on the
+                        # engine TTSLoader.load built at boot, and clearing
+                        # only that one left the live engine skipping the
+                        # backend all session.  Saved through the live
+                        # engine, whose demotion set is current (see
+                        # _state_writer).
+                        writer = self._state_writer()
+                        cleared = False
+                        for eng in {id(self): self, id(writer): writer}.values():
+                            if backend in eng._demoted_backends:
+                                eng._demoted_backends.discard(backend)
+                                eng._demotion_meta.pop(backend, None)
+                                eng._consecutive_failures[backend] = 0
+                                cleared = True
+                        if cleared:
                             try:
-                                self._save_persisted_demotions()
+                                writer._save_persisted_demotions()
                             except Exception as _pe:
                                 logger.debug(
                                     f"persist-after-clear failed: {_pe}")
@@ -1993,6 +2023,14 @@ class TTSEngine:
                                      f"{verdict.err[:80]}")
                         with TTSEngine._auto_install_lock:
                             TTSEngine._auto_install_failed.add(backend)
+                        # Kept on the row like a failed pip run: the next
+                        # boot would install and fail the same way.  Not
+                        # when our own verifier crashed: that is a defect
+                        # here, not proof the engine cannot work, and the
+                        # row would keep it out of select_best for a day.
+                        if not _verifier_crashed:
+                            _remember_setup_failure(
+                                backend, f"synthesis failed: {verdict.err}")
                         ok = False  # completion event reflects the truth
                 else:
                     logger.warning(f"[auto-install] '{backend}' install failed: {result}")
@@ -2234,8 +2272,18 @@ class TTSEngine:
                 f"{_DEMOTION_TTL_SECONDS // 86400}d) so subsequent "
                 f"boots don't re-burn latency on the same engine."
             )
+            # Recorded on the live engine too and saved through it
+            # (_state_writer): this may be the engine TTSLoader.load built at
+            # boot (the install handshake synthesizes on it), whose set is
+            # stale; saving from it erased the live engine's later
+            # demotions, and the live engine kept selecting this backend.
+            writer = self._state_writer()
+            if writer is not self:
+                writer._demoted_backends.add(backend)
+                writer._consecutive_failures[backend] = max(
+                    writer._consecutive_failures.get(backend, 0), n)
             try:
-                self._save_persisted_demotions()
+                writer._save_persisted_demotions()
             except Exception as _pe:
                 logger.debug(f"TTS demotion persist skipped: {_pe}")
 
@@ -2360,7 +2408,9 @@ class TTSEngine:
         import time as _time
         now = _time.time()
         demoted_payload: dict[str, dict[str, Any]] = {}
-        for backend in self._demoted_backends:
+        # A snapshot: the install thread may save through the live engine
+        # while its synth threads add demotions.
+        for backend in list(self._demoted_backends):
             if backend in (BACKEND_PIPER, BACKEND_NONE):
                 continue
             # An entry already on file keeps its own clock; only a backend
@@ -4161,6 +4211,36 @@ def get_tts_engine(**kwargs) -> TTSEngine:
         if _engine is None:
             _engine = TTSEngine(**kwargs)
         return _engine
+
+
+def unusable_tts_catalog_ids() -> list[str]:
+    """Catalog ids ('tts-...') of the TTS engines this machine has proved it
+    cannot use right now: demoted ones (tts_state.json 'demoted') and ones
+    whose automatic install failed (this process's failed installs, and a
+    setup failure kept on the engine's catalog row, _setup_failed_on_row).
+    The same engines _select_backend_for_language skips and
+    _try_auto_install_backend will not install again.  The row read
+    repeats what HARTOS select_best already skips (setup_failure_current);
+    it is kept so this list and _try_auto_install_backend answer "which
+    engines failed here" from the same two sources.
+
+    For the model bootstrap (models/language_bootstrap.py), which picks its
+    TTS from the HARTOS catalog: without this it picked NeuTTS Air on every
+    boot of a box where that install cannot succeed, the loader failed, and
+    the 'tts Failed' card showed each time.  Piper, the CPU last resort, is
+    never listed.  Never raises; an empty list means "nothing known".
+    """
+    try:
+        eng = get_tts_engine()
+        with TTSEngine._auto_install_lock:
+            failed = set(TTSEngine._auto_install_failed)
+        failed |= {b for b in _BACKEND_TO_CATALOG if _setup_failed_on_row(b)}
+        broken = (set(eng._demoted_backends) | failed) - {BACKEND_PIPER, BACKEND_NONE}
+        return sorted(f'tts-{_BACKEND_TO_CATALOG[b]}'
+                      for b in broken if b in _BACKEND_TO_CATALOG)
+    except Exception as e:  # noqa: BLE001 -- a bootstrap hint, never fatal
+        logger.debug(f"unusable_tts_catalog_ids: {e}")
+        return []
 
 
 def synthesize_text(text: str,

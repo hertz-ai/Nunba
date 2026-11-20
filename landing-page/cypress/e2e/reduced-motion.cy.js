@@ -9,11 +9,30 @@
  * - App remains fully functional with reduced motion
  */
 
+// Real reduced motion: Chrome's own prefers-reduced-motion, so the app's
+// @media (prefers-reduced-motion: reduce) rules apply (index.css).  The
+// matchMedia stubs below only answer JS callers; on their own they never
+// turned on the CSS this spec exists to check.  Chromium-family browsers only
+// (the Chrome DevTools protocol); quality.yml runs Chrome.
+const setReducedMotion = (value) => {
+  if (!Cypress.isBrowser({family: 'chromium'})) return;
+  cy.wrap(Cypress.automation('remote:debugger:protocol', {
+    command: 'Emulation.setEmulatedMedia',
+    params: {features: [{name: 'prefers-reduced-motion', value}]},
+  }), {log: false});
+};
+beforeEach(() => setReducedMotion('reduce'));
+after(() => setReducedMotion(''));
+
+// Every visit is /local, the page the desktop window opens.  Not '/':
+// Flask's '/' (main.py serve_landing_page_root) redirects to
+// https://hevolve.ai whenever that answers, so on an online runner a visit to
+// '/' tested the hosted site.
 describe('Reduced Motion — CSS Global Override', () => {
   beforeEach(() => {
     // Emulate prefers-reduced-motion: reduce
     // Cypress can set this via CSS or by injecting a style tag
-    cy.visit('/', {
+    cy.visit('/local', {
       timeout: 60000,
       onBeforeLoad(win) {
         // Override matchMedia to return reduced motion
@@ -38,7 +57,7 @@ describe('Reduced Motion — CSS Global Override', () => {
   });
 
   it('should have reduced motion CSS rule active', () => {
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
 
     // Inject the reduced motion media query override to verify it's working
     // index.css has: @media (prefers-reduced-motion: reduce) { ... }
@@ -62,7 +81,7 @@ describe('Reduced Motion — CSS Global Override', () => {
   });
 
   it('should still load and display content with reduced motion', () => {
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
 
     // Page should have content
     cy.get('#root').invoke('html').should('not.be.empty');
@@ -70,7 +89,7 @@ describe('Reduced Motion — CSS Global Override', () => {
   });
 
   it('should not show broken animation artifacts', () => {
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // No elements should be stuck in a mid-animation state
@@ -122,7 +141,7 @@ describe('Reduced Motion — Authenticated Pages', () => {
       },
     });
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(3000);
 
     // Page should have content
@@ -155,11 +174,11 @@ describe('Reduced Motion — Authenticated Pages', () => {
       },
     });
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // Tabs should be clickable
-    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 30000}).then(($tabs) => {
       if ($tabs.length >= 2) {
         cy.wrap($tabs.eq(1)).click({force: true});
         cy.wait(500);
@@ -192,8 +211,9 @@ describe('Reduced Motion — Authenticated Pages', () => {
 
 describe('Reduced Motion — Chat Page', () => {
   it('should render chat page fully with reduced motion', () => {
-    cy.visit('/local', {
-      timeout: 60000,
+    // The chat page: a sealed HART (cy.openLocalChat).  Unsealed, /local is
+    // the first-run ceremony, whose text fades in over its first seconds.
+    cy.openLocalChat({
       onBeforeLoad(win) {
         const originalMatchMedia = win.matchMedia?.bind(win);
         if (originalMatchMedia) {
@@ -216,7 +236,7 @@ describe('Reduced Motion — Chat Page', () => {
       },
     });
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // Hero section and chat area should be visible
@@ -227,7 +247,14 @@ describe('Reduced Motion — Chat Page', () => {
     });
 
     // All elements should be visible (not hidden by animation state)
-    cy.get('h1, h2, h3, p', {timeout: 300000}).then(($elements) => {
+    // One read, after every animation has left its pending first frame: a
+    // just-mounted fill-mode:both animation shows keyframe 0 (opacity 0)
+    // for one frame even with zero delay and duration.
+    cy.document().then((doc) =>
+      Promise.all(doc.getAnimations().map((a) => a.ready.catch(() => null))));
+    // A single read, not a retrying .should: with reduced motion nothing may
+    // be mid-fade, so text caught at opacity 0 is the failure this checks.
+    cy.get('h1, h2, h3, p', {timeout: 30000}).then(($elements) => {
       $elements.each(function () {
         const style = window.getComputedStyle(this);
         // Text elements should be visible
@@ -240,6 +267,44 @@ describe('Reduced Motion — Chat Page', () => {
   });
 
   it('should allow message sending with reduced motion', () => {
+    // The chat page: a sealed HART.  Unsealed, /local is the first-run
+    // ceremony, which has no textarea, so this test checked nothing there.
+    cy.openLocalChat({
+      onBeforeLoad(win) {
+        const originalMatchMedia = win.matchMedia?.bind(win);
+        if (originalMatchMedia) {
+          win.matchMedia = (query) => {
+            if (query === '(prefers-reduced-motion: reduce)') {
+              return {
+                matches: true,
+                media: query,
+                onchange: null,
+                addListener: () => {},
+                removeListener: () => {},
+                addEventListener: () => {},
+                removeEventListener: () => {},
+                dispatchEvent: () => {},
+              };
+            }
+            return originalMatchMedia(query);
+          };
+        }
+      },
+    });
+
+    cy.get('#root', {timeout: 30000}).should('exist');
+    cy.wait(2000);
+
+    // Find chat input and type
+    cy.get('textarea', {timeout: 30000})
+      .first()
+      .type('Test message with reduced motion', {force: true})
+      .should('have.value', 'Test message with reduced motion');
+  });
+});
+
+describe('Reduced Motion — Element Visibility', () => {
+  it('should not have any elements stuck at opacity 0 or scale 0', () => {
     cy.visit('/local', {
       timeout: 60000,
       onBeforeLoad(win) {
@@ -264,56 +329,20 @@ describe('Reduced Motion — Chat Page', () => {
       },
     });
 
-    cy.get('#root', {timeout: 300000}).should('exist');
-    cy.wait(2000);
-
-    // Find chat input and type
-    cy.get('body').then(($body) => {
-      const textarea = $body.find('textarea');
-      if (textarea.length > 0) {
-        cy.wrap(textarea.first()).type('Test message with reduced motion', {
-          force: true,
-        });
-        cy.wrap(textarea.first()).should(
-          'have.value',
-          'Test message with reduced motion'
-        );
-      }
-    });
-  });
-});
-
-describe('Reduced Motion — Element Visibility', () => {
-  it('should not have any elements stuck at opacity 0 or scale 0', () => {
-    cy.visit('/', {
-      timeout: 60000,
-      onBeforeLoad(win) {
-        const originalMatchMedia = win.matchMedia?.bind(win);
-        if (originalMatchMedia) {
-          win.matchMedia = (query) => {
-            if (query === '(prefers-reduced-motion: reduce)') {
-              return {
-                matches: true,
-                media: query,
-                onchange: null,
-                addListener: () => {},
-                removeListener: () => {},
-                addEventListener: () => {},
-                removeEventListener: () => {},
-                dispatchEvent: () => {},
-              };
-            }
-            return originalMatchMedia(query);
-          };
-        }
-      },
-    });
-
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(3000);
 
-    // Check major UI elements are visible
-    cy.get('button', {timeout: 300000}).then(($buttons) => {
+    // Check major UI elements are visible.  /local is the first-run ceremony
+    // here; with reduced motion its language buttons must not be held at
+    // opacity 0 by their staggered fade-in delays (index.css cuts delays).
+    // A single read, not a retrying .should, so a button still fading fails.
+    cy.contains(/What language feels like home/i, {timeout: 30000});
+    // One read, after every animation has left its pending first frame: a
+    // just-mounted fill-mode:both animation shows keyframe 0 (opacity 0)
+    // for one frame even with zero delay and duration.
+    cy.document().then((doc) =>
+      Promise.all(doc.getAnimations().map((a) => a.ready.catch(() => null))));
+    cy.get('button', {timeout: 30000}).then(($buttons) => {
       $buttons.each(function () {
         if (this.offsetWidth > 0 && this.offsetHeight > 0) {
           const style = window.getComputedStyle(this);

@@ -30,23 +30,23 @@ describe('Background Start Rendering', () => {
     });
 
     it('React root has children (not empty mount)', () => {
-      cy.get('#root', { timeout: 300000 }).should(($root) => {
+      cy.get('#root', { timeout: 30000 }).should(($root) => {
         expect($root.children().length).to.be.greaterThan(0);
       });
     });
 
     it('hero section exists in DOM', () => {
-      cy.get('#hero-section', { timeout: 300000 }).should('exist');
+      cy.get('#hero-section', { timeout: 30000 }).should('exist');
     });
 
     it('demo section exists in DOM', () => {
-      cy.get('#demo-section', { timeout: 300000 }).should('exist');
+      cy.get('#demo-section', { timeout: 30000 }).should('exist');
     });
 
     it('hero transitions to demo within 10s', () => {
       // Hero starts visible (opacity 1), should fade to 0
       // Demo starts hidden (opacity 0), should fade to 1
-      cy.get('#demo-section', { timeout: 300000 }).should('exist');
+      cy.get('#demo-section', { timeout: 30000 }).should('exist');
 
       // Wait for transition
       cy.wait(6000);
@@ -62,7 +62,7 @@ describe('Background Start Rendering', () => {
 
     it('chat input is interactable after transition', () => {
       cy.wait(6000); // Wait for hero→demo transition
-      cy.get('textarea, input[type="text"]', { timeout: 300000 })
+      cy.get('textarea, input[type="text"]', { timeout: 30000 })
         .first()
         .should('be.visible')
         .and('not.be.disabled');
@@ -123,7 +123,7 @@ describe('Background Start Rendering', () => {
       cy.wait(6000);
 
       // Verify page is rendered before reload
-      cy.get('#root', { timeout: 300000 }).should(($root) => {
+      cy.get('#root', { timeout: 30000 }).should(($root) => {
         expect($root[0].innerHTML.length).to.be.greaterThan(100);
       });
 
@@ -131,7 +131,7 @@ describe('Background Start Rendering', () => {
       cy.reload();
 
       // After reload, React should re-mount within the hero preloader timeout
-      cy.get('#root', { timeout: 300000 }).should(($root) => {
+      cy.get('#root', { timeout: 30000 }).should(($root) => {
         expect($root[0].innerHTML.length).to.be.greaterThan(100);
       });
     });
@@ -142,7 +142,7 @@ describe('Background Start Rendering', () => {
       cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
       // Hero should be in DOM immediately
-      cy.get('#hero-section', { timeout: 300000 }).should('exist');
+      cy.get('#hero-section', { timeout: 30000 }).should('exist');
 
       // Hero should have non-zero opacity initially
       cy.get('#hero-section').should(($hero) => {
@@ -170,7 +170,7 @@ describe('Background Start Rendering', () => {
       cy.wait(8000);
 
       // Chat input should be available
-      cy.get('textarea, input[type="text"]', { timeout: 300000 })
+      cy.get('textarea, input[type="text"]', { timeout: 30000 })
         .first()
         .should('exist');
     });
@@ -201,7 +201,7 @@ describe('Background Start Rendering', () => {
       cy.reload();
       cy.wait(3000);
 
-      cy.get('#root', { timeout: 300000 }).should(($root) => {
+      cy.get('#root', { timeout: 30000 }).should(($root) => {
         expect($root.children().length).to.be.greaterThan(0);
         expect($root[0].innerHTML.length).to.be.greaterThan(100);
       });

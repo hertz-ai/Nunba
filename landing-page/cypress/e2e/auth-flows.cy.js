@@ -27,7 +27,11 @@
 // ---------------------------------------------------------------------------
 // Shared constants
 // ---------------------------------------------------------------------------
-const LOGIN_API_URL = 'https://mailer.hertzai.com/verifyTeacherByPhone';
+// OtpAuthModal sends the OTP to AZURE_LOGIN_URL (src/config/apiBase.js),
+// ${CLOUD_API_URL}/data/login.  This was mailer's verifyTeacherByPhone, which
+// the modal no longer calls: nothing matched the intercept, so every "GET OTP"
+// click went to the real cloud with the test phone number.
+const LOGIN_API_URL = 'https://azurekong.hertzai.com/data/login';
 const VERIFY_OTP_API_URL = 'https://azurekong.hertzai.com/data/varify_otp';
 const RENEW_TOKEN_URL = 'https://mailer.hertzai.com/refresh_tokens';
 const CHECK_HANDLE_URL = '**/agents/check-handle*';
@@ -78,6 +82,16 @@ function setupCommonIntercepts() {
   // Intercept the guest handle availability check
   cy.intercept('GET', CHECK_HANDLE_URL).as('checkHandle');
 
+  // A local LLM that is set up and running.  On a runner with no model,
+  // /api/llm/status?full=1 answers setup_needed and Demopage appends a
+  // "Local LLM Setup" card to the chat a few seconds after load.  The login
+  // modal is mounted in the empty-chat block, so that card unmounts an open
+  // modal mid-test ("GET OTP" gone right after "User Sign in" was found).
+  cy.intercept('GET', '**/api/llm/status*', {
+    statusCode: 200,
+    body: {available: true, setup_needed: false},
+  });
+
   // Intercept social API calls that fire on page load so they do not fail
   cy.intercept('GET', '**/api/social/**', {statusCode: 200, body: {}});
   cy.intercept('GET', '**/prompts*', {
@@ -102,12 +116,36 @@ function setupCommonIntercepts() {
 // Helper: visit the main agent page (which is the DemoPage / Agent component)
 // The app uses BrowserRouter, so "/" renders <Agent /> which renders Demopage.
 // "/agents/Hevolve" is the specific agent URL and also renders Agent/Demopage.
+//
+// The page is visited as someone whose HART is sealed but who is not signed
+// in.  Every route that renders <Agent /> ("/", "/local", "/agents/:name")
+// shows the LightYourHART onboarding instead of the chat until hart_sealed is
+// set (Agent.js, HART ONBOARDING GATE), so with a bare localStorage there is
+// no textarea, no "Please login" button and no login modal to open.
+//
+// The speech-consent question is already answered.  Until it is, Demopage
+// shows the ProactiveConciergeCard where the empty-chat block would be, and
+// that block is where the login modal is mounted (Demopage.js, speechConsent
+// === null branch): "Please login to talk to agent." is then on screen but
+// opens nothing.  Measured 2026-11-05 on a CI-like stack: unanswered, no
+// "User Sign in" after the click; answered text_only, the modal opens.
+//
+// {newGuest: true} also drops guest_name, as OtpAuthModal's "Use a different
+// name" does.  With guest_name kept, /local's modal is the returning-guest
+// "Welcome back ... Continue as" card, not the Guest Login name form.
 // ---------------------------------------------------------------------------
-function visitAgentPage(path = '/agents/Hevolve') {
+function visitAgentPage(path = '/agents/Hevolve', {newGuest = false} = {}) {
+  cy.sealHart('Test.Auth.User', 'en', {loggedOut: true});
+  // Inside cy.then: sealHart is a queued command, so a bare removeItem here
+  // would run before it and sealHart would write guest_name back.
+  cy.then(() => {
+    localStorage.setItem('nunba_speech_consent', 'text_only');
+    if (newGuest) localStorage.removeItem('guest_name');
+  });
   cy.visit(path, {failOnStatusCode: false, timeout: 60000});
   // Wait for the React app to mount -- use a DOM element check instead of
   // waiting on the cloud API intercept which may time out.
-  cy.get('#root', {timeout: 300000}).should('exist');
+  cy.get('#root', {timeout: 30000}).should('exist');
   cy.wait(2000);
 }
 
@@ -126,16 +164,16 @@ function openOtpModal() {
         .first()
         .click({force: true});
     } else if ($body.find(':contains("Login")').length) {
-      cy.contains('Login', {timeout: 300000}).first().click({force: true});
+      cy.contains('Login', {timeout: 30000}).first().click({force: true});
     } else {
-      cy.contains(/Sign|login/i, {timeout: 300000})
+      cy.contains(/Sign|login/i, {timeout: 30000})
         .first()
         .click({force: true});
     }
   });
 
   // Verify the modal actually opened -- give extra time for rendering
-  cy.contains('h2', 'User Sign in', {timeout: 300000}).should('exist');
+  cy.contains('h2', 'User Sign in', {timeout: 30000}).should('exist');
 }
 
 // ============================================================================
@@ -167,7 +205,7 @@ describe('Authentication Flows E2E', () => {
     it('should show the chat textarea as disabled when not authenticated', () => {
       visitAgentPage();
 
-      cy.get('textarea', {timeout: 300000}).should('exist').and('be.disabled');
+      cy.get('textarea', {timeout: 30000}).should('exist').and('be.disabled');
     });
 
     it('should display a login prompt when user is not authenticated', () => {
@@ -192,7 +230,7 @@ describe('Authentication Flows E2E', () => {
 
       // When not authenticated, the button below the textarea reads:
       // "Please login to talk to agent."
-      cy.contains('button', 'Please login to talk to agent', {timeout: 300000})
+      cy.contains('button', 'Please login to talk to agent', {timeout: 30000})
         .should('exist')
         .and('be.visible');
     });
@@ -213,7 +251,7 @@ describe('Authentication Flows E2E', () => {
       openOtpModal();
 
       // The modal heading should be "User Sign in"
-      cy.contains('h2', 'User Sign in', {timeout: 300000}).should('be.visible');
+      cy.contains('h2', 'User Sign in', {timeout: 30000}).should('be.visible');
     });
 
     it('should display Phone and Email toggle buttons in the modal', () => {
@@ -221,10 +259,10 @@ describe('Authentication Flows E2E', () => {
       openOtpModal();
 
       // Phone tab button
-      cy.contains('button', 'Phone', {timeout: 300000}).should('be.visible');
+      cy.contains('button', 'Phone', {timeout: 30000}).should('be.visible');
 
       // Email tab button
-      cy.contains('button', 'Email', {timeout: 300000}).should('be.visible');
+      cy.contains('button', 'Email', {timeout: 30000}).should('be.visible');
     });
 
     it('should show country selector and phone input in Phone mode (default)', () => {
@@ -238,12 +276,12 @@ describe('Authentication Flows E2E', () => {
       cy.get('button').contains('+91').should('exist');
 
       // Phone number input with placeholder
-      cy.get('input[placeholder="Enter Phone Number"]', {timeout: 300000})
+      cy.get('input[placeholder="Enter Phone Number"]', {timeout: 30000})
         .should('exist')
         .and('be.visible');
 
       // GET OTP button
-      cy.contains('button', 'GET OTP', {timeout: 300000})
+      cy.contains('button', 'GET OTP', {timeout: 30000})
         .should('exist')
         .and('be.visible');
     });
@@ -256,12 +294,12 @@ describe('Authentication Flows E2E', () => {
       cy.contains('button', 'Email').click({force: true});
 
       // Email input
-      cy.get('input[placeholder="Enter Email Address"]', {timeout: 300000})
+      cy.get('input[placeholder="Enter Email Address"]', {timeout: 30000})
         .should('exist')
         .and('be.visible');
 
       // GET OTP button
-      cy.contains('button', 'GET OTP', {timeout: 300000})
+      cy.contains('button', 'GET OTP', {timeout: 30000})
         .should('exist')
         .and('be.visible');
 
@@ -276,8 +314,14 @@ describe('Authentication Flows E2E', () => {
       // Modal should be open
       cy.contains('h2', 'User Sign in').should('be.visible');
 
-      // Click the close (X) button -- it is an SVG inside a button near the top
-      cy.get('.fixed button').first().click({force: true});
+      // Click the close (X) button -- the first button inside the modal's
+      // portal root (OtpAuthModal: <p>, then the X button).  A bare
+      // '.fixed button' finds the page's own fixed panels first.
+      cy.contains('h2', 'User Sign in')
+        .closest('.fixed')
+        .find('button')
+        .first()
+        .click({force: true});
 
       // Modal heading should no longer be visible
       cy.contains('h2', 'User Sign in').should('not.exist');
@@ -287,7 +331,7 @@ describe('Authentication Flows E2E', () => {
       visitAgentPage();
       openOtpModal();
 
-      cy.contains("Don't have an account?", {timeout: 300000}).should(
+      cy.contains("Don't have an account?", {timeout: 30000}).should(
         'be.visible'
       );
       cy.contains('button', 'Sign Up').should('be.visible');
@@ -323,7 +367,7 @@ describe('Authentication Flows E2E', () => {
 
       // Wait for the intercepted POST to /data/login -- this is a mocked local
       // intercept so it resolves immediately; safe to wait on.
-      cy.wait('@sendOtp', {timeout: 300000}).then((interception) => {
+      cy.wait('@sendOtp', {timeout: 30000}).then((interception) => {
         expect(interception.request.body).to.have.property('phone_number');
         // Default country is India (+91)
         expect(interception.request.body.phone_number).to.include('+91');
@@ -331,7 +375,7 @@ describe('Authentication Flows E2E', () => {
       });
 
       // OTP input should now appear
-      cy.get('input[placeholder="Enter OTP"]', {timeout: 300000})
+      cy.get('input[placeholder="Enter OTP"]', {timeout: 30000})
         .should('exist')
         .and('be.visible');
 
@@ -346,16 +390,16 @@ describe('Authentication Flows E2E', () => {
       // Enter phone number and request OTP
       cy.get('input[placeholder="Enter Phone Number"]').type('9876543210');
       cy.contains('button', 'GET OTP').click({force: true});
-      cy.wait('@sendOtp', {timeout: 300000});
+      cy.wait('@sendOtp', {timeout: 30000});
 
       // Enter the OTP
-      cy.get('input[placeholder="Enter OTP"]', {timeout: 300000}).type('123456');
+      cy.get('input[placeholder="Enter OTP"]', {timeout: 30000}).type('123456');
 
       // Click Verify OTP
       cy.contains('button', 'Verify OTP').click({force: true});
 
       // Wait for the verification API call (mocked, resolves immediately)
-      cy.wait('@verifyOtp', {timeout: 300000}).then((interception) => {
+      cy.wait('@verifyOtp', {timeout: 30000}).then((interception) => {
         expect(interception.request.body).to.have.property('phone_number');
         expect(interception.request.body).to.have.property('otp', '123456');
       });
@@ -415,7 +459,7 @@ describe('Authentication Flows E2E', () => {
 
       cy.contains('button', 'GET OTP').click({force: true});
 
-      cy.wait('@sendOtp', {timeout: 300000}).then((interception) => {
+      cy.wait('@sendOtp', {timeout: 30000}).then((interception) => {
         const phone = interception.request.body.phone_number;
         // Must start with + and contain the country code
         expect(phone).to.match(/^\+\d+/);
@@ -454,7 +498,7 @@ describe('Authentication Flows E2E', () => {
       cy.contains('button', 'GET OTP').click({force: true});
 
       // The POST body uses { phone_number: email } for the email path
-      cy.wait('@sendOtp', {timeout: 300000}).then((interception) => {
+      cy.wait('@sendOtp', {timeout: 30000}).then((interception) => {
         expect(interception.request.body).to.have.property(
           'phone_number',
           'alice@example.com'
@@ -462,7 +506,7 @@ describe('Authentication Flows E2E', () => {
       });
 
       // OTP input should now be visible
-      cy.get('input[placeholder="Enter OTP"]', {timeout: 300000})
+      cy.get('input[placeholder="Enter OTP"]', {timeout: 30000})
         .should('exist')
         .and('be.visible');
     });
@@ -477,13 +521,13 @@ describe('Authentication Flows E2E', () => {
         'alice@example.com'
       );
       cy.contains('button', 'GET OTP').click({force: true});
-      cy.wait('@sendOtp', {timeout: 300000});
+      cy.wait('@sendOtp', {timeout: 30000});
 
       // Enter OTP and verify
-      cy.get('input[placeholder="Enter OTP"]', {timeout: 300000}).type('654321');
+      cy.get('input[placeholder="Enter OTP"]', {timeout: 30000}).type('654321');
       cy.contains('button', 'Verify OTP').click({force: true});
 
-      cy.wait('@verifyOtp', {timeout: 300000}).then((interception) => {
+      cy.wait('@verifyOtp', {timeout: 30000}).then((interception) => {
         expect(interception.request.body).to.have.property(
           'phone_number',
           'alice@example.com'
@@ -557,49 +601,49 @@ describe('Authentication Flows E2E', () => {
     });
 
     it('should show Guest Login UI when visiting /local route', () => {
-      visitAgentPage('/local');
+      visitAgentPage('/local', {newGuest: true});
 
       // On /local route, the modal should auto-open with forceGuestMode=true
       // The heading should say "Guest Login" instead of "User Sign in"
-      cy.contains('h2', 'Guest Login', {timeout: 300000}).should('be.visible');
+      cy.contains('h2', 'Guest Login', {timeout: 30000}).should('be.visible');
 
       // Should show "Local mode." text
-      cy.contains('Local mode', {timeout: 300000}).should('be.visible');
+      cy.contains('Local mode', {timeout: 30000}).should('be.visible');
     });
 
     it('should display username input and agent handle preview', () => {
-      visitAgentPage('/local');
+      visitAgentPage('/local', {newGuest: true});
 
       // Username input
       cy.get('input[placeholder="Enter your name (e.g., John)"]', {
-        timeout: 300000,
+        timeout: 30000,
       })
         .should('exist')
         .and('be.visible');
 
       // Agent handle label
-      cy.contains('Your Agent Handle', {timeout: 300000}).should('be.visible');
+      cy.contains('Your Agent Handle', {timeout: 30000}).should('be.visible');
 
       // The handle preview shows the prefix with [YourName] placeholder
       cy.contains('[YourName]').should('be.visible');
 
       // Continue as Guest button
-      cy.contains('button', 'Continue as Guest', {timeout: 300000})
+      cy.contains('button', 'Continue as Guest', {timeout: 30000})
         .should('exist')
         .and('be.visible');
     });
 
     it('should generate Adjective.Color.Username handle when name is entered', () => {
-      visitAgentPage('/local');
+      visitAgentPage('/local', {newGuest: true});
 
       // Type a username
       cy.get('input[placeholder="Enter your name (e.g., John)"]', {
-        timeout: 300000,
+        timeout: 30000,
       }).type('John');
 
       // The agent handle should now show a three-part name: Adjective.Color.John
       // Pattern: Word.Word.John (each part starts with uppercase)
-      cy.get('.font-mono', {timeout: 300000})
+      cy.get('.font-mono', {timeout: 30000})
         .invoke('text')
         .then((handleText) => {
           // The handle display may contain extra text like "available" -- grab the first part
@@ -613,10 +657,10 @@ describe('Authentication Flows E2E', () => {
     });
 
     it('should regenerate the prefix when the refresh button is clicked', () => {
-      visitAgentPage('/local');
+      visitAgentPage('/local', {newGuest: true});
 
       cy.get('input[placeholder="Enter your name (e.g., John)"]', {
-        timeout: 300000,
+        timeout: 30000,
       }).type('Alice');
 
       // Capture the initial handle text
@@ -650,11 +694,11 @@ describe('Authentication Flows E2E', () => {
     });
 
     it('should store guest_mode items in localStorage on Continue as Guest', () => {
-      visitAgentPage('/local');
+      visitAgentPage('/local', {newGuest: true});
 
       // Enter a username
       cy.get('input[placeholder="Enter your name (e.g., John)"]', {
-        timeout: 300000,
+        timeout: 30000,
       }).type('TestUser');
 
       // Wait for debounced handle check
@@ -663,35 +707,39 @@ describe('Authentication Flows E2E', () => {
       // Click Continue as Guest
       cy.contains('button', 'Continue as Guest').click({force: true});
 
-      // Verify localStorage
+      // Verify localStorage.  Continue as Guest first POSTs
+      // /api/social/auth/guest-register to the real backend and only then
+      // writes the keys (setGuestIdentity), so wait for guest_mode with a
+      // retrying assertion instead of a fixed 1 s sleep that raced it.
+      cy.window()
+        .its('localStorage')
+        .invoke('getItem', 'guest_mode')
+        .should('eq', 'true');
       cy.window().then((win) => {
-        cy.wait(1000).then(() => {
-          expect(win.localStorage.getItem('guest_mode')).to.eq('true');
-          expect(win.localStorage.getItem('guest_name')).to.not.be.null;
-          expect(win.localStorage.getItem('guest_user_id')).to.not.be.null;
+        expect(win.localStorage.getItem('guest_name')).to.not.be.null;
+        expect(win.localStorage.getItem('guest_user_id')).to.not.be.null;
 
-          // The guest_name should follow Adjective.Color.TestUser format
-          const guestName = win.localStorage.getItem('guest_name');
-          const parts = guestName.split('.');
-          expect(parts.length).to.eq(3);
-          expect(parts[2]).to.eq('TestUser');
-        });
+        // The guest_name should follow Adjective.Color.TestUser format
+        const guestName = win.localStorage.getItem('guest_name');
+        const parts = guestName.split('.');
+        expect(parts.length).to.eq(3);
+        expect(parts[2]).to.eq('TestUser');
       });
     });
 
     it('should show validation error when Continue as Guest is clicked with empty username', () => {
-      visitAgentPage('/local');
+      visitAgentPage('/local', {newGuest: true});
 
       // Do NOT enter a username -- leave it blank
       cy.wait(1000);
 
       // Click Continue as Guest
-      cy.contains('button', 'Continue as Guest', {timeout: 300000}).click({
+      cy.contains('button', 'Continue as Guest', {timeout: 30000}).click({
         force: true,
       });
 
       // Should show alert: "Please enter your name to create your unique agent handle"
-      cy.contains('Please enter your name', {timeout: 300000}).should(
+      cy.contains('Please enter your name', {timeout: 30000}).should(
         'be.visible'
       );
     });
@@ -804,7 +852,7 @@ describe('Authentication Flows E2E', () => {
       cy.contains('button', 'GET OTP').click({force: true});
 
       // Should show the validation message
-      cy.contains('Please enter your phone number', {timeout: 300000}).should(
+      cy.contains('Please enter your phone number', {timeout: 30000}).should(
         'be.visible'
       );
     });
@@ -821,7 +869,7 @@ describe('Authentication Flows E2E', () => {
       // Do NOT enter email, just click GET OTP
       cy.contains('button', 'GET OTP').click({force: true});
 
-      cy.contains('Please enter your email address', {timeout: 300000}).should(
+      cy.contains('Please enter your email address', {timeout: 30000}).should(
         'be.visible'
       );
     });
@@ -839,7 +887,7 @@ describe('Authentication Flows E2E', () => {
 
       // The error element may be clipped by a position:fixed ancestor,
       // so check existence rather than visibility
-      cy.contains('Please enter a valid email address', {timeout: 300000})
+      cy.contains('Please enter a valid email address', {timeout: 30000})
         .scrollIntoView()
         .should('exist');
     });
@@ -857,16 +905,16 @@ describe('Authentication Flows E2E', () => {
 
       cy.get('input[placeholder="Enter Phone Number"]').type('9876543210');
       cy.contains('button', 'GET OTP').click({force: true});
-      cy.wait('@sendOtp', {timeout: 300000});
+      cy.wait('@sendOtp', {timeout: 30000});
 
-      cy.get('input[placeholder="Enter OTP"]', {timeout: 300000}).type('000000');
+      cy.get('input[placeholder="Enter OTP"]', {timeout: 30000}).type('000000');
       cy.contains('button', 'Verify OTP').click({force: true});
-      cy.wait('@verifyOtp', {timeout: 300000});
+      cy.wait('@verifyOtp', {timeout: 30000});
 
       // The component shows "Invalid OTP. Please try again." in the alert.
       // The error element may be clipped by a position:fixed ancestor,
       // so check existence rather than visibility
-      cy.contains('Invalid OTP', {timeout: 300000})
+      cy.contains('Invalid OTP', {timeout: 30000})
         .scrollIntoView()
         .should('exist');
     });
@@ -908,7 +956,7 @@ describe('Authentication Flows E2E', () => {
 
       cy.get('input[placeholder="Enter Phone Number"]').type('9999999999');
       cy.contains('button', 'GET OTP').click({force: true});
-      cy.wait('@sendOtp', {timeout: 300000});
+      cy.wait('@sendOtp', {timeout: 30000});
 
       // The component detects "is not registered" in the detail and may show:
       // "It looks like you don't have an account yet. Sign up to get started!"
@@ -951,11 +999,11 @@ describe('Authentication Flows E2E', () => {
 
       cy.get('input[placeholder="Enter Phone Number"]').type('9876543210');
       cy.contains('button', 'GET OTP').click({force: true});
-      cy.wait('@sendOtp', {timeout: 300000});
+      cy.wait('@sendOtp', {timeout: 30000});
 
-      cy.get('input[placeholder="Enter OTP"]', {timeout: 300000}).type('123456');
+      cy.get('input[placeholder="Enter OTP"]', {timeout: 30000}).type('123456');
       cy.contains('button', 'Verify OTP').click({force: true});
-      cy.wait('@verifyOtp', {timeout: 300000});
+      cy.wait('@verifyOtp', {timeout: 30000});
 
       cy.window().then((win) => {
         cy.wait(2000).then(() => {
@@ -999,18 +1047,18 @@ describe('Authentication Flows E2E', () => {
           win.localStorage.setItem('guest_name_verified', 'true');
         },
       });
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
       cy.wait(2000);
 
       // The LogOutUser function in DemoPage removes all auth keys and navigates to "/"
       // Find and click the Logout button/span
       cy.get('body').then(($body) => {
         if ($body.find(':contains("Logout")').length) {
-          cy.contains('Logout', {timeout: 300000}).click({force: true});
+          cy.contains('Logout', {timeout: 30000}).click({force: true});
         } else if ($body.find(':contains("logout")').length) {
-          cy.contains('logout', {timeout: 300000}).click({force: true});
+          cy.contains('logout', {timeout: 30000}).click({force: true});
         } else if ($body.find(':contains("Log Out")').length) {
-          cy.contains('Log Out', {timeout: 300000}).click({force: true});
+          cy.contains('Log Out', {timeout: 30000}).click({force: true});
         } else {
           // Fallback: manually clear localStorage to simulate logout
           cy.window().then((win) => {
@@ -1051,15 +1099,15 @@ describe('Authentication Flows E2E', () => {
           win.localStorage.setItem('guest_name_verified', 'false');
         },
       });
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
       cy.wait(2000);
 
       // Trigger logout -- with fallback if button not found
       cy.get('body').then(($body) => {
         if ($body.find(':contains("Logout")').length) {
-          cy.contains('Logout', {timeout: 300000}).click({force: true});
+          cy.contains('Logout', {timeout: 30000}).click({force: true});
         } else if ($body.find(':contains("Log Out")').length) {
-          cy.contains('Log Out', {timeout: 300000}).click({force: true});
+          cy.contains('Log Out', {timeout: 30000}).click({force: true});
         } else {
           // Fallback: manually clear localStorage to simulate logout
           cy.window().then((win) => {
@@ -1092,7 +1140,7 @@ describe('Authentication Flows E2E', () => {
           win.localStorage.setItem('guest_user_id', 'guest-uuid-789');
         },
       });
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
       cy.wait(2000);
 
       // Mock APIs for a successful OTP login
@@ -1104,9 +1152,9 @@ describe('Authentication Flows E2E', () => {
       // Log out first then do OTP login -- with fallback if button not found
       cy.get('body').then(($body) => {
         if ($body.find(':contains("Logout")').length) {
-          cy.contains('Logout', {timeout: 300000}).click({force: true});
+          cy.contains('Logout', {timeout: 30000}).click({force: true});
         } else if ($body.find(':contains("Log Out")').length) {
-          cy.contains('Log Out', {timeout: 300000}).click({force: true});
+          cy.contains('Log Out', {timeout: 30000}).click({force: true});
         } else {
           // Fallback: manually clear localStorage to simulate logout
           cy.window().then((win) => {
@@ -1127,11 +1175,11 @@ describe('Authentication Flows E2E', () => {
       openOtpModal();
       cy.get('input[placeholder="Enter Phone Number"]').type('9876543210');
       cy.contains('button', 'GET OTP').click({force: true});
-      cy.wait('@sendOtp', {timeout: 300000});
+      cy.wait('@sendOtp', {timeout: 30000});
 
-      cy.get('input[placeholder="Enter OTP"]', {timeout: 300000}).type('123456');
+      cy.get('input[placeholder="Enter OTP"]', {timeout: 30000}).type('123456');
       cy.contains('button', 'Verify OTP').click({force: true});
-      cy.wait('@verifyOtp', {timeout: 300000});
+      cy.wait('@verifyOtp', {timeout: 30000});
 
       // After OTP login succeeds, guest items should be cleared
       cy.window().then((win) => {
@@ -1193,18 +1241,18 @@ describe('Authentication Flows E2E', () => {
 
       cy.get('input[placeholder="Enter Phone Number"]').type('9876543210');
       cy.contains('button', 'GET OTP').click({force: true});
-      cy.wait('@sendOtp', {timeout: 300000});
+      cy.wait('@sendOtp', {timeout: 30000});
 
-      cy.get('input[placeholder="Enter OTP"]', {timeout: 300000}).type('123456');
+      cy.get('input[placeholder="Enter OTP"]', {timeout: 30000}).type('123456');
       cy.contains('button', 'Verify OTP').click({force: true});
-      cy.wait('@verifyOtp', {timeout: 300000});
+      cy.wait('@verifyOtp', {timeout: 30000});
 
       // Wait for the renewal interval to fire (expires_in is 2s, check interval is 1s,
       // renewal triggers when remaining <= 5s, so it should fire almost immediately)
       // However, if the mock OTP verify didn't store the token, renewal won't trigger
       cy.window().then((win) => {
         if (win.localStorage.getItem('access_token')) {
-          cy.wait('@renewToken', {timeout: 300000}).then((interception) => {
+          cy.wait('@renewToken', {timeout: 30000}).then((interception) => {
             expect(interception.request.body).to.have.property('user_id');
           });
         } else {
@@ -1237,7 +1285,7 @@ describe('Authentication Flows E2E', () => {
 
       // The dropdown should now be visible with a search input
       cy.get('.fixed.inset-0')
-        .find('input[placeholder="Search country..."]', {timeout: 300000})
+        .find('input[placeholder="Search country..."]', {timeout: 30000})
         .should('be.visible');
     });
 
@@ -1257,7 +1305,7 @@ describe('Authentication Flows E2E', () => {
 
       // Should show matching results
       cy.get('.fixed.inset-0')
-        .contains('United States', {timeout: 300000})
+        .contains('United States', {timeout: 30000})
         .should('be.visible');
     });
 
@@ -1290,7 +1338,7 @@ describe('Authentication Flows E2E', () => {
         .contains('button', 'GET OTP')
         .click({force: true});
 
-      cy.wait('@sendOtp', {timeout: 300000}).then((interception) => {
+      cy.wait('@sendOtp', {timeout: 30000}).then((interception) => {
         expect(interception.request.body.phone_number).to.eq('+12025551234');
       });
     });
@@ -1300,7 +1348,7 @@ describe('Authentication Flows E2E', () => {
   // 11. REAL AUTH FLOW TESTS (No mocks - tests actual API behavior)
   // --------------------------------------------------------------------------
   describe('11 - Real Auth Flow Integration Tests', () => {
-    const SOCIAL_API = 'http://localhost:5000/api/social';
+    const SOCIAL_API = `${Cypress.env('apiUrl')}/api/social`;
 
     beforeEach(() => {
       cy.clearLocalStorage();
@@ -1355,7 +1403,7 @@ describe('Authentication Flows E2E', () => {
           display_name: 'Real Auth Test User',
         },
         failOnStatusCode: false,
-        timeout: 300000,
+        timeout: 30000,
       }).then((res) => {
         // Register should return 200/201 with api_token
         if (res.status === 200 || res.status === 201) {
@@ -1391,7 +1439,7 @@ describe('Authentication Flows E2E', () => {
         url: `${SOCIAL_API}/auth/register`,
         body: {username, password, display_name: 'JWT Test'},
         failOnStatusCode: false,
-        timeout: 300000,
+        timeout: 30000,
       }).then(() => {
         // Then login
         cy.request({
@@ -1399,7 +1447,7 @@ describe('Authentication Flows E2E', () => {
           url: `${SOCIAL_API}/auth/login`,
           body: {username, password},
           failOnStatusCode: false,
-          timeout: 300000,
+          timeout: 30000,
         }).then((loginRes) => {
           if (loginRes.status === 200 || loginRes.status === 201) {
             expect(loginRes.body).to.have.property('success', true);
@@ -1453,7 +1501,7 @@ describe('Authentication Flows E2E', () => {
           url: `${SOCIAL_API}/auth/login`,
           body: {username, password},
           failOnStatusCode: false,
-          timeout: 300000,
+          timeout: 30000,
         }).then((loginRes) => {
           if (loginRes.status !== 200 && loginRes.status !== 201) {
             cy.log(`Login failed with status ${loginRes.status}`);
@@ -1476,7 +1524,7 @@ describe('Authentication Flows E2E', () => {
               'Content-Type': 'application/json',
             },
             failOnStatusCode: false,
-            timeout: 300000,
+            timeout: 30000,
           }).then((meRes) => {
             // Should return 200 with user data
             if (meRes.status === 200) {
@@ -1511,7 +1559,7 @@ describe('Authentication Flows E2E', () => {
           'Content-Type': 'application/json',
         },
         failOnStatusCode: false,
-        timeout: 300000,
+        timeout: 30000,
       }).then((res) => {
         // Should return 401 Unauthorized or 403 Forbidden
         expect(res.status).to.be.oneOf([401, 403, 404, 500, 503]);
@@ -1532,7 +1580,7 @@ describe('Authentication Flows E2E', () => {
           'Content-Type': 'application/json',
         },
         failOnStatusCode: false,
-        timeout: 300000,
+        timeout: 30000,
       }).then((res) => {
         expect(res.status).to.be.oneOf([401, 403, 404, 500, 503]);
       });
@@ -1544,7 +1592,7 @@ describe('Authentication Flows E2E', () => {
         url: `${SOCIAL_API}/auth/me`,
         headers: {'Content-Type': 'application/json'},
         failOnStatusCode: false,
-        timeout: 300000,
+        timeout: 30000,
       }).then((res) => {
         // Should return 401 or error response
         if (res.status >= 500) {
@@ -1560,7 +1608,7 @@ describe('Authentication Flows E2E', () => {
   // 12. Token Refresh Flow Tests
   // --------------------------------------------------------------------------
   describe('12 - Token Refresh Flow Tests', () => {
-    const SOCIAL_API = 'http://localhost:5000/api/social';
+    const SOCIAL_API = `${Cypress.env('apiUrl')}/api/social`;
     const RENEW_TOKEN_ENDPOINT = 'https://mailer.hertzai.com/refresh_tokens';
 
     beforeEach(() => {
@@ -1587,11 +1635,11 @@ describe('Authentication Flows E2E', () => {
 
       cy.get('input[placeholder="Enter Phone Number"]').type('9876543210');
       cy.contains('button', 'GET OTP').click({force: true});
-      cy.wait('@sendOtp', {timeout: 300000});
+      cy.wait('@sendOtp', {timeout: 30000});
 
-      cy.get('input[placeholder="Enter OTP"]', {timeout: 300000}).type('123456');
+      cy.get('input[placeholder="Enter OTP"]', {timeout: 30000}).type('123456');
       cy.contains('button', 'Verify OTP').click({force: true});
-      cy.wait('@verifyOtp', {timeout: 300000});
+      cy.wait('@verifyOtp', {timeout: 30000});
 
       // Verify refresh_token is stored (encrypted)
       cy.window().then((win) => {
@@ -1662,7 +1710,7 @@ describe('Authentication Flows E2E', () => {
         },
       });
 
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
 
       // Wait for potential renewal attempt
       cy.wait(5000);
@@ -1676,7 +1724,7 @@ describe('Authentication Flows E2E', () => {
   // 13. Logout and Session Clearing Tests
   // --------------------------------------------------------------------------
   describe('13 - Logout and Session Clearing Tests', () => {
-    const SOCIAL_API = 'http://localhost:5000/api/social';
+    const SOCIAL_API = `${Cypress.env('apiUrl')}/api/social`;
 
     beforeEach(() => {
       setupCommonIntercepts();
@@ -1711,7 +1759,7 @@ describe('Authentication Flows E2E', () => {
         },
       });
 
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
       cy.wait(2000);
 
       // Find and click logout
@@ -1722,7 +1770,7 @@ describe('Authentication Flows E2E', () => {
           $body.find(':contains("logout")').length;
 
         if (logoutButton) {
-          cy.contains(/Log\s?out/i, {timeout: 300000})
+          cy.contains(/Log\s?out/i, {timeout: 30000})
             .first()
             .click({force: true});
         } else {
@@ -1751,7 +1799,7 @@ describe('Authentication Flows E2E', () => {
       cy.socialAuth().then((authData) => {
         // Visit with auth
         cy.socialVisit('/agents/Hevolve');
-        cy.get('#root', {timeout: 300000}).should('exist');
+        cy.get('#root', {timeout: 30000}).should('exist');
 
         // Try to logout via API
         cy.socialRequest('POST', '/auth/logout').then((res) => {
@@ -1774,7 +1822,7 @@ describe('Authentication Flows E2E', () => {
           url: `${SOCIAL_API}/auth/me`,
           headers: {Authorization: `Bearer ${token}`},
           failOnStatusCode: false,
-          timeout: 300000,
+          timeout: 30000,
         }).then((beforeRes) => {
           // Token should work
           if (beforeRes.status === 200) {
@@ -1784,7 +1832,7 @@ describe('Authentication Flows E2E', () => {
               url: `${SOCIAL_API}/auth/logout`,
               headers: {Authorization: `Bearer ${token}`},
               failOnStatusCode: false,
-              timeout: 300000,
+              timeout: 30000,
             }).then(() => {
               // Try using the same token after logout
               cy.request({
@@ -1792,7 +1840,7 @@ describe('Authentication Flows E2E', () => {
                 url: `${SOCIAL_API}/auth/me`,
                 headers: {Authorization: `Bearer ${token}`},
                 failOnStatusCode: false,
-                timeout: 300000,
+                timeout: 30000,
               }).then((afterRes) => {
                 // Token should be invalid after logout
                 // Some APIs invalidate tokens, others don't
@@ -1820,7 +1868,7 @@ describe('Authentication Flows E2E', () => {
         },
       });
 
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
       cy.wait(2000);
 
       // Trigger logout
@@ -1876,10 +1924,13 @@ describe('Authentication Flows E2E', () => {
       visitAgentPage('/agents/Hevolve');
 
       // Textarea should be disabled
-      cy.get('textarea', {timeout: 300000}).should('be.disabled');
+      cy.get('textarea', {timeout: 30000}).should('be.disabled');
     });
 
     it('should enable chat input when authenticated', () => {
+      // Sealed HART: unsealed, the page is the onboarding and has no textarea
+      // (see visitAgentPage).
+      cy.sealHart('Test.Auth.User');
       cy.visit('/agents/Hevolve', {
         failOnStatusCode: false,
         timeout: 60000,
@@ -1889,11 +1940,11 @@ describe('Authentication Flows E2E', () => {
         },
       });
 
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
       cy.wait(2000);
 
       // Textarea should be enabled (or at least present and interactive)
-      cy.get('textarea', {timeout: 300000}).then(($textarea) => {
+      cy.get('textarea', {timeout: 30000}).then(($textarea) => {
         // Check if enabled or at least visible
         if (!$textarea.is(':disabled')) {
           cy.log('Textarea is enabled for authenticated user');
@@ -1913,7 +1964,7 @@ describe('Authentication Flows E2E', () => {
         },
       });
 
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
       cy.wait(2000);
 
       // With a token set, the app should show some authenticated UI state.
@@ -1941,7 +1992,7 @@ describe('Authentication Flows E2E', () => {
 
       // Visit a protected route directly
       cy.visit('/agents/Hevolve', {failOnStatusCode: false, timeout: 60000});
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
       cy.wait(2000);
 
       // Should either stay on page with login modal, show login prompt,
@@ -1969,7 +2020,7 @@ describe('Authentication Flows E2E', () => {
   // 15. JWT Token Validation Tests
   // --------------------------------------------------------------------------
   describe('15 - JWT Token Validation Tests', () => {
-    const SOCIAL_API = 'http://localhost:5000/api/social';
+    const SOCIAL_API = `${Cypress.env('apiUrl')}/api/social`;
 
     /**
      * Helper: Decode JWT payload
@@ -2006,7 +2057,7 @@ describe('Authentication Flows E2E', () => {
           display_name: 'JWT Claims Test',
         },
         failOnStatusCode: false,
-        timeout: 300000,
+        timeout: 30000,
       }).then(() => {
         cy.request({
           method: 'POST',

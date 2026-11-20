@@ -44,7 +44,7 @@ describe('J221-J231: restore + forget + cloud sync', () => {
   it('J221: admin config/chat allows active_only restore scope', () => {
     cy.request({
       method: 'PUT',
-      url: 'http://localhost:5000/api/admin/config/chat',
+      url: `${Cypress.env('apiUrl')}/api/admin/config/chat`,
       body: {restore_scope: 'active_only', restore_policy: 'prompt'},
       failOnStatusCode: false,
     }).then((r) => {
@@ -53,19 +53,36 @@ describe('J221-J231: restore + forget + cloud sync', () => {
   });
 
   it('J222: DELETE /api/guest-id wipes guest id', () => {
+    // main.py api_guest_id_delete refuses a DELETE without
+    // {"confirm": true} (400 confirm_required), on purpose.
     cy.request({
       method: 'DELETE',
-      url: 'http://localhost:5000/api/guest-id',
+      url: `${Cypress.env('apiUrl')}/api/guest-id`,
+      failOnStatusCode: false,
+    }).then((r) => {
+      // 401/403 when the local-or-token gate (it runs first) refuses.
+      expect(r.status).to.be.oneOf([400, 401, 403]);
+      if (r.status === 400) {
+        expect(r.body).to.have.property('error', 'confirm_required');
+      }
+    });
+    cy.request({
+      method: 'DELETE',
+      url: `${Cypress.env('apiUrl')}/api/guest-id`,
+      body: {confirm: true},
       failOnStatusCode: false,
     }).then((r) => {
       expect(r.status).to.be.oneOf([200, 204, 401, 403, 404, 500, 503]);
+      if (r.status === 200) {
+        expect(r.body).to.have.property('deleted', true);
+      }
     });
   });
 
   it('J230: POST /api/chat-sync/push cross-device returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/chat-sync/push',
+      url: `${Cypress.env('apiUrl')}/api/chat-sync/push`,
       body: {device_id: 'j230-dev-A', messages: []},
       failOnStatusCode: false,
     }).then((r) => {
@@ -76,7 +93,7 @@ describe('J221-J231: restore + forget + cloud sync', () => {
   it('J231: sync defaults off — /api/admin/config/chat default envelope', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/admin/config/chat',
+      url: `${Cypress.env('apiUrl')}/api/admin/config/chat`,
       failOnStatusCode: false,
     }).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 500, 503]);
@@ -90,55 +107,65 @@ describe('J240-J249: admin surfaces', () => {
   });
 
   it('J240: GET /api/admin/providers returns list envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/admin/providers', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/admin/providers`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 503]);
     });
   });
 
   it('J241: GET /api/admin/hub/allowlist returns envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/admin/hub/allowlist', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/admin/hub/allowlist`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 404, 503]);
     });
   });
 
   it('J242: GET /api/admin/models/health returns envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/admin/models/health', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/admin/models/health`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 500, 503]);
     });
   });
 
   it('J243: /api/admin/diag/thread-dump envelope shape', () => {
-    cy.request({url: 'http://localhost:5000/api/admin/diag/thread-dump', failOnStatusCode: false}).then((r) => {
+    // POST-only route (main.py admin_diag_thread_dump); a GET got 405.
+    cy.request({
+      method: 'POST',
+      url: `${Cypress.env('apiUrl')}/api/admin/diag/thread-dump`,
+      body: {reason: 'cypress J243'},
+      failOnStatusCode: false,
+    }).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 500, 503]);
+      if (r.status === 200) {
+        expect(r.body).to.include({success: true, reason: 'cypress J243'});
+        expect(r.body.threads_dumped).to.be.a('number');
+      }
     });
   });
 
   it('J244: GET /api/mcp/local/health responds 200 without auth', () => {
-    cy.request({url: 'http://localhost:5000/api/mcp/local/health', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/mcp/local/health`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 503]);
     });
   });
 
   it('J245: GET /api/tts/voices returns voice-list envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/tts/voices', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/tts/voices`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 404, 503]);
     });
   });
 
   it('J246: GET /api/prompts returns envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/prompts', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/prompts`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 404, 503]);
     });
   });
 
   it('J247: GET /api/voice/stt-stream-port returns envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/voice/stt-stream-port', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/voice/stt-stream-port`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 404, 503]);
     });
   });
 
   it('J248: GET /api/admin/diag/degradations returns envelope with count', () => {
-    cy.request({url: 'http://localhost:5000/api/admin/diag/degradations', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/admin/diag/degradations`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 500, 503]);
       if (r.status === 200) {
         expect(r.body).to.have.property('degradations');
@@ -147,7 +174,7 @@ describe('J240-J249: admin surfaces', () => {
   });
 
   it('J249: debug routes smoke — /api/admin/diag/paths', () => {
-    cy.request({url: 'http://localhost:5000/api/admin/diag/paths', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/admin/diag/paths`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 404, 503]);
     });
   });
@@ -164,7 +191,7 @@ describe('J250-J260: SPA routes + channels + kids + providers', () => {
   });
 
   it('J251: GET /api/admin/channels/registry returns adapter list', () => {
-    cy.request({url: 'http://localhost:5000/api/admin/channels/registry', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/admin/channels/registry`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 404, 503]);
     });
   });
@@ -172,7 +199,7 @@ describe('J250-J260: SPA routes + channels + kids + providers', () => {
   it('J252: POST /api/social/share returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/social/share',
+      url: `${Cypress.env('apiUrl')}/api/social/share`,
       body: {content: 'test-share'},
       failOnStatusCode: false,
     }).then((r) => {
@@ -182,7 +209,7 @@ describe('J250-J260: SPA routes + channels + kids + providers', () => {
 
   it('J253: GET /api/media/asset for kids game returns envelope', () => {
     cy.request({
-      url: 'http://localhost:5000/api/media/asset?prompt=cat&type=image&classification=public_educational',
+      url: `${Cypress.env('apiUrl')}/api/media/asset?prompt=cat&type=image&classification=public_educational`,
       failOnStatusCode: false,
       timeout: 30000,
     }).then((r) => {
@@ -196,7 +223,7 @@ describe('J250-J260: SPA routes + channels + kids + providers', () => {
   });
 
   it('J255: GET /api/admin/providers/capabilities returns envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/admin/providers/capabilities', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/admin/providers/capabilities`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 503]);
     });
   });
@@ -204,7 +231,7 @@ describe('J250-J260: SPA routes + channels + kids + providers', () => {
   it('J256: POST /api/admin/providers/<id>/test returns envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/admin/providers/openai/test',
+      url: `${Cypress.env('apiUrl')}/api/admin/providers/openai/test`,
       body: {},
       failOnStatusCode: false,
     }).then((r) => {
@@ -213,7 +240,7 @@ describe('J250-J260: SPA routes + channels + kids + providers', () => {
   });
 
   it('J257: GET /api/admin/providers/efficiency/leaderboard returns envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/admin/providers/efficiency/leaderboard', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/admin/providers/efficiency/leaderboard`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 503]);
     });
   });

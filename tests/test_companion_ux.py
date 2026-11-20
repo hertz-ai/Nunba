@@ -13,6 +13,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+# `patch('ctypes.windll.user32')` needs ctypes.windll, which only Windows has
+# (tests/conftest.py gives it to the other platforms).
+pytestmark = pytest.mark.usefixtures('windll_exists_off_windows')
+
 
 # NOTE: `TestWindowAcrylicBackdrop` used to live here, and it is GONE
 # rather than moved aside.  It was a partial mirror of assertions that

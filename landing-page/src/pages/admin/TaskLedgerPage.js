@@ -698,17 +698,26 @@ export default function TaskLedgerPage() {
   // time they appear (mirrors the prompt-level auto-expand at the
   // useEffect above).  Idempotent on re-render: only sets the key if
   // it's currently undefined.
+  //
+  // Both flow lists: the four-level view renders each session's flows
+  // (key `<prompt>__<session>__<flow>`), the three-level one the
+  // prompt-level list (key `<prompt>__<flow>`).  Walking only the
+  // prompt-level list left every rendered flow shut once the session
+  // layer existed (src/__tests__/components/Admin/TaskLedgerAutoExpand.test.js).
   useEffect(() => {
     setExpandedFlows((prev) => {
       const next = {...prev};
+      const hasLiveWork = (f) => f.tasks.some(t => {
+        const s = (t.status || '').toUpperCase();
+        return s === 'IN_PROGRESS' || s === 'BLOCKED';
+      });
       for (const g of groups) {
-        for (const f of (g.flowList || [])) {
-          if (next[f.key] === undefined) {
-            next[f.key] = f.tasks.some(t => {
-              const s = (t.status || '').toUpperCase();
-              return s === 'IN_PROGRESS' || s === 'BLOCKED';
-            });
-          }
+        const flows = [
+          ...(g.flowList || []),
+          ...(g.sessionList || []).flatMap((s) => s.flowList || []),
+        ];
+        for (const f of flows) {
+          if (next[f.key] === undefined) next[f.key] = hasLiveWork(f);
         }
       }
       return next;

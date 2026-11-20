@@ -40,21 +40,24 @@ describe('Mindstory Page', () => {
 
   it('renders the Mindstory page with header', () => {
     cy.socialVisit('/social/mindstory');
-    cy.contains('Mindstory', {timeout: 300000}).should('be.visible');
+    // The page header (MindstoryPage.jsx, an h6).  A bare
+    // cy.contains('Mindstory') found the sidebar's Mindstory link first,
+    // scrolled out of view inside the fixed drawer.
+    cy.contains('h6', 'Mindstory', {timeout: 30000}).should('be.visible');
     cy.contains('Create AI videos from any character').should('be.visible');
   });
 
   it('loads character cards from API', () => {
     cy.socialVisit('/social/mindstory');
     cy.wait('@getCharacters');
-    cy.contains('Einstein', {timeout: 300000}).should('be.visible');
+    cy.contains('Einstein', {timeout: 30000}).should('be.visible');
     cy.contains('Shakespeare').should('be.visible');
   });
 
   it('shows search input for filtering characters', () => {
     cy.socialVisit('/social/mindstory');
     cy.wait('@getCharacters');
-    cy.get('.input_Search', {timeout: 300000}).should('be.visible');
+    cy.get('.input_Search', {timeout: 30000}).should('be.visible');
   });
 
   it('filters characters by search term', () => {
@@ -68,8 +71,8 @@ describe('Mindstory Page', () => {
   it('opens Create Your Video modal on card button click', () => {
     cy.socialVisit('/social/mindstory');
     cy.wait('@getCharacters');
-    cy.contains('Create Your Video', {timeout: 300000}).first().click({force: true});
-    cy.get('.modal', {timeout: 300000}).should('be.visible');
+    cy.contains('Create Your Video', {timeout: 30000}).first().click({force: true});
+    cy.get('.modal', {timeout: 30000}).should('be.visible');
     cy.get('.inputmodal').should('be.visible');
   });
 
@@ -79,13 +82,17 @@ describe('Mindstory Page', () => {
     cy.contains('Create Your Video').first().click({force: true});
     cy.get('.inputmodal').type('short', {force: true});
     cy.get('.submitButton').click({force: true});
-    cy.contains('atleast 10 Character', {timeout: 300000}).should('be.visible');
+    cy.contains('atleast 10 Character', {timeout: 30000}).should('be.visible');
   });
 
   it('is accessible from the sidebar navigation', () => {
     cy.socialVisit('/social');
-    cy.contains('Mindstory', {timeout: 300000}).should('be.visible');
-    cy.contains('Mindstory').click({force: true});
+    // The link sits low in the sidebar, which scrolls inside a fixed
+    // drawer: scroll it into view as a person would, then click it.
+    cy.contains('a', 'Mindstory', {timeout: 30000})
+      .scrollIntoView()
+      .should('be.visible')
+      .click();
     cy.url().should('include', '/social/mindstory');
   });
 });

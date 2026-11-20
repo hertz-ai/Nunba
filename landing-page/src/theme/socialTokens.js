@@ -244,6 +244,15 @@ export const socialTokens = {
     '& > *': {scrollSnapAlign: 'start'},
   },
 
+  /**
+   * `bottom` for a bar fixed to the bottom of a social page.  Below md two
+   * fixed layers sit there and would cover it: the layout's BottomNavigation
+   * (bottom 0, 56px tall in all -- its safe-area padding sits inside those
+   * 56) and the collapsed NunbaChat pill above it (NunbaChatPill, bottom 58,
+   * measured 42px tall at 375px wide).  108 = 58 + 42 + an 8px gap.
+   */
+  aboveBottomNav: {xs: 'calc(108px + env(safe-area-inset-bottom, 0px))', md: 0},
+
   /** FAB position — bottom-nav + safe-area aware */
   fabPosition: {
     position: 'fixed',

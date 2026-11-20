@@ -1,4 +1,5 @@
 import React from 'react';
+import {createTheme} from '@mui/material/styles';
 import {screen, waitFor} from '@testing-library/react';
 
 import {renderWithProviders} from '../../../testHelpers';
@@ -37,6 +38,25 @@ describe('OnboardingChecklist Component', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     onboardingApi.getProgress.mockResolvedValue({data: mockProgress});
+  });
+
+  describe('Stacking', () => {
+    // Under the mobile menu (a temporary Drawer at zIndex.drawer), over the
+    // page chrome it overlaps on a phone: the AppBar and BottomNavigation
+    // (zIndex.appBar) and NunbaChatPill (1150, NunbaChatPill.jsx).  At
+    // 'modal' it covered the open menu; at speedDial (1050) the chat pill
+    // covered its close and expand controls.
+    test('sits under an open drawer and over the chat pill and app bars', async () => {
+      const {zIndex} = createTheme();
+      renderWithProviders(<OnboardingChecklist />);
+      const header = await screen.findByText(/Getting Started/);
+      const paper = header.closest('.MuiPaper-root');
+      const z = Number(window.getComputedStyle(paper).zIndex);
+      expect(Number.isFinite(z)).toBe(true);
+      expect(z).toBeLessThan(zIndex.drawer);
+      expect(z).toBeGreaterThan(zIndex.appBar);
+      expect(z).toBeGreaterThan(1150); // NunbaChatPill
+    });
   });
 
   describe('Rendering', () => {

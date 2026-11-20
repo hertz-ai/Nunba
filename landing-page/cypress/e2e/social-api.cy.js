@@ -10,7 +10,7 @@
  * - Error handling for non-existent endpoints
  */
 
-const API = 'http://localhost:5000';
+const API = `${Cypress.env('apiUrl')}`;
 
 describe('Social/Gamification Backend API - Public Endpoints', () => {
   describe('GET /api/social/challenges', () => {
@@ -1612,7 +1612,7 @@ describe('Social API - End-to-End Auth Flow', () => {
   it('should register a new user and receive valid response schema', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/social/auth/register',
+      url: `${Cypress.env('apiUrl')}/api/social/auth/register`,
       body: testUser,
       failOnStatusCode: false,
     }).then((response) => {
@@ -1639,7 +1639,7 @@ describe('Social API - End-to-End Auth Flow', () => {
   it('should login the registered user and receive JWT token', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/social/auth/login',
+      url: `${Cypress.env('apiUrl')}/api/social/auth/login`,
       body: {
         username: testUser.username,
         password: testUser.password,
@@ -1680,7 +1680,7 @@ describe('Social API - End-to-End Auth Flow', () => {
 
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/social/auth/me',
+      url: `${Cypress.env('apiUrl')}/api/social/auth/me`,
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
@@ -1709,7 +1709,7 @@ describe('Social API - End-to-End Auth Flow', () => {
 
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/social/posts',
+      url: `${Cypress.env('apiUrl')}/api/social/posts`,
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
@@ -1733,7 +1733,7 @@ describe('Social API - End-to-End Auth Flow', () => {
   it('should reject requests with invalid/expired token', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/social/auth/me',
+      url: `${Cypress.env('apiUrl')}/api/social/auth/me`,
       headers: {
         Authorization: 'Bearer invalid_token_12345',
         'Content-Type': 'application/json',

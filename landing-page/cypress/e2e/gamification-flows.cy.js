@@ -30,7 +30,7 @@ describe('Gamification User Flows', () => {
       cy.visit('/social/resonance', {timeout: 60000, failOnStatusCode: false});
 
       // Wait for React to render something inside root
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
       cy.get('#root').invoke('html').should('not.be.empty');
 
       // Page should render at least one child
@@ -59,7 +59,7 @@ describe('Gamification User Flows', () => {
       cy.visit('/social/resonance', {timeout: 60000, failOnStatusCode: false});
 
       // Page should still render (error state, empty state, or skeleton)
-      cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
+      cy.get('#root', {timeout: 30000}).invoke('html').should('not.be.empty');
       cy.get('#root').should('exist');
 
       // Verify the DOM is intact
@@ -72,11 +72,11 @@ describe('Gamification User Flows', () => {
       cy.visit('/social/resonance', {timeout: 60000, failOnStatusCode: false});
 
       // Wait for page to render
-      cy.get('#root', {timeout: 300000}).should('be.visible');
+      cy.get('#root', {timeout: 30000}).should('be.visible');
 
       // MUI components should be present (navigation, layout, or page content)
       cy.get('body')
-        .find('[class*="Mui"]', {timeout: 300000})
+        .find('[class*="Mui"]', {timeout: 30000})
         .should('have.length.at.least', 1);
     });
   });
@@ -86,7 +86,7 @@ describe('Gamification User Flows', () => {
       cy.visit('/social/challenges', {timeout: 60000, failOnStatusCode: false});
 
       // Verify page renders
-      cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
+      cy.get('#root', {timeout: 30000}).invoke('html').should('not.be.empty');
       cy.get('#root').should('exist');
     });
 
@@ -123,7 +123,7 @@ describe('Gamification User Flows', () => {
 
       cy.visit('/social/challenges', {timeout: 60000, failOnStatusCode: false});
 
-      cy.wait('@challengesSuccess', {timeout: 300000}).then((interception) => {
+      cy.wait('@challengesSuccess', {timeout: 30000}).then((interception) => {
         // Verify response structure from mock
         expect(interception.response.body).to.have.property('success', true);
         expect(interception.response.body).to.have.property('data');
@@ -147,10 +147,10 @@ describe('Gamification User Flows', () => {
 
       cy.visit('/social/challenges', {timeout: 60000, failOnStatusCode: false});
 
-      cy.wait('@challengesEmpty', {timeout: 300000});
+      cy.wait('@challengesEmpty', {timeout: 30000});
 
       // Page should still render (empty state)
-      cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
+      cy.get('#root', {timeout: 30000}).invoke('html').should('not.be.empty');
       cy.get('#root').should('exist');
     });
 
@@ -166,7 +166,7 @@ describe('Gamification User Flows', () => {
 
       cy.visit('/social/challenges', {timeout: 60000, failOnStatusCode: false});
 
-      cy.wait('@challengesError', {timeout: 300000});
+      cy.wait('@challengesError', {timeout: 30000});
 
       // Verify page does not crash
       cy.get('#root').should('exist');
@@ -179,7 +179,7 @@ describe('Gamification User Flows', () => {
       cy.visit('/social/achievements', {timeout: 60000, failOnStatusCode: false});
 
       // Verify page renders
-      cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
+      cy.get('#root', {timeout: 30000}).invoke('html').should('not.be.empty');
       cy.get('#root').should('exist');
     });
 
@@ -210,7 +210,7 @@ describe('Gamification User Flows', () => {
 
       cy.visit('/social/achievements', {timeout: 60000, failOnStatusCode: false});
 
-      cy.wait('@achievementsSuccess', {timeout: 300000});
+      cy.wait('@achievementsSuccess', {timeout: 30000});
 
       // Verify page renders
       cy.get('#root').invoke('html').should('not.be.empty');
@@ -229,7 +229,7 @@ describe('Gamification User Flows', () => {
       cy.visit('/social/achievements', {timeout: 60000, failOnStatusCode: false});
 
       // Page should still exist and not crash (component catches errors)
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
       cy.get('#root').invoke('html').should('not.be.empty');
     });
   });
@@ -239,7 +239,7 @@ describe('Gamification User Flows', () => {
       cy.visit('/social/seasons', {timeout: 60000, failOnStatusCode: false});
 
       // Verify page renders
-      cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
+      cy.get('#root', {timeout: 30000}).invoke('html').should('not.be.empty');
       cy.get('#root').should('exist');
     });
 
@@ -266,7 +266,7 @@ describe('Gamification User Flows', () => {
 
       cy.visit('/social/seasons', {timeout: 60000, failOnStatusCode: false});
 
-      cy.wait('@seasonSuccess', {timeout: 300000}).then((interception) => {
+      cy.wait('@seasonSuccess', {timeout: 30000}).then((interception) => {
         expect(interception.response.body).to.have.property('success', true);
         expect(interception.response.body).to.have.property('data');
         expect(interception.response.body.data).to.be.an('object');
@@ -289,7 +289,7 @@ describe('Gamification User Flows', () => {
 
       cy.visit('/social/seasons', {timeout: 60000, failOnStatusCode: false});
 
-      cy.wait('@noSeason', {timeout: 300000});
+      cy.wait('@noSeason', {timeout: 30000});
 
       // Page should render empty state
       cy.get('#root').should('exist');
@@ -308,7 +308,7 @@ describe('Gamification User Flows', () => {
 
       cy.visit('/social/seasons', {timeout: 60000, failOnStatusCode: false});
 
-      cy.wait('@seasonError', {timeout: 300000});
+      cy.wait('@seasonError', {timeout: 30000});
 
       // Verify page does not crash
       cy.get('#root').should('exist');
@@ -320,26 +320,26 @@ describe('Gamification User Flows', () => {
     it('should navigate between all gamification pages without crashing', () => {
       // Visit resonance dashboard
       cy.visit('/social/resonance', {timeout: 60000, failOnStatusCode: false});
-      cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
+      cy.get('#root', {timeout: 30000}).invoke('html').should('not.be.empty');
 
       // Navigate to challenges
       cy.visit('/social/challenges', {timeout: 60000, failOnStatusCode: false});
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
       cy.get('#root').invoke('html').should('not.be.empty');
 
       // Navigate to achievements
       cy.visit('/social/achievements', {timeout: 60000, failOnStatusCode: false});
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
       cy.get('#root').invoke('html').should('not.be.empty');
 
       // Navigate to seasons
       cy.visit('/social/seasons', {timeout: 60000, failOnStatusCode: false});
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
       cy.get('#root').invoke('html').should('not.be.empty');
 
       // Navigate back to resonance
       cy.visit('/social/resonance', {timeout: 60000, failOnStatusCode: false});
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
       cy.get('#root').invoke('html').should('not.be.empty');
     });
 
@@ -353,7 +353,7 @@ describe('Gamification User Flows', () => {
 
       pages.forEach((page) => {
         cy.visit(page, {timeout: 60000, failOnStatusCode: false});
-        cy.get('#root', {timeout: 300000}).should('exist');
+        cy.get('#root', {timeout: 30000}).should('exist');
       });
 
       // Final check - app should still be functional
@@ -367,7 +367,7 @@ describe('Gamification User Flows', () => {
       cy.visit('/social/resonance', {timeout: 60000, failOnStatusCode: false});
 
       // Verify page renders at mobile size
-      cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
+      cy.get('#root', {timeout: 30000}).invoke('html').should('not.be.empty');
       cy.get('#root').should('be.visible');
     });
 
@@ -376,7 +376,7 @@ describe('Gamification User Flows', () => {
       cy.visit('/social/challenges', {timeout: 60000, failOnStatusCode: false});
 
       // Verify page renders at tablet size
-      cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
+      cy.get('#root', {timeout: 30000}).invoke('html').should('not.be.empty');
       cy.get('#root').should('be.visible');
     });
 
@@ -385,7 +385,7 @@ describe('Gamification User Flows', () => {
       cy.visit('/social/achievements', {timeout: 60000, failOnStatusCode: false});
 
       // Verify page renders at small mobile size
-      cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
+      cy.get('#root', {timeout: 30000}).invoke('html').should('not.be.empty');
       cy.get('#root').should('be.visible');
     });
 
@@ -394,7 +394,7 @@ describe('Gamification User Flows', () => {
       cy.visit('/social/seasons', {timeout: 60000, failOnStatusCode: false});
 
       // Verify page renders
-      cy.get('#root', {timeout: 300000}).should('be.visible');
+      cy.get('#root', {timeout: 30000}).should('be.visible');
       cy.get('#root').invoke('html').should('not.be.empty');
     });
   });
@@ -413,11 +413,11 @@ describe('Gamification User Flows', () => {
       cy.visit('/social/challenges', {timeout: 60000, failOnStatusCode: false});
 
       // Page should render loading state even before API responds
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
       cy.get('#root').invoke('html').should('not.be.empty');
 
       // Eventually the slow API will complete
-      cy.wait('@slowAPI', {timeout: 300000});
+      cy.wait('@slowAPI', {timeout: 30000});
     });
 
     it('should handle malformed API response on achievements page', () => {
@@ -430,7 +430,7 @@ describe('Gamification User Flows', () => {
       cy.visit('/social/achievements', {timeout: 60000, failOnStatusCode: false});
 
       // Page should not crash despite malformed response
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
       cy.window().then((win) => {
         expect(win.document.querySelector('#root')).to.exist;
       });
@@ -457,12 +457,12 @@ describe('Gamification User Flows', () => {
 
       // First visit - gets error
       cy.visit('/social/challenges', {timeout: 60000, failOnStatusCode: false});
-      cy.wait('@retryAPI', {timeout: 300000});
+      cy.wait('@retryAPI', {timeout: 30000});
       cy.get('#root').should('exist');
 
       // Reload page - should get success
       cy.reload();
-      cy.wait('@retryAPI', {timeout: 300000});
+      cy.wait('@retryAPI', {timeout: 30000});
       cy.get('#root').should('exist');
       cy.get('#root').invoke('html').should('not.be.empty');
     });
@@ -474,7 +474,7 @@ describe('Gamification User Flows', () => {
 
       cy.visit('/social/resonance', {timeout: 60000, failOnStatusCode: false});
 
-      cy.get('#root', {timeout: 300000})
+      cy.get('#root', {timeout: 30000})
         .invoke('html')
         .should('not.be.empty')
         .then(() => {
@@ -498,7 +498,7 @@ describe('Gamification User Flows', () => {
         const startTime = Date.now();
 
         cy.visit(page.url, {timeout: 60000, failOnStatusCode: false});
-        cy.get('#root', {timeout: 300000})
+        cy.get('#root', {timeout: 30000})
           .invoke('html')
           .should('not.be.empty')
           .then(() => {
@@ -835,8 +835,8 @@ describe('Authenticated Gamification Flows', () => {
     it('should load resonance dashboard page with auth', () => {
       cy.socialVisit('/social/resonance');
 
-      cy.get('#root', {timeout: 300000}).should('exist');
-      cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
+      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.get('#root', {timeout: 30000}).invoke('html').should('not.be.empty');
       cy.url().should('include', '/social/resonance');
     });
   });

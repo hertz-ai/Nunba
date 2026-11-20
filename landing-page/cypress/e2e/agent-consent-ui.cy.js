@@ -16,8 +16,8 @@
  * subscribed device sharing the same user_id.
  *
  * The realtimeService singleton is exposed on window as
- * `__realtimeService` in non-production builds (see
- * realtimeService.js bottom of file).
+ * `__realtimeService` in dev builds, and in any build inside a Cypress
+ * run (see realtimeService.js bottom of file).
  */
 
 const CONSENT_REQUEST = {
@@ -50,7 +50,7 @@ describe('agent consent UI', () => {
       },
     });
 
-    // realtimeService is exposed for dev/test in non-production builds.
+    // realtimeService is exposed in dev builds and inside a Cypress run.
     // Wait until App.js's useEffect has registered the listener.
     cy.window().should((win) => {
       const listeners = win.__realtimeService?._listeners?.get(

@@ -14,7 +14,7 @@ Cypress.on('uncaught:exception', () => false);
 // Uses fetch() via cy.wrap to gracefully handle connection-refused (cy.request throws)
 before(() => {
   cy.wrap(
-    fetch('http://localhost:5000/api/social/test/reset-rate-limits', {
+    fetch(`${Cypress.env('apiUrl')}/api/social/test/reset-rate-limits`, {
       method: 'POST',
     }).catch(() => {
       /* backend not running — OK for stub-based tests */
@@ -44,11 +44,49 @@ beforeEach(() => {
   });
 });
 
+// The live event stream (/api/social/events/stream), closed for every test.
+// Each page the app opens holds at least one stream (the admin agent
+// dashboard opens a second), and on CI's Flask (Hypercorn) a stream whose
+// page has gone keeps its worker thread until main.py's _SSE_STREAM_MAX_S
+// (300 s).  A shard opens hundreds: CI run 44481178298, shard 2 reached 128
+// streams, all 128 worker threads, at 08:47:02, and no worker thread logged
+// anything until 08:48:11, while social-pages "rapid navigation" timed out
+// on cy.visit.  What the stream carries breaks specs too: the
+// runner's backend has no model, so its boot pushes an 'llm Failed'
+// setup_progress card into the chat, and a non-empty chat has no empty-chat
+// block (chat-agent-selection 1.1-1.4, CI run 44481178298 shard 3).  No spec
+// asserts on an event the real backend pushes; specs that need one inject it
+// through window.__realtimeService.
+//
+// The 204 fails the EventSource; realtimeService reopens it every 3 s and
+// each reopen gets this stub again, so nothing reaches the backend.  It also
+// answers fetch() and EventSource calls made from spec code.  A test that
+// needs the real stream opts out in its config, for a describe or one it():
+//   describe('...', {env: {realEventStream: true}}, () => { ... });
+// A test's own cy.intercept that answers the stream with a status or a body
+// wins over this one, and nothing reaches the server.  Two cases that differ:
+//   - a spy-only cy.intercept does not reach the server either: the request
+//     passes on to this 204.  To watch the real stream, opt out as above;
+//   - {forceNetworkError: true} gives the page a network error, but Cypress
+//     still sends the request to the server, which opens a real stream
+//     (measured with a scratch Cypress 15.11.0 project: 2 to 3 server hits
+//     per test).  A status stub (500 and 204 measured: 0 server hits)
+//     keeps the server out.
+// cy.request and cy.task never pass through cy.intercept, so they reach the
+// real server whatever this stub does.
+beforeEach(() => {
+  if (Cypress.env('realEventStream')) return;
+  cy.intercept('GET', '**/api/social/events/stream*', {
+    statusCode: 204,
+    body: '',
+  }).as('eventStream');
+});
+
 // ---------------------------------------------------------------------------
 // Social Auth Custom Commands
 // ---------------------------------------------------------------------------
 
-const API_BASE = 'http://localhost:5000';
+const API_BASE = `${Cypress.env('apiUrl')}`;
 const SOCIAL_API = `${API_BASE}/api/social`;
 
 // Generate unique test user credentials
@@ -381,6 +419,71 @@ Cypress.Commands.add('clearAuthState', () => {
   Cypress.env('socialUserId', null);
   Cypress.env('socialUsername', null);
 });
+
+/**
+ * A HART already sealed on this machine, as the onboarding ceremony leaves
+ * it: the keys applyHartSeal (src/hooks/useAuthSession.js) writes.  Without
+ * them /local shows LightYourHART ("What language feels like home?") instead
+ * of the chat (Agent.js, HART ONBOARDING GATE).  Call it before cy.visit.
+ *
+ * {loggedOut: true} is that HART after a logout: clearAuth (same file)
+ * removes guest_mode and the auth keys and keeps the hart_* keys and
+ * guest_name, so /local is the chat with no one signed in.
+ */
+Cypress.Commands.add('sealHart', (name = 'CypressTest', language = 'en', {loggedOut = false} = {}) => {
+  localStorage.setItem('hart_sealed', 'true');
+  localStorage.setItem('hart_name', name);
+  localStorage.setItem('hart_language', language);
+  localStorage.setItem('guest_name', name);
+  if (!loggedOut) localStorage.setItem('guest_mode', 'true');
+});
+
+/**
+ * /local as the chat a returning guest sees, ready to type into:
+ *  - a sealed HART (cy.sealHart above);
+ *  - the speech-consent question answered, so Demopage's
+ *    ProactiveConciergeCard is not where the empty-chat block belongs
+ *    ('granted' when a test needs speech);
+ *  - a local LLM that is up.  On a runner with none, /api/llm/status makes
+ *    Demopage queue every send for ENGINE_BOOT_GRACE_MS (20 s,
+ *    hooks/useLocalEngineReady) and its ?full=1 check appends a
+ *    "Local LLM Setup" card to the chat.
+ * onBeforeLoad runs before the page's own scripts, e.g. to put a fake
+ * window.pywebview in place the way the desktop window has one.
+ */
+Cypress.Commands.add('openLocalChat', ({consent = 'text_only', name = 'CypressTest', onBeforeLoad} = {}) => {
+  cy.intercept('GET', '**/api/llm/status*', {
+    statusCode: 200,
+    body: {available: true, setup_needed: false},
+  });
+  cy.sealHart(name);
+  cy.then(() => {
+    localStorage.setItem('nunba_speech_consent', consent);
+    if (consent === 'granted') localStorage.setItem('tts_enabled', 'true');
+  });
+  cy.visit('/local', {timeout: 60000, failOnStatusCode: false, ...(onBeforeLoad ? {onBeforeLoad} : {})});
+});
+
+/**
+ * An MCP tool call the way an external MCP client makes it (J15): the
+ * bridge's own bearer, read from the admin token route, which answers on
+ * loopback.  Yields the /api/mcp/local/tools/execute response.
+ */
+Cypress.Commands.add('mcpExecute', (tool, args) =>
+  cy.request({url: `${API_BASE}/api/admin/mcp/token`, failOnStatusCode: false})
+    .then((t) => {
+      expect(t.status, 'MCP token route').to.eq(200);
+      expect(t.body.token, 'MCP bearer').to.be.a('string').and.not.be.empty;
+      return cy.request({
+        method: 'POST',
+        url: `${API_BASE}/api/mcp/local/tools/execute`,
+        headers: {Authorization: `Bearer ${t.body.token}`},
+        body: {tool, arguments: args},
+        failOnStatusCode: false,
+        timeout: 60000,
+      });
+    })
+);
 
 /**
  * Verify that a request with the given token succeeds

@@ -29,15 +29,17 @@ const installBaselineStubs = () => {
   cy.intercept('GET', '**/api/social/onboarding/progress', {statusCode: 200, body: {success: true}});
   cy.intercept('GET', '**/api/social/notifications*', {statusCode: 200, body: {success: true, data: []}});
   cy.intercept('GET', '**/api/social/encounters/suggestions', {statusCode: 200, body: {success: true, data: []}});
-  cy.intercept('GET', '**/api/v1/system/tiers', {statusCode: 200, body: {current: 'lite', tiers: [
-    {name: 'embedded', label: 'Embedded', min_vram_gb: 0},
-    {name: 'lite', label: 'Lite', min_vram_gb: 0},
-    {name: 'standard', label: 'Standard', min_vram_gb: 4},
-    {name: 'full', label: 'Full', min_vram_gb: 10},
-    {name: 'compute_host', label: 'Compute Host', min_vram_gb: 24},
+  // The tier table as core.gpu_tier serves it (names ultra / full /
+  // standard / none, each with the short label GpuTierBadge shows), and a
+  // health answer that names this box's tier, which is what picks the row.
+  cy.intercept('GET', '**/api/v1/system/tiers', {statusCode: 200, body: {tiers: [
+    {name: 'ultra', label: 'Ultra GPU', short: 'Ultra', min_vram_gb: 24, description: '24GB+ VRAM.'},
+    {name: 'full', label: 'Full GPU', short: 'Full', min_vram_gb: 10, description: '10GB+ VRAM.'},
+    {name: 'standard', label: 'Standard GPU', short: 'Standard', min_vram_gb: 4, description: 'Heavy model only.'},
+    {name: 'none', label: 'CPU', short: 'CPU', min_vram_gb: 0, description: 'No CUDA GPU detected.'},
   ]}});
   cy.intercept('GET', '**/backend/health', {statusCode: 200, body: {
-    healthy: true, local: {available: true}, loading: false,
+    healthy: true, local: {available: true}, loading: false, gpu_tier: 'standard',
   }});
   cy.intercept('GET', '**/api/guest-id', {statusCode: 200, body: {guest_id: 'g_test_fixture_123'}});
 };
@@ -53,11 +55,12 @@ describe('J01: fresh install → first chat turn', () => {
     cy.clearLocalStorage();
   });
 
-  it('renders the local chat shell on first visit without an auth token', () => {
+  it('opens the first-run HART ceremony on first visit without an auth token', () => {
     cy.visit('/local', {failOnStatusCode: false});
-    // The chat shell must be visible on first paint — no onboarding gate
-    // for flat-topology guest users.
-    cy.contains(/chat|say something|type a message/i, {timeout: 10000}).should('exist');
+    // A fresh install has no sealed HART, so /local is LightYourHART (Agent.js
+    // HART ONBOARDING GATE) and its first question, not the chat.
+    cy.contains(/What language feels like home/i, {timeout: 20000}).should('be.visible');
+    cy.get('textarea').should('not.exist');
   });
 
   it('persists a stable guest id into localStorage on first render', () => {
@@ -69,9 +72,9 @@ describe('J01: fresh install → first chat turn', () => {
   });
 
   it('shows GPU tier badge on the chat header (read from /api/v1/system/tiers)', () => {
-    cy.visit('/local', {failOnStatusCode: false});
-    // Badge text comes from tiers[].label — tolerant match on any tier.
-    cy.contains(/(embedded|lite|standard|full|compute host)/i, {timeout: 10000}).should('exist');
+    cy.openLocalChat();
+    // GpuTierBadge shows the short label of the tier /backend/health names.
+    cy.get('[role="status"]', {timeout: 30000}).contains(/^Standard$/).should('be.visible');
   });
 });
 
@@ -97,12 +100,12 @@ describe('J02: guest chat — draft-first dispatcher routing', () => {
       },
     }).as('chatTurn');
 
-    cy.visit('/local', {failOnStatusCode: false});
-    cy.contains(/chat|say something|type a message/i, {timeout: 10000});
+    // A sealed HART: unsealed, /local is the onboarding and has no chat.
+    cy.openLocalChat();
 
     // Type into the chat input; rely on placeholder-based selector so
     // the spec survives CSS refactors.
-    cy.get('textarea, input[type="text"]').first().type('hello{enter}', {force: true});
+    cy.get('textarea', {timeout: 30000}).first().type('hello{enter}', {force: true});
     cy.wait('@chatTurn').its('response.statusCode').should('eq', 200);
     cy.contains('Hi there!').should('exist');
   });
@@ -115,9 +118,9 @@ describe('J02: guest chat — draft-first dispatcher routing', () => {
       req.reply({statusCode: 200, body: {text: 'ok', source: 'local'}});
     }).as('chatTurn');
 
-    cy.visit('/local', {failOnStatusCode: false});
-    cy.contains(/chat|say something|type a message/i, {timeout: 10000});
-    cy.get('textarea, input[type="text"]').first().type('test{enter}', {force: true});
+    // A sealed HART: unsealed, /local is the onboarding and has no chat.
+    cy.openLocalChat();
+    cy.get('textarea', {timeout: 30000}).first().type('test{enter}', {force: true});
     cy.wait('@chatTurn');
   });
 });
@@ -133,8 +136,8 @@ describe('J03: language switch to Tamil → draft evicted, Indic Parler loaded',
 
   it('persists hart_language=ta to localStorage when Tamil is selected', () => {
     cy.intercept('POST', '**/chat', {statusCode: 200, body: {text: 'வணக்கம்', source: 'local'}}).as('chatTa');
-    cy.visit('/local', {failOnStatusCode: false});
-    cy.contains(/chat|say something|type a message/i, {timeout: 10000});
+    // A sealed HART: unsealed, /local is the onboarding and has no chat.
+    cy.openLocalChat();
 
     // Simulate language switch via the hart_language key directly —
     // the language selector UI varies across topologies; writing the
@@ -142,7 +145,7 @@ describe('J03: language switch to Tamil → draft evicted, Indic Parler loaded',
     cy.window().then((win) => {
       win.localStorage.setItem('hart_language', 'ta');
     });
-    cy.get('textarea, input[type="text"]').first().type('வணக்கம்{enter}', {force: true});
+    cy.get('textarea', {timeout: 30000}).first().type('வணக்கம்{enter}', {force: true});
     cy.wait('@chatTa');
     cy.window().its('localStorage').invoke('getItem', 'hart_language').should('eq', 'ta');
   });
@@ -152,10 +155,10 @@ describe('J03: language switch to Tamil → draft evicted, Indic Parler loaded',
       expect(req.body.preferred_lang).to.eq('ta');
       req.reply({statusCode: 200, body: {text: 'reply', source: 'local'}});
     }).as('chatLangged');
-    cy.visit('/local', {failOnStatusCode: false});
-    cy.contains(/chat|say something|type a message/i, {timeout: 10000});
+    // A sealed HART: unsealed, /local is the onboarding and has no chat.
+    cy.openLocalChat();
     cy.window().then((win) => win.localStorage.setItem('hart_language', 'ta'));
-    cy.get('textarea, input[type="text"]').first().type('hi{enter}', {force: true});
+    cy.get('textarea', {timeout: 30000}).first().type('hi{enter}', {force: true});
     cy.wait('@chatLangged');
   });
 });
@@ -170,10 +173,11 @@ describe('J04: voice pipeline round-trip (STT → chat → TTS)', () => {
   });
 
   it('renders the voice (microphone) control on the chat shell', () => {
-    cy.visit('/local', {failOnStatusCode: false});
+    // The composer's mic is ChatInputBar's "Voice input" button.
+    cy.openLocalChat();
     // Microphone button uses a recognisable icon / aria-label; match
     // case-insensitively on the accessibility name.
-    cy.get('button[aria-label*="mic" i], button[aria-label*="voice" i], button[title*="mic" i], button[title*="voice" i]', {timeout: 10000})
+    cy.get('button[aria-label*="mic" i], button[aria-label*="voice" i], button[title*="mic" i], button[title*="voice" i]', {timeout: 30000})
       .should('exist');
   });
 
@@ -182,9 +186,11 @@ describe('J04: voice pipeline round-trip (STT → chat → TTS)', () => {
       statusCode: 200,
       body: {available: true, backend: 'piper', has_gpu: false},
     }).as('ttsStatus');
+    // The page that asks /tts/status is the first-run ceremony: choosing a
+    // language warms that language's voice (LightYourHART selectLanguage ->
+    // warmUp).  The chat itself does not ask.
     cy.visit('/local', {failOnStatusCode: false});
-    // Any interaction that triggers useTTS mount effect is enough; the
-    // shell's initial render already does this for the microphone button.
+    cy.contains('button', /^English$/, {timeout: 20000}).click();
     cy.wait('@ttsStatus', {timeout: 15000}).its('response.statusCode').should('eq', 200);
   });
 });
@@ -244,12 +250,11 @@ describe('J05: camera consent → frame stream → visual context', () => {
           body: {text: 'I can see a cup on the desk.', source: 'local', tool_used: 'Visual_Context_Camera'},
         });
       }).as('chatWithVision');
-      cy.visit('/local', {failOnStatusCode: false});
-      cy.contains(/chat|say something|type a message/i, {timeout: 10000});
+      cy.openLocalChat();
       cy.window().then((win) => {
         win.dispatchEvent(new win.CustomEvent('NUNBA_CAMERA_CONSENT', {detail: {granted: true}}));
       });
-      cy.get('textarea, input[type="text"]').first().type('what do you see{enter}', {force: true});
+      cy.get('textarea', {timeout: 30000}).first().type('what do you see{enter}', {force: true});
       cy.wait('@chatWithVision').its('response.body.tool_used').should('eq', 'Visual_Context_Camera');
     } else {
       // Live mode — skip silent because we can't grant camera consent

@@ -124,8 +124,12 @@ class TestServingModelFileReadsTheServerNotTheConfig:
         return c
 
     def test_it_reads_the_openai_shape(self):
-        c = self._cfg_with_response(
-            {'data': [{'id': 'C:\\\\models\\\\Qwen3.5-4B-UD-Q4_K_XL.gguf'}]})
+        # The id is the -m path the server was started with, so it is in the
+        # HOST's form: C:\models\... on Windows, /models/... on Linux/macOS.
+        # A hard-coded Windows path is not a path os.path can split there.
+        model_id = os.path.join(os.path.abspath(os.sep), 'models',
+                                'Qwen3.5-4B-UD-Q4_K_XL.gguf')
+        c = self._cfg_with_response({'data': [{'id': model_id}]})
         assert c.serving_model_file() == 'Qwen3.5-4B-UD-Q4_K_XL.gguf'
 
     def test_it_reads_the_llama_server_shape(self):

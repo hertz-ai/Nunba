@@ -57,7 +57,11 @@ def _orch(catalog_entries, auto_load_result=None, on_auto_load=None):
     orch = MagicMock(spec=ModelOrchestrator)
     orch._catalog = catalog
 
-    def _auto_load(model_type, language=None):
+    # **kwargs: the real auto_load forwards them to select_best, and the
+    # worker passes `exclude` for TTS.  A double without it raised TypeError
+    # there, which the worker turned into 'failed' -- a TTS test then passed
+    # for the wrong reason (review of 888f62b3).
+    def _auto_load(model_type, language=None, **kwargs):
         if on_auto_load:
             on_auto_load()
         return auto_load_result
@@ -65,8 +69,10 @@ def _orch(catalog_entries, auto_load_result=None, on_auto_load=None):
     return orch
 
 
-def _run_worker(plan, orch):
-    """Run the real worker with the plan and orchestrator injected."""
+def _run_worker(plan, orch, exclusions=()):
+    """Run the real worker with the plan and orchestrator injected.  The TTS
+    exclusions are given here, so no real TTS engine is built."""
+    exclusions = list(exclusions)
     mod = MagicMock()
     mod.get_orchestrator.return_value = orch
     catalog_mod = MagicMock()
@@ -79,6 +85,7 @@ def _run_worker(plan, orch):
                 'cuda_available': False}), \
             patch.object(lb, '_create_plan', return_value=plan), \
             patch.object(lb, '_refresh_vram'), \
+            patch.object(lb, '_tts_exclusions', return_value=exclusions), \
             patch.object(lb, 'BOOTSTRAP_ORDER', list(plan)):
         lb._bootstrap_worker('en')
     with lb._lock:
@@ -134,7 +141,26 @@ class TestRealFailuresStayVisible:
         parler = _entry('tts-indic-parler', ModelType.TTS, loaded=False)
         orch = _orch([piper, parler], auto_load_result=None)
         steps = _run_worker({ModelType.TTS: _planned(ModelType.TTS, parler.id)}, orch)
-        assert steps[ModelType.TTS][0] == 'failed'
+        status, detail = steps[ModelType.TTS]
+        assert status == 'failed'
+        # Failed because nothing loaded -- not because the double raised.
+        assert 'Load error' not in detail, detail
+
+
+class TestTtsLoadSkipsUnusableEngines:
+
+    def test_tts_auto_load_gets_the_same_exclusions_as_the_plan(self):
+        """The engine loaded must be the engine planned: auto_load gets the
+        exclusions too, or it would pick NeuTTS Air again (888f62b3)."""
+        parler = _entry('tts-indic-parler', ModelType.TTS, loaded=False)
+        llm = _entry('llm-qwen3.5-2b', ModelType.LLM, loaded=False)
+        orch = _orch([parler, llm], auto_load_result=None)
+        _run_worker({ModelType.TTS: _planned(ModelType.TTS, parler.id),
+                     ModelType.LLM: _planned(ModelType.LLM, llm.id)},
+                    orch, exclusions=['tts-neutts-air'])
+        by_type = {c.args[0]: c.kwargs for c in orch.auto_load.call_args_list}
+        assert by_type[ModelType.TTS].get('exclude') == ['tts-neutts-air']
+        assert 'exclude' not in by_type[ModelType.LLM]
 
 
 class TestOneLoadedLookup:

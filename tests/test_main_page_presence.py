@@ -95,7 +95,7 @@ def test_the_js_api_method_survives_compose_js_api():
     api = compose_js_api(WindowApi(lambda: None), FilePickerApi(lambda: None))
     presence = MainPagePresence()
     api.main_page_presence = MainPagePresenceApi(presence).main_page_presence
-    assert callable(getattr(api, 'main_page_presence'))
+    assert callable(api.main_page_presence)
     api.main_page_presence(False)
     assert presence.companion_may_show() is True
 

@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
 
@@ -46,6 +47,84 @@ def _private_tts_state_file(tmp_path, monkeypatch):
     machine by a test run).  tests/test_tts_state_isolation.py pins it.
     """
     monkeypatch.setenv('NUNBA_TTS_STATE_PATH', str(tmp_path / 'tts_state.json'))
+
+
+# ---------------------------------------------------------------------------
+# main.app is used once HARTOS has finished booting it, as a person would.
+# ---------------------------------------------------------------------------
+
+#: How long one session waits for HARTOS's social tables, once.
+_HARTOS_SOCIAL_DB_WAIT_S = 180
+_hartos_social_db_waited = False
+
+
+def _hartos_social_api_ready() -> bool:
+    """The social login route is on main.app AND its users table exists.
+
+    Both, because either alone can be true early: the route is registered
+    before the tables are made, and a box that ran before already has the
+    tables in its data dir before the route is registered."""
+    main_mod = sys.modules.get('main')
+    app = getattr(main_mod, 'app', None)
+    if app is None or '/api/social/auth/login' not in {
+            r.rule for r in app.url_map.iter_rules()}:
+        return False
+    from integrations.social.models import get_engine
+    from sqlalchemy import inspect
+    try:
+        return inspect(get_engine()).has_table('users')
+    except Exception:  # noqa: BLE001 - mid-boot: not ready yet, ask again
+        return False
+
+
+@pytest.fixture(autouse=True)
+def _hartos_social_db_ready():
+    """Wait (once per session) until the HARTOS boot that ``import main``
+    starts has created the social tables.
+
+    The bootstrap thread registers the social routes at steps 2-3 and creates
+    their tables at step 6 (hartos_bootstrap._run_bootstrap: init_db +
+    run_migrations).  A test that posted to /api/social/auth/register before
+    then got a 404 (no route yet) or "sqlite3.OperationalError: no such
+    table: users" (route, no table): 175 tests on macOS in #72, where the
+    thread ran slower than on ubuntu and windows.  The users table exists
+    only after both, so it is the condition waited on; the steps after it
+    (agent engine, supervisors) are not waited for.
+
+    Acts only once something has started that thread (a fixture imported
+    main), and stops waiting when the thread ends, whatever it managed.
+    """
+    global _hartos_social_db_waited
+    if _hartos_social_db_waited:
+        return
+    boot = sys.modules.get('hartos.hartos_bootstrap')
+    thread = boot.get_bootstrap_thread() if boot else None
+    if thread is None:
+        return
+    _hartos_social_db_waited = True
+    deadline = time.monotonic() + _HARTOS_SOCIAL_DB_WAIT_S
+    while thread.is_alive() and time.monotonic() < deadline:
+        if _hartos_social_api_ready():
+            return
+        time.sleep(0.5)
+
+
+@pytest.fixture
+def windll_exists_off_windows(monkeypatch):
+    """`patch('ctypes.windll.user32')` needs `ctypes.windll` to exist, and
+    it only exists on Windows.  CI runs these files on ubuntu and macOS too,
+    where every such patch raised AttributeError before the test body ran.
+    On Windows the real one is left alone.
+
+    One definition for every file that patches a Win32 library by that
+    dotted name (it lived in tests/test_glass.py alone, and test_companion_ux
+    and test_model_storage_path hit the same failure): ask for it with
+    ``pytestmark = pytest.mark.usefixtures('windll_exists_off_windows')``.
+    """
+    import ctypes
+    from unittest.mock import MagicMock
+    if not hasattr(ctypes, 'windll'):
+        monkeypatch.setattr(ctypes, 'windll', MagicMock(), raising=False)
 
 
 # ---------------------------------------------------------------------------

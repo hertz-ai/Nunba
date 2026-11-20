@@ -1811,11 +1811,11 @@ export default function AgentProfilePage() {
         </Box>
       )}
 
-      {/* ═══ Fixed Bottom: Chat + Endorse ═══ */}
+      {/* ═══ Fixed Bottom: Chat + Endorse (above the mobile nav and chat pill) ═══ */}
       <Box
         sx={{
           position: 'fixed',
-          bottom: 0,
+          bottom: socialTokens.aboveBottomNav,
           left: 0,
           right: 0,
           p: 2,
