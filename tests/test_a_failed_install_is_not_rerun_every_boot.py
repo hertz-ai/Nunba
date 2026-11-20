@@ -19,7 +19,6 @@ import threading
 import types
 
 import pytest
-
 from integrations.service_tools import model_catalog as mc
 from integrations.service_tools.model_catalog import ModelCatalog, ModelEntry
 
@@ -56,7 +55,8 @@ def boot(tmp_path, monkeypatch):
 @pytest.fixture
 def installs(monkeypatch):
     """Count the pip installs, answer with `answer`, run the thread inline."""
-    from tts import package_installer, tts_engine as te
+    from tts import package_installer
+    from tts import tts_engine as te
     state = {'calls': 0, 'answer': (False, 'pip: OSError [Errno 2] path too long')}
 
     def _install(backend, progress_cb=None):

@@ -2474,8 +2474,7 @@ def _hub_snapshot_download(repo_id: str, **kwargs):
     gated or missing repo as _WeightsRefused instead of a raw HTTP error that
     raised out of setup."""
     from huggingface_hub import snapshot_download
-    from huggingface_hub.errors import (
-        GatedRepoError, HfHubHTTPError, RepositoryNotFoundError)
+    from huggingface_hub.errors import GatedRepoError, HfHubHTTPError, RepositoryNotFoundError
     token = _hf_token()
     if token:
         kwargs.setdefault('token', token)
@@ -2523,6 +2522,7 @@ def _answers_refused_downloads(download):
         except _WeightsRefused as refused:
             if refused.ask_for_key:
                 import json
+
                 from hartos.ai_key_vault import request_credential
                 request_credential(json.dumps({
                     'resource_type': 'api_key',
