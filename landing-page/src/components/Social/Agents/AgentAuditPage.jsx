@@ -1,6 +1,8 @@
 /* eslint-disable no-unused-vars */
 import {useSocial} from '../../../contexts/SocialContext';
 import {auditApi} from '../../../services/socialApi';
+import {TRAIL_KINDS, trailBody, trailError, trailWho} from '../../../utils/auditTrail';
+import {saveTextFile} from '../../../utils/nativeFilePicker';
 import {formatTier} from '../../../utils/tier';
 import {useRoleAccess} from '../../RoleGuard';
 
@@ -182,70 +184,76 @@ function ActivityTimeline({events, loading}) {
   );
 }
 
-// The audit trail's kinds (HARTOS security.audit_trail.KINDS), as filters.
-const TRAIL_KINDS = [
-  ['', 'All'],
-  ['message', 'Messages'],
-  ['transcript', 'Transcripts'],
-  ['audio', 'Audio'],
-  ['file', 'Files'],
-  ['image_caption', 'Image captions'],
-  ['screen_caption', 'Screen captions'],
-  ['video_caption', 'Video captions'],
-  ['llm_call', 'Model calls'],
-  ['speech_out', 'Spoken replies'],
-  ['action', 'Actions'],
-];
-
-function trailWho(row) {
-  const parts = [row.actor || row.dir];
-  const pr = row.person_role;
-  if (pr) parts.push(`${pr.kind || ''}${pr.admin ? ' admin' : ''} ${pr.tier || ''}`.trim());
-  if (row.agent_role) parts.push(`as ${row.agent_role}`);
-  return parts.filter(Boolean).join(' · ');
-}
-
-function trailBody(row) {
-  if (row.text) return row.text;
-  const ex = row.extra || {};
-  const name = ex.name || (ex.names && Object.values(ex.names)[0]) || row.ref || '';
-  const bits = [ex.event, name, row.model, ex.step, ex.state].filter(Boolean);
-  if (row.text_len) bits.push(`text withheld (${row.text_len} chars)`);
-  return bits.join(' · ') || row.kind;
-}
+const TRAIL_PAGE = 500;
+const TRAIL_EXPORT_CAP = 5000;
 
 function TrailView({agentId}) {
   const [kind, setKind] = useState('');
   const [rows, setRows] = useState([]);
   const [busy, setBusy] = useState(false);
-  const [check, setCheck] = useState(null);
+  const [error, setError] = useState('');
+  const [check, setCheck] = useState({state: 'checking'});
+  const [exportNote, setExportNote] = useState('');
 
   useEffect(() => {
     if (!agentId) return;
     setBusy(true);
+    setError('');
+    setExportNote('');
     auditApi
-      .getTrail(agentId, {kinds: kind || undefined, limit: 500})
+      .getTrail(agentId, {kinds: kind || undefined, limit: TRAIL_PAGE})
       .then((res) => setRows(res?.data || []))
-      .catch(() => setRows([]))
+      .catch((err) => {
+        setRows([]);
+        setError(trailError(err));
+      })
       .finally(() => setBusy(false));
   }, [agentId, kind]);
 
+  // The chain check covers every agent's lines on this node, so it runs once
+  // when the panel opens, not on every agent picked.
   useEffect(() => {
     auditApi
       .verifyTrail()
-      .then((res) => setCheck(res?.data || null))
-      .catch(() => setCheck(null));
-  }, [agentId]);
+      .then((res) => setCheck({state: 'done', ...(res?.data || {})}))
+      .catch((err) => setCheck({state: 'failed', why: trailError(err)}));
+  }, []);
 
   const exportJsonl = async () => {
-    const text = await auditApi.exportTrail(agentId, {kinds: kind || undefined, limit: 5000});
-    const url = URL.createObjectURL(new Blob([text], {type: 'application/x-ndjson'}));
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `audit_${agentId}.jsonl`;
-    a.click();
-    URL.revokeObjectURL(url);
+    setExportNote('');
+    try {
+      const text = await auditApi.exportTrail(agentId,
+        {kinds: kind || undefined, limit: TRAIL_EXPORT_CAP});
+      const lines = String(text || '').split('\n').filter(Boolean).length;
+      if (!lines) {
+        setExportNote('Nothing to export for this agent yet.');
+        return;
+      }
+      const safeId = String(agentId).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
+      const res = await saveTextFile(`audit_${safeId}.jsonl`, text, 'application/x-ndjson');
+      if (!res.saved) {
+        setExportNote('Export cancelled; nothing was saved.');
+        return;
+      }
+      const capped = lines >= TRAIL_EXPORT_CAP
+        ? ` These are the newest ${TRAIL_EXPORT_CAP}; the complete record is in the node's audit_trail folder.`
+        : '';
+      setExportNote(`Exported ${lines} line(s) to ${res.where}.${capped}`);
+    } catch (err) {
+      setExportNote(`Export failed. ${trailError(err)}`);
+    }
   };
+
+  const checkChip = check.state === 'checking'
+    ? {label: 'Checking the whole trail…', color: 'rgba(255,255,255,0.4)', title: ''}
+    : check.state === 'failed'
+      ? {label: 'Trail not checked', color: '#FF9800', title: check.why}
+      : check.ok
+        ? {label: 'Whole trail on this node: intact', color: '#4CAF50',
+           title: `${(check.segments || []).length} day file(s) checked, every agent's lines`}
+        : {label: 'Whole trail on this node: broken', color: '#F44336',
+           title: JSON.stringify({missing: check.missing,
+                                  segments: (check.segments || []).filter((s) => !s.ok)})};
 
   return (
     <Box sx={{mb: 2}}>
@@ -253,22 +261,21 @@ function TrailView({agentId}) {
         <Typography variant="subtitle2" sx={{color: 'rgba(255,255,255,0.6)'}}>
           Audit trail
         </Typography>
-        {check && (
-          <Chip
-            size="small"
-            variant="outlined"
-            label={check.ok ? 'Chain intact' : 'Chain broken'}
-            title={
-              check.ok
-                ? `${(check.segments || []).length} day file(s) checked`
-                : JSON.stringify({missing: check.missing, segments: (check.segments || []).filter((s) => !s.ok)})
-            }
-            sx={{color: check.ok ? '#4CAF50' : '#F44336', borderColor: check.ok ? '#4CAF5066' : '#F4433666'}}
-          />
-        )}
+        <Chip
+          size="small"
+          variant="outlined"
+          label={checkChip.label}
+          title={checkChip.title}
+          sx={{color: checkChip.color, borderColor: `${checkChip.color}66`}}
+        />
         <Chip size="small" variant="outlined" label="Export" onClick={exportJsonl}
           sx={{color: '#6C63FF', borderColor: '#6C63FF66', ml: 'auto'}} />
       </Box>
+      {exportNote && (
+        <Typography variant="caption" sx={{display: 'block', color: 'rgba(255,255,255,0.6)', mb: 1}}>
+          {exportNote}
+        </Typography>
+      )}
       <Box sx={{display: 'flex', gap: 0.5, mb: 1, flexWrap: 'wrap'}}>
         {TRAIL_KINDS.map(([k, label]) => (
           <Chip key={k || 'all'} label={label} size="small" variant="outlined"
@@ -282,11 +289,21 @@ function TrailView({agentId}) {
       </Box>
       {busy ? (
         <CircularProgress size={20} sx={{color: '#6C63FF'}} />
+      ) : error ? (
+        <Typography variant="body2" sx={{color: '#FF9800', py: 1}}>
+          {error}
+        </Typography>
       ) : rows.length === 0 ? (
         <Typography variant="body2" sx={{color: 'rgba(255,255,255,0.4)', py: 1}}>
           Nothing recorded for this agent yet
         </Typography>
       ) : (
+        <>
+        {rows.length >= TRAIL_PAGE && (
+          <Typography variant="caption" sx={{display: 'block', color: 'rgba(255,255,255,0.4)'}}>
+            Showing the newest {TRAIL_PAGE} lines; Export has up to {TRAIL_EXPORT_CAP}.
+          </Typography>
+        )}
         <List dense disablePadding>
           {rows.map((row) => (
             <ListItem key={row.hash} sx={{px: 0, alignItems: 'flex-start'}}>
@@ -307,6 +324,7 @@ function TrailView({agentId}) {
             </ListItem>
           ))}
         </List>
+        </>
       )}
     </Box>
   );

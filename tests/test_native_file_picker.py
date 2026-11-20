@@ -89,6 +89,54 @@ class TestNativeFilePick:
         assert win.calls[0]['dialog_type'] == 10
 
 
+class _FakeSaveWindow:
+    """create_file_dialog as pywebview answers a SAVE: a one-path tuple
+    (Windows), a bare string (some platforms) or None (cancelled)."""
+
+    def __init__(self, result):
+        self._result = result
+        self.calls = []
+
+    def create_file_dialog(self, dialog_type=10, directory='', allow_multiple=False,
+                           save_filename='', file_types=()):
+        self.calls.append({'dialog_type': dialog_type, 'save_filename': save_filename})
+        return self._result
+
+
+class TestNativeFileSave:
+    """The desktop window refuses page downloads, so the audit trail's Export
+    hands its text here and the person picks where it goes."""
+
+    def test_writes_the_text_where_the_person_chose(self, fake_webview, tmp_path):
+        target = tmp_path / 'audit_54.jsonl'
+        win = _FakeSaveWindow((str(target),))
+        path = _picker(win).native_file_save('audit_54.jsonl', '{"a": 1}\n{"b": "é"}\n')
+        assert path == str(target)
+        assert target.read_text(encoding='utf-8') == '{"a": 1}\n{"b": "é"}\n'
+        assert win.calls == [{'dialog_type': 30, 'save_filename': 'audit_54.jsonl'}]
+
+    def test_a_bare_string_answer_is_a_path_too(self, fake_webview, tmp_path):
+        target = tmp_path / 'x.jsonl'
+        assert _picker(_FakeSaveWindow(str(target))).native_file_save('x.jsonl', 'z') == str(target)
+        assert target.read_text(encoding='utf-8') == 'z'
+
+    def test_the_suggested_name_is_only_a_file_name(self, fake_webview, tmp_path):
+        win = _FakeSaveWindow(None)
+        _picker(win).native_file_save('..\\..\\Windows\\evil.jsonl', 'z')
+        assert win.calls[0]['save_filename'] == 'evil.jsonl'
+
+    def test_a_cancelled_dialog_writes_nothing(self, fake_webview, tmp_path):
+        assert _picker(_FakeSaveWindow(None)).native_file_save('x.jsonl', 'z') == ''
+        assert list(tmp_path.iterdir()) == []
+
+    def test_an_unwritable_place_is_an_empty_string(self, fake_webview, tmp_path):
+        missing = tmp_path / 'no_such_dir' / 'x.jsonl'
+        assert _picker(_FakeSaveWindow((str(missing),))).native_file_save('x.jsonl', 'z') == ''
+
+    def test_no_window_is_an_empty_string(self, fake_webview):
+        assert _picker(None).native_file_save('x.jsonl', 'z') == ''
+
+
 class TestComposeJsApi:
     def test_a_window_only_host_gets_the_picker_beside_the_window_methods(self, fake_webview):
         from desktop.native_api_window import FilePickerApi, WindowApi, compose_js_api
@@ -132,6 +180,7 @@ class TestComposeJsApi:
         exposed = {n for n in dir(api)
                    if not n.startswith('_') and inspect.ismethod(getattr(api, n))}
         assert 'native_file_pick' in exposed
+        assert 'native_file_save' in exposed
         assert 'window_minimize' in exposed
 
     def test_window_api_methods_lists_every_window_method(self):

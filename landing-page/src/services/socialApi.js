@@ -1005,15 +1005,21 @@ export const auditApi = {
   getThinking: (agentId) => socialApi.get(`/audit/agents/${agentId}/thinking`),
   // The audit trail (HARTOS security.audit_trail): every message, transcript,
   // caption, file, model call and spoken reply for one agent, with hashes.
+  // The page says why a call failed itself (silentError + keepStatus), so a
+  // refusal is never shown as an empty trail or a "session expired" banner.
   getTrail: (agentId, params) =>
-    socialApi.get(`/audit/agents/${agentId}/trail`, {params, cache: false}),
+    socialApi.get(`/audit/agents/${agentId}/trail`,
+      {params, cache: false, silentError: true, keepStatus: true}),
   exportTrail: (agentId, params) =>
     socialApi.get(`/audit/agents/${agentId}/trail/export`, {
       params,
       cache: false,
       responseType: 'text',
+      silentError: true,
+      keepStatus: true,
     }),
-  verifyTrail: () => socialApi.get('/audit/trail/verify', {cache: false}),
+  verifyTrail: () => socialApi.get('/audit/trail/verify',
+    {cache: false, silentError: true, keepStatus: true}),
   getDaemonActivity: () => socialApi.get('/audit/daemon/activity'),
   getDaemonGoals: (params) => socialApi.get('/audit/daemon/goals', {params}),
   getComputeNodes: () => socialApi.get('/audit/compute/nodes'),

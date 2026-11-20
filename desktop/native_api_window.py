@@ -372,7 +372,8 @@ WINDOW_API_METHODS = tuple(sorted(
 
 
 class FilePickerApi:
-    """JS-facing native open-file dialog: `window.pywebview.api.native_file_pick`.
+    """JS-facing native file dialogs: `window.pywebview.api.native_file_pick`
+    (open) and `native_file_save` (save).
 
     The SPA's PDF / image buttons use it where it exists and the browser's
     own file input everywhere else (landing-page utils/nativeFilePicker.js).
@@ -417,6 +418,40 @@ class FilePickerApi:
             logger.error('[NATIVE-FILE] Error: %s', exc)
             return ''
 
+    @staticmethod
+    def _save_dialog_type():
+        import webview
+        file_dialog = getattr(webview, 'FileDialog', None)
+        return file_dialog.SAVE if file_dialog is not None else webview.SAVE_DIALOG
+
+    def native_file_save(self, name='export.txt', text='') -> str:
+        """Ask the person where to keep ``text`` (the OS save dialog), write
+        it there as UTF-8, and return the path; '' when they cancel or it
+        could not be written.
+
+        The desktop window refuses page downloads (pywebview's
+        ALLOW_DOWNLOADS is off), so a page that offers a file to keep, such
+        as the audit trail export, hands the text here instead
+        (landing-page utils/nativeFilePicker.js saveTextFile).
+        """
+        try:
+            window = self._get_window()
+            if window is None:
+                return ''
+            safe_name = str(name or 'export.txt').replace('\\', '/').rsplit('/', 1)[-1]
+            chosen = window.create_file_dialog(self._save_dialog_type(),
+                                               save_filename=safe_name)
+            if not chosen:
+                return ''
+            path = str(chosen if isinstance(chosen, str) else chosen[0])
+            with open(path, 'w', encoding='utf-8', newline='') as f:
+                f.write(text or '')
+            logger.info('[NATIVE-FILE] Saved %d characters to %s', len(text or ''), path)
+            return path
+        except Exception as exc:
+            logger.error('[NATIVE-FILE] Save failed: %s', exc)
+            return ''
+
 
 def compose_js_api(window_api, file_picker, platform_api=None):
     """The one object handed to create_window(js_api=...).
@@ -430,6 +465,7 @@ def compose_js_api(window_api, file_picker, platform_api=None):
     for name in WINDOW_API_METHODS:
         setattr(api, name, getattr(window_api, name))
     api.native_file_pick = file_picker.native_file_pick
+    api.native_file_save = file_picker.native_file_save
     return api
 
 
