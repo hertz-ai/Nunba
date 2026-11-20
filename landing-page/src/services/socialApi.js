@@ -1003,6 +1003,17 @@ export const auditApi = {
   getConversations: (agentId) =>
     socialApi.get(`/audit/agents/${agentId}/conversations`),
   getThinking: (agentId) => socialApi.get(`/audit/agents/${agentId}/thinking`),
+  // The audit trail (HARTOS security.audit_trail): every message, transcript,
+  // caption, file, model call and spoken reply for one agent, with hashes.
+  getTrail: (agentId, params) =>
+    socialApi.get(`/audit/agents/${agentId}/trail`, {params, cache: false}),
+  exportTrail: (agentId, params) =>
+    socialApi.get(`/audit/agents/${agentId}/trail/export`, {
+      params,
+      cache: false,
+      responseType: 'text',
+    }),
+  verifyTrail: () => socialApi.get('/audit/trail/verify', {cache: false}),
   getDaemonActivity: () => socialApi.get('/audit/daemon/activity'),
   getDaemonGoals: (params) => socialApi.get('/audit/daemon/goals', {params}),
   getComputeNodes: () => socialApi.get('/audit/compute/nodes'),

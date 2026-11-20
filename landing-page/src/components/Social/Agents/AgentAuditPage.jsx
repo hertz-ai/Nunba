@@ -182,6 +182,136 @@ function ActivityTimeline({events, loading}) {
   );
 }
 
+// The audit trail's kinds (HARTOS security.audit_trail.KINDS), as filters.
+const TRAIL_KINDS = [
+  ['', 'All'],
+  ['message', 'Messages'],
+  ['transcript', 'Transcripts'],
+  ['audio', 'Audio'],
+  ['file', 'Files'],
+  ['image_caption', 'Image captions'],
+  ['screen_caption', 'Screen captions'],
+  ['video_caption', 'Video captions'],
+  ['llm_call', 'Model calls'],
+  ['speech_out', 'Spoken replies'],
+  ['action', 'Actions'],
+];
+
+function trailWho(row) {
+  const parts = [row.actor || row.dir];
+  const pr = row.person_role;
+  if (pr) parts.push(`${pr.kind || ''}${pr.admin ? ' admin' : ''} ${pr.tier || ''}`.trim());
+  if (row.agent_role) parts.push(`as ${row.agent_role}`);
+  return parts.filter(Boolean).join(' · ');
+}
+
+function trailBody(row) {
+  if (row.text) return row.text;
+  const ex = row.extra || {};
+  const name = ex.name || (ex.names && Object.values(ex.names)[0]) || row.ref || '';
+  const bits = [ex.event, name, row.model, ex.step, ex.state].filter(Boolean);
+  if (row.text_len) bits.push(`text withheld (${row.text_len} chars)`);
+  return bits.join(' · ') || row.kind;
+}
+
+function TrailView({agentId}) {
+  const [kind, setKind] = useState('');
+  const [rows, setRows] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [check, setCheck] = useState(null);
+
+  useEffect(() => {
+    if (!agentId) return;
+    setBusy(true);
+    auditApi
+      .getTrail(agentId, {kinds: kind || undefined, limit: 500})
+      .then((res) => setRows(res?.data || []))
+      .catch(() => setRows([]))
+      .finally(() => setBusy(false));
+  }, [agentId, kind]);
+
+  useEffect(() => {
+    auditApi
+      .verifyTrail()
+      .then((res) => setCheck(res?.data || null))
+      .catch(() => setCheck(null));
+  }, [agentId]);
+
+  const exportJsonl = async () => {
+    const text = await auditApi.exportTrail(agentId, {kinds: kind || undefined, limit: 5000});
+    const url = URL.createObjectURL(new Blob([text], {type: 'application/x-ndjson'}));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `audit_${agentId}.jsonl`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <Box sx={{mb: 2}}>
+      <Box sx={{display: 'flex', alignItems: 'center', gap: 1, mb: 1, flexWrap: 'wrap'}}>
+        <Typography variant="subtitle2" sx={{color: 'rgba(255,255,255,0.6)'}}>
+          Audit trail
+        </Typography>
+        {check && (
+          <Chip
+            size="small"
+            variant="outlined"
+            label={check.ok ? 'Chain intact' : 'Chain broken'}
+            title={
+              check.ok
+                ? `${(check.segments || []).length} day file(s) checked`
+                : JSON.stringify({missing: check.missing, segments: (check.segments || []).filter((s) => !s.ok)})
+            }
+            sx={{color: check.ok ? '#4CAF50' : '#F44336', borderColor: check.ok ? '#4CAF5066' : '#F4433666'}}
+          />
+        )}
+        <Chip size="small" variant="outlined" label="Export" onClick={exportJsonl}
+          sx={{color: '#6C63FF', borderColor: '#6C63FF66', ml: 'auto'}} />
+      </Box>
+      <Box sx={{display: 'flex', gap: 0.5, mb: 1, flexWrap: 'wrap'}}>
+        {TRAIL_KINDS.map(([k, label]) => (
+          <Chip key={k || 'all'} label={label} size="small" variant="outlined"
+            onClick={() => setKind(k)}
+            sx={{
+              color: kind === k ? '#6C63FF' : 'rgba(255,255,255,0.4)',
+              borderColor: kind === k ? '#6C63FF' : 'rgba(255,255,255,0.1)',
+              fontSize: '0.7rem',
+            }} />
+        ))}
+      </Box>
+      {busy ? (
+        <CircularProgress size={20} sx={{color: '#6C63FF'}} />
+      ) : rows.length === 0 ? (
+        <Typography variant="body2" sx={{color: 'rgba(255,255,255,0.4)', py: 1}}>
+          Nothing recorded for this agent yet
+        </Typography>
+      ) : (
+        <List dense disablePadding>
+          {rows.map((row) => (
+            <ListItem key={row.hash} sx={{px: 0, alignItems: 'flex-start'}}>
+              <ListItemText
+                primary={
+                  <Typography variant="body2" sx={{color: '#fff', fontSize: '0.8125rem', whiteSpace: 'pre-wrap'}}>
+                    {trailBody(row)}
+                  </Typography>
+                }
+                secondary={
+                  <Typography variant="caption" sx={{color: 'rgba(255,255,255,0.35)'}}>
+                    {row.ts ? new Date(row.ts).toLocaleString() : ''} · {row.kind} {row.dir === 'out' ? '→' : row.dir === 'in' ? '←' : ''} · {trailWho(row)}
+                    {row.sha256 ? ` · sha256 ${row.sha256.slice(0, 12)}` : ''}
+                    {row.bytes ? ` · ${row.bytes} bytes` : ''}
+                  </Typography>
+                }
+              />
+            </ListItem>
+          ))}
+        </List>
+      )}
+    </Box>
+  );
+}
+
 function DaemonGoalCard({goal}) {
   const progress = goal.progress;
   const pct = progress
@@ -551,6 +681,7 @@ export default function AgentAuditPage() {
                   </Box>
                 </Box>
                 <Divider sx={{borderColor: 'rgba(255,255,255,0.06)', mb: 2}} />
+                <TrailView agentId={selectedAgent.id || selectedAgent.agent_id} />
                 <Typography
                   variant="subtitle2"
                   sx={{color: 'rgba(255,255,255,0.6)', mb: 1}}
