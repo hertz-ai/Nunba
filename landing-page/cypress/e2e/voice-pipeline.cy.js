@@ -1540,15 +1540,11 @@ describe('Voice Pipeline E2E', () => {
       });
 
       it('7.1.2 MiniCPM VLM port 9891 — HTTP endpoint', () => {
-        /* REAL — probe MiniCPM sidecar */
-        cy.request({
-          method: 'GET',
-          url: 'http://localhost:9891/',
-          failOnStatusCode: false,
-          timeout: 30000,
-        }).then((res) => {
-          // May not be running — that's OK, just probe
-          cy.log(`MiniCPM probe: status ${res.status}`);
+        /* REAL: probe MiniCPM sidecar.  May not be running, which is OK:
+           httpStatus answers null for a closed port, where cy.request
+           failed the test at the network level. */
+        cy.task('httpStatus', {url: 'http://localhost:9891/'}).then((s) => {
+          cy.log(`MiniCPM probe: status ${s === null ? 'not running' : s}`);
         });
       });
 
@@ -1567,29 +1563,20 @@ describe('Voice Pipeline E2E', () => {
       });
 
       it('7.1.4 LangChain service port 6777 health', () => {
-        /* REAL */
-        cy.request({
-          method: 'GET',
-          url: 'http://localhost:6777/',
-          failOnStatusCode: false,
-          timeout: 30000,
-        }).then((res) => {
-          cy.log(`LangChain service probe: status ${res.status}`);
+        /* REAL: may not be running; null when the port is closed. */
+        cy.task('httpStatus', {url: 'http://localhost:6777/'}).then((s) => {
+          cy.log(`LangChain service probe: status ${s === null ? 'not running' : s}`);
         });
       });
     });
 
     describe('7.2 SSE (Server-Sent Events)', () => {
       it('7.2.1 SSE /api/social/events/stream opens connection', () => {
-        /* REAL */
-        cy.request({
-          method: 'GET',
-          url: `${FLASK}/api/social/events/stream`,
-          failOnStatusCode: false,
-          timeout: 30000,
-        }).then((res) => {
+        /* REAL: the status line only.  An accepted stream never ends, so
+           cy.request (which waits for the whole body) timed out on it. */
+        cy.task('httpStatus', {url: `${FLASK}/api/social/events/stream`}).then((s) => {
           // SSE endpoint without auth should be rejected or return event stream
-          expect(res.status).to.be.oneOf([200, 401, 403, 404, 500, 503]);
+          expect(s).to.be.oneOf([200, 401, 403, 404, 500, 503]);
         });
       });
 
@@ -1602,16 +1589,11 @@ describe('Voice Pipeline E2E', () => {
       });
 
       it('7.2.3 SSE rejects without JWT', () => {
-        /* REAL */
-        cy.request({
-          method: 'GET',
-          url: `${FLASK}/api/social/events/stream`,
-          failOnStatusCode: false,
-          timeout: 30000,
-        }).then((res) => {
+        /* REAL: the status line only (see 7.2.1). */
+        cy.task('httpStatus', {url: `${FLASK}/api/social/events/stream`}).then((s) => {
           // Without token, should be rejected or return empty stream
-          expect(res.status).to.be.oneOf([200, 401, 403, 404, 500, 503]);
-          cy.log(`SSE without auth: ${res.status}`);
+          expect(s).to.be.oneOf([200, 401, 403, 404, 500, 503]);
+          cy.log(`SSE without auth: ${s}`);
         });
       });
     });

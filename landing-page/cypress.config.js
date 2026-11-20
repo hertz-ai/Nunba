@@ -80,6 +80,40 @@ module.exports = defineConfig({
           console.log('  [CY]', message);
           return null;
         },
+        // The HTTP status of a GET, or null when nothing answers within
+        // timeoutMs.  cy.request cannot serve these probes: it fails the
+        // test outright when the port is closed (a sidecar that is not
+        // running on this machine), and it waits for the whole body, which
+        // an event stream never ends.  This reads the status line, then
+        // drops the connection.
+        httpStatus({url, timeoutMs = 5000}) {
+          const lib = url.startsWith('https:') ? require('https') : require('http');
+          return new Promise((resolve) => {
+            let req;
+            try {
+              req = lib.get(url, (res) => {
+                clearTimeout(deadline);
+                resolve(res.statusCode);
+                res.destroy();
+              });
+            } catch {
+              // A URL lib.get rejects outright (no scheme): nothing answers.
+              resolve(null);
+              return;
+            }
+            // One deadline for connect + status line: req.setTimeout only
+            // counts socket idle time, and an unroutable host took 5 s
+            // against a 2 s limit (measured on Windows, 2026-11-20).
+            const deadline = setTimeout(() => {
+              req.destroy();
+              resolve(null);
+            }, timeoutMs);
+            req.on('error', () => {
+              clearTimeout(deadline);
+              resolve(null);
+            });
+          });
+        },
       });
 
       return config;

@@ -26,8 +26,8 @@ const LANGCHAIN_API = 'http://localhost:6777';
 const LLAMA_API = 'http://localhost:8080';
 
 describe('Live Agent Creation E2E (Requires Local LLM)', () => {
-  // Track service availability for conditional skipping
-  let flaskAvailable = false;
+  // Service availability, probed in before(); a test that needs a service
+  // skips itself when it is not on this machine.
   let langchainAvailable = false;
   let llamaAvailable = false;
 
@@ -46,12 +46,22 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
     });
   }
 
-  function seedGuestAuth() {
-    cy.window().then((win) => {
-      win.localStorage.setItem('guest_mode', 'true');
-      win.localStorage.setItem('guest_name', 'Test.Live.Agent');
-      win.localStorage.setItem('guest_user_id', 'cypress-live-user');
-      win.localStorage.setItem('guest_name_verified', 'true');
+  /**
+   * /local as a returning guest's chat (support/e2e.js cy.openLocalChat: a
+   * sealed HART and the speech-consent answer, written before the visit).
+   * Guest auth used to be written after cy.visit and HART was never sealed,
+   * so the page sat on HART onboarding ("What language feels like home?")
+   * with no textarea and 4.1-4.3 timed out (CI run 44481178298, shard 3
+   * screenshots).  openLocalChat also answers /api/llm/status as up, so a
+   * send is not queued behind the engine-boot grace; /chat itself stays live.
+   */
+  function visitChat() {
+    cy.openLocalChat({
+      name: 'CypressLive',
+      onBeforeLoad: (win) => {
+        win.localStorage.setItem('guest_user_id', 'cypress-live-user');
+        win.localStorage.setItem('guest_name_verified', 'true');
+      },
     });
   }
 
@@ -93,6 +103,18 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
   // =========================================================================
   // 1. Backend Health Verification
   // =========================================================================
+  // Probed once, before any test, so a test that needs a service can skip
+  // itself instead of failing when that service is not on this machine
+  // (CI runs this spec against a Flask with no model and no :6777).
+  before(() => {
+    cy.task('httpStatus', {url: `${LANGCHAIN_API}/health`}).then((s) => {
+      langchainAvailable = s === 200;
+    });
+    cy.task('httpStatus', {url: `${LLAMA_API}/health`}).then((s) => {
+      llamaAvailable = s === 200;
+    });
+  });
+
   describe('1. Backend Health Verification', () => {
     it('1.1 Flask backend is running on :5000', () => {
       cy.request({
@@ -100,37 +122,28 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
         failOnStatusCode: false,
         timeout: 30000,
       }).then((res) => {
-        if (res.status === 200) {
-          flaskAvailable = true;
-        }
         expect(res.status).to.be.oneOf([200, 400, 404, 500, 503]);
       });
     });
 
-    it('1.2 LangChain service is running on :6777', () => {
-      cy.request({
-        url: `${LANGCHAIN_API}/health`,
-        failOnStatusCode: false,
-        timeout: 30000,
-      }).then((res) => {
-        if (res.status === 200) {
-          langchainAvailable = true;
-        }
-        // Accept any non-connection-refused response
-        expect(res.status).to.be.a('number');
+    // Skipped, not passed, when the service is not on this machine: cy.request
+    // failed these at the network level on a closed port, so the spec's
+    // "gracefully skip" never held.  When it is up, its health must be 200.
+    it('1.2 LangChain service is running on :6777', function () {
+      if (!langchainAvailable) {
+        this.skip();
+      }
+      cy.task('httpStatus', {url: `${LANGCHAIN_API}/health`}).then((s) => {
+        expect(s).to.eq(200);
       });
     });
 
-    it('1.3 Llama.cpp is running on :8080', () => {
-      cy.request({
-        url: `${LLAMA_API}/health`,
-        failOnStatusCode: false,
-        timeout: 30000,
-      }).then((res) => {
-        if (res.status === 200) {
-          llamaAvailable = true;
-        }
-        expect(res.status).to.be.a('number');
+    it('1.3 Llama.cpp is running on :8080', function () {
+      if (!llamaAvailable) {
+        this.skip();
+      }
+      cy.task('httpStatus', {url: `${LLAMA_API}/health`}).then((s) => {
+        expect(s).to.eq(200);
       });
     });
   });
@@ -197,7 +210,14 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
       });
     });
 
-    it('2.4 Explicit create_agent=true returns agent_status', () => {
+    // Needs the model: without one, /chat answers 200 with the model setup
+    // prompt ("Setting up Qwen3.5 9B VL... Click below to start.") and no
+    // prompt_id, which is right for a machine with no model.  llama-server's
+    // health on :8080 stands in for "/chat has a model"; /chat is not asked.
+    it('2.4 Explicit create_agent=true returns agent_status', function () {
+      if (!llamaAvailable) {
+        this.skip();
+      }
       const promptId = Date.now();
       backendChat({
         text: 'Create an agent that helps with testing',
@@ -356,9 +376,8 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
     });
 
     it('4.1 Demopage loads and sends message to live backend', () => {
-      cy.visit('/local', {timeout: 30000, failOnStatusCode: false});
+      visitChat();
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
-      seedGuestAuth();
 
       cy.get('textarea', {timeout: 30000})
         .first()
@@ -373,9 +392,8 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
     });
 
     it('4.2 Chat response from live LLM renders in the UI', () => {
-      cy.visit('/local', {timeout: 30000, failOnStatusCode: false});
+      visitChat();
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
-      seedGuestAuth();
 
       cy.get('textarea', {timeout: 30000})
         .first()
@@ -390,9 +408,8 @@ describe('Live Agent Creation E2E (Requires Local LLM)', () => {
     });
 
     it('4.3 Agent creation intent from UI triggers creation flow', () => {
-      cy.visit('/local', {timeout: 30000, failOnStatusCode: false});
+      visitChat();
       cy.wait(2000); // Allow time for /prompts fetch (non-blocking)
-      seedGuestAuth();
 
       cy.get('textarea', {timeout: 30000})
         .first()
