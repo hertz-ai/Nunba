@@ -2452,11 +2452,12 @@ class _WeightsRefused(Exception):
     row back by itself once the key is stored (HARTOS ModelEntry.
     setup_failure_current)."""
 
-def _hub_snapshot_download(repo_id: str, **kwargs):
+def _hub_snapshot_download(repo_id: str, used_by: str = 'voice setup', **kwargs):
     """huggingface_hub.snapshot_download with the owner's token, answering a
     gated or missing repo as _WeightsRefused instead of a raw HTTP error that
     raised out of setup.  The token lookup and the gated answer (which asks
-    the owner for the key once) are HARTOS's, the ones the voice worker uses."""
+    the owner for the key once) are HARTOS's, the ones the voice worker uses.
+    ``used_by`` names the voice in that ask (rv_66voice S2)."""
     from huggingface_hub import snapshot_download
     from huggingface_hub.errors import (
         GatedRepoError, HfHubHTTPError, RepositoryNotFoundError)
@@ -2474,7 +2475,7 @@ def _hub_snapshot_download(repo_id: str, **kwargs):
             return _WeightsRefused(
                 f"{repo_id} refused the stored HEVOLVE_HF_TOKEN; accept its "
                 f"terms at {page} with that account")
-        return _WeightsRefused(gated_weights_answer(repo_id, 'voice setup'))
+        return _WeightsRefused(gated_weights_answer(repo_id, used_by))
 
     # Most specific first: GatedRepoError is a RepositoryNotFoundError, and
     # both are HfHubHTTPError.
@@ -2520,7 +2521,10 @@ def _download_model_weights(backend: str,
         import huggingface_hub  # noqa: F401  (is the hub installed at all)
     except ImportError:
         return False, "huggingface_hub not available"
-    snapshot_download = _hub_snapshot_download
+
+    def snapshot_download(repo_id, **kwargs):   # its key ask names this voice
+        return _hub_snapshot_download(repo_id, used_by=f'the {backend} voice',
+                                      **kwargs)
 
     if backend in ('chatterbox_turbo', 'chatterbox_multilingual'):
         model_id = 'ResembleAI/chatterbox-turbo'

@@ -136,3 +136,17 @@ def test_two_gated_downloads_ask_the_owner_once(hub):
     ok, answer = pi._download_model_weights('neutts_air')
     assert ok is False and answer.startswith('needs HEVOLVE_HF_TOKEN:')
     assert len(state['asks']) == 1
+
+
+@pytest.mark.parametrize('backend', ['indic_parler', 'neutts_air'])
+def test_the_ask_names_the_voice(hub, backend):
+    """REVIEW of cacadb3f (rv_66voice S2, 2026-11-20): the ask said "Needed
+    for voice setup"; on its parent it said "Needed to download the
+    indic_parler voice".  The owner should see which voice wants the key.
+    Owner, 2026-11-20: "There should not be any regression." """
+    import json
+    pi, state = hub
+    pi._download_model_weights(backend)
+    ask = json.loads(state['asks'][0])
+    assert backend in ask['description']
+    assert backend in ask['used_by']
