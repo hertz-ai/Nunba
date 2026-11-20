@@ -230,7 +230,8 @@ describe('J105: context window overflow (GAP flagged)', () => {
 // J106 — SSE mid-stream reconnect (GAP in PRODUCT_MAP)
 // ════════════════════════════════════════════════════════════════════════
 
-describe('J106: SSE stream endpoint exists (Last-Event-ID GAP)', () => {
+// The backend's own stream, not cypress/support/e2e.js's stub.
+describe('J106: SSE stream endpoint exists (Last-Event-ID GAP)', {env: {realEventStream: true}}, () => {
   beforeEach(() => {
     installBaselineStubs();
   });

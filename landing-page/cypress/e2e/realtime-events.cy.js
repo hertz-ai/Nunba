@@ -29,7 +29,8 @@ describe('Realtime Events — SSE Connection', () => {
     });
   });
 
-  it('should have SSE endpoint accessible on the backend', () => {
+  // The backend's own stream, not cypress/support/e2e.js's stub.
+  it('should have SSE endpoint accessible on the backend', {env: {realEventStream: true}}, () => {
     const token = Cypress.env('socialToken');
     expect(token, 'cy.socialAuth() token').to.be.a('string').and.not.be.empty;
 
@@ -198,7 +199,8 @@ describe('Realtime Events — Event-Driven Toast Notifications', () => {
   });
 });
 
-describe('Realtime Events — Backend Event Broadcasting', () => {
+// The backend's own stream, not cypress/support/e2e.js's stub.
+describe('Realtime Events — Backend Event Broadcasting', {env: {realEventStream: true}}, () => {
   it('should have the SSE stream endpoint registered', () => {
     // Use fetch() via cy.wrap to gracefully handle connection-refused
     // (cy.request throws on network errors, but fetch just rejects the promise)

@@ -77,15 +77,11 @@ describe('AgentOverlay agent.ui.update — live substrate', () => {
       win.localStorage.setItem('guest_mode', 'true');
     });
 
-    // Stub the SSE + WAMP boot so realtimeService doesn't try to
-    // reach a real Flask backend.  Cypress doesn't natively stub
-    // EventSource, so we just let it fail silently — the
+    // Stub the WAMP boot so realtimeService doesn't try to reach a real
+    // Flask backend; cypress/support/e2e.js closes the event stream.  The
     // window.__realtimeService test handle bypasses transport entirely.
     cy.intercept('GET', '/api/wamp/ticket', {
       statusCode: 200, body: {ticket: 'cypress-overlay-ticket'},
-    });
-    cy.intercept('GET', '/api/social/events/stream*', {
-      statusCode: 204, body: '',
     });
     cy.intercept('GET', '/api/agent-engine/ledger/tasks*', {
       statusCode: 200,

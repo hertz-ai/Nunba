@@ -30,9 +30,7 @@ describe('LiquidActionBar — nunba:ui_actions transport', () => {
       win.localStorage.setItem('welcome_done', 'true');
       win.localStorage.setItem('guest_mode', 'true');
     });
-    cy.intercept('GET', '/api/social/events/stream*', {
-      statusCode: 204, body: '',
-    });
+    // The event stream is closed by cypress/support/e2e.js.
     cy.intercept('GET', '/api/wamp/ticket', {
       statusCode: 200, body: {ticket: 'cypress-bar-ticket'},
     });
