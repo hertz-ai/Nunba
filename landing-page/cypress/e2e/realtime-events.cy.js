@@ -134,9 +134,14 @@ describe('Realtime Events — SSE Reconnection', () => {
   });
 
   it('should fall back to polling when SSE is unavailable', () => {
-    // Block SSE endpoint entirely
+    // SSE unavailable: a 503, answered here.  forceNetworkError (as this
+    // was) still sends the request on to the server, which opens a real
+    // stream each time realtimeService reopens it (see the note in
+    // cypress/support/e2e.js).  The page sees an EventSource error either
+    // way, so the polling fallback is exercised the same.
     cy.intercept('GET', '**/api/social/events/stream**', {
-      forceNetworkError: true,
+      statusCode: 503,
+      body: '',
     }).as('sseBlocked');
 
     // Allow notification polling through
