@@ -852,7 +852,10 @@ def vision_frame_ingest():
     registration.  This machine or the local token: user_id is read from
     the query or X-User-Id as sent.  A phone the owner allowed (HARTOS's
     gate admitted it): it acts only as its token's user, named or not;
-    another user is 403.
+    another user is 403, said by the gate (security.middleware holds every
+    user a phone names, in a JSON body, the query or X-User-Id, to its
+    token before any route runs), so the frame is kept under the token's
+    user here whatever the request names.
     Sizes: the store keeps a frame of at most 512KB (5 FPS × ~40KB JPEG @
     640×480 q=0.6 = ~200KB/s).  A larger frame up to the 8MB upload ceiling
     is shrunk to caption size (_shrink_frame) instead of refused: a phone
@@ -872,12 +875,9 @@ def vision_frame_ingest():
     asked_for = request.args.get('user_id') or request.headers.get('X-User-Id')
     device_user = admitted_device_user()
     if device_user is not None:
-        # A phone acts only as its token's user: the gate holds a JSON body
-        # to that rule (#51), and this body is a JPEG, so it is held here.
-        if asked_for and str(asked_for) != device_user:
-            return jsonify({'ok': False,
-                            'error': ("This phone sends frames as its own user only: "
-                                      "drop user_id, or send the user its token names.")}), 403
+        # A phone acts only as its token's user.  HARTOS's gate refused it
+        # already if it named another (query or X-User-Id, 403), so what it
+        # names is never read here.
         user_id = device_user
     else:
         user_id = str(asked_for or 'anon')
