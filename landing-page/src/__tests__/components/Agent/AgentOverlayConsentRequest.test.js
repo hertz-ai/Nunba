@@ -763,3 +763,57 @@ describe('AgentOverlay consent_prompt (browser research)', () => {
     expect(screen.queryByRole('button', {name: /Don't allow/})).toBeNull();
   });
 });
+
+describe("AgentOverlay: an agent's contact request and message are not its cards", () => {
+  // routes/chatbot_routes.py agent_contact_request sends these two; each
+  // names an agent, so realtimeService also puts it on agent.ui.update.
+  // App.js shows them (AgentContactRequest, AgentMessageToast).  The overlay
+  // has no card for either and drew the payload as raw JSON.
+  const CONTACT = {
+    type: 'agent_contact_request',
+    agent_id: '1a2b3c4d9999',
+    agent_name: 'Agent 1a2b3c4d',
+    agent_asker: 'Agent 1a2b3c4d',
+    reason: 'wants to share something with you',
+    request_id: 'r4',
+    requires_consent: true,
+  };
+  const MESSAGE = {
+    type: 'agent_message',
+    agent_id: '61',
+    agent_name: 'Vijai',
+    agent_asker: 'Agent Vijai',
+    message: 'hello from your agent',
+    reason: 'x',
+    request_id: 'r5',
+    requires_consent: false,
+  };
+
+  test.each([
+    ['a contact request', CONTACT],
+    ["an owned agent's message", MESSAGE],
+  ])('%s draws no card here', (_label, payload) => {
+    const send = mountOverlay();
+    send(payload);
+    expect(document.body.textContent).not.toMatch(/request_id|requires_consent|\{"type"/);
+    expect(screen.queryByText(payload.type)).not.toBeInTheDocument();
+    expect(screen.queryByText(payload.agent_asker)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Dismiss')).not.toBeInTheDocument();
+  });
+
+  test('a card the overlay does own still shows after one of them', async () => {
+    const send = mountOverlay();
+    send(CONTACT);
+    send({...ASK, msg_id: 'consent.request:row-after-contact', reason: ''});
+    expect(
+      await screen.findByText('An agent asks to control this computer.'),
+    ).toBeInTheDocument();
+  });
+
+  test('an unknown card type still falls to the default card', () => {
+    const send = mountOverlay();
+    send({type: 'something_new', agent_id: '61', title: 'A new kind', message: 'still shown'});
+    expect(screen.getByText('A new kind')).toBeInTheDocument();
+    expect(screen.getByText('still shown')).toBeInTheDocument();
+  });
+});

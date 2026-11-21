@@ -4468,6 +4468,11 @@ def agent_contact_request():
 
     is_owned = agent_config and agent_config.get('creator_user_id') == target_user_id
     agent_name = (agent_config or {}).get('name', f'Agent {agent_id[:8]}')
+    # The name as a card says it ("Agent <name>"), worded by HARTOS's one
+    # rule and sent beside the bare name, as a consent ask carries it
+    # (consent_service._named): the page shows this text and words nothing.
+    from integrations.social.consent_service import agent_as_asker
+    agent_asker = agent_as_asker(agent_name)
 
     request_id = str(uuid.uuid4())[:12]
 
@@ -4480,6 +4485,7 @@ def agent_contact_request():
                 'type': 'agent_message',
                 'agent_id': agent_id,
                 'agent_name': agent_name,
+                'agent_asker': agent_asker,
                 'message': message,
                 'reason': reason,
                 'request_id': request_id,
@@ -4535,6 +4541,7 @@ def agent_contact_request():
                 'type': 'agent_contact_request',
                 'agent_id': agent_id,
                 'agent_name': agent_name,
+                'agent_asker': agent_asker,
                 'reason': reason,
                 'request_id': request_id,
                 'requires_consent': True,

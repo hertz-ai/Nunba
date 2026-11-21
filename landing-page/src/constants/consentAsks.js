@@ -218,22 +218,33 @@ export function isPerRequester(consentType) {
   return Boolean(CONSENT_ASKS[consentType] && CONSENT_ASKS[consentType].perRequester);
 }
 
-// Who is asking, as a person would say it: "Agent <name>", else "An agent".
-// An agent named like a person ("Vijai") read as that person asking (owner
-// 2026-11-11); the phone push says the same (HARTOS consent_service
-// .agent_as_asker), and a name that already says it is not doubled.  (A
-// phone's name is a claim and goes in the title, askTitle.)
+// FALLBACK ONLY, and to be deleted.  Who asks is worded by HARTOS's one rule
+// (consent_service.agent_as_asker: "Agent <name>", owner 2026-11-11) and
+// sent as agent_asker beside agent_name: by every consent ask and notice
+// since HARTOS 08ffbc73a (2026-11-21), and by Nunba's own agent-contact
+// payloads (routes/chatbot_routes.py) since 2026-11-22.  This function is the
+// page's old copy of that rule.  It is kept for one case only: this page in
+// front of a HARTOS older than 08ffbc73a, whose asks carry agent_name alone.
+// The copy already differs from the rule ("AgentÜber" and a name with a
+// leading BOM come out differently: JS's \b and trim are not Python's), so
+// no current payload may be worded by it.  __tests__/consentAsks.test.js
+// fails if a current producer's payload gets here.
+// DELETE WHEN (Gate 4): no supported build pairs this page with a HARTOS
+// older than 08ffbc73a.  Nunba ships HARTOS in the same installer, so that
+// is the first installer built from both commits; delete on the first change
+// to this file after that build is the installed one, and no later than
+// 2026-12-31.  askerOf then returns agent_asker, else 'An agent'.
+// (A phone's name is a claim and goes in the title, askTitle.)
 export function askerName(name) {
   const who = String(name || '').trim();
   if (!who) return 'An agent';
   return /^agent\b/i.test(who) ? who : `Agent ${who}`;
 }
 
-// Who asks, from what was sent.  A HARTOS ask or notice says it itself:
-// agent_asker is agent_name as a card says it (consent_service._named), and
-// the page shows that text as sent.  askerName is for a payload that carries
-// only a name: a card that did not come from the consent service (an agent's
-// message carries just agent_name), or a HARTOS from before agent_asker.
+// Who asks, from what was sent: the ONE place that picks.  A payload says it
+// itself (agent_asker, HARTOS's wording of agent_name) and the page shows
+// that text as sent.  Only a payload from before agent_asker, which carries
+// a name alone, is worded by the fallback above.
 export function askerOf(data) {
   const said = String((data && data.agent_asker) || '').trim();
   return said || askerName(data && data.agent_name);
@@ -290,12 +301,13 @@ export function declineNote(consentType, label) {
 // The decline button: a phone's ask is declined for that phone ("Don't
 // allow"; the phone is the title); an ask that names an agent is declined
 // for it only, and says which one when the agent has a name.  `asker` is the
-// ask's own agent_asker (see askerOf); without it the name is worded here.
+// ask's own agent_asker; askerOf picks between it and the name.
 export function declineLabel(consentType, agentId, name, asker) {
   if (isPerRequester(consentType) || !agentId) return "Don't allow";
-  const who = String(name || '').trim();
-  const said = String(asker || '').trim() || (who && askerName(who));
-  return said ? `Don't allow ${said}` : "Don't allow this agent";
+  const named = String(asker || '').trim() || String(name || '').trim();
+  return named
+    ? `Don't allow ${askerOf({agent_name: name, agent_asker: asker})}`
+    : "Don't allow this agent";
 }
 
 // The events HARTOS broadcasts when an ask is answered, on any surface.

@@ -152,3 +152,42 @@ describe("declineLabel: the button says the ask's own wording", () => {
     expect(declineLabel('computer_control', null, 'Vijai', 'Agent Vijai')).toBe("Don't allow");
   });
 });
+
+describe('askerName is a fallback no current payload reaches', () => {
+  // What each current producer sends, with HARTOS's own wording of a name
+  // the page's old copy of the rule words differently (JS's word boundary is
+  // not Python's: HARTOS says "Agent AgentÜber", askerName says "AgentÜber").
+  // If any of these were worded by the fallback, the text would differ.
+  const NAME = 'AgentÜber';
+  const HARTOS_SAYS = 'Agent AgentÜber';
+  const CURRENT = {
+    // HARTOS consent_service._named + _emit, 08ffbc73a
+    'a consent ask': {type: 'consent.request', consent_type: 'computer_control',
+      scope: '*', agent_id: '61', agent_name: NAME, agent_asker: HARTOS_SAYS, reason: ''},
+    'a consent notice': {type: 'consent.auto_granted', consent_type: 'data_access',
+      scope: '*', agent_id: '61', agent_name: NAME, agent_asker: HARTOS_SAYS},
+    // Nunba routes/chatbot_routes.py agent_contact_request, both branches
+    "an owned agent's message": {type: 'agent_message', agent_id: '61', agent_name: NAME,
+      agent_asker: HARTOS_SAYS, message: 'hello', reason: 'x', request_id: 'r1',
+      requires_consent: false},
+    "an agent's contact request": {type: 'agent_contact_request', agent_id: '61',
+      agent_name: NAME, agent_asker: HARTOS_SAYS, reason: 'x', request_id: 'r2',
+      requires_consent: true},
+  };
+
+  test('the page words that name differently, which is why it must not', () => {
+    expect(askerName(NAME)).not.toBe(HARTOS_SAYS);
+  });
+
+  test.each(Object.entries(CURRENT))('%s is shown in HARTOS\'s words', (_label, payload) => {
+    expect(payload.agent_asker).toBeTruthy();
+    expect(askerOf(payload)).toBe(HARTOS_SAYS);
+    expect(declineLabel('computer_control', payload.agent_id, payload.agent_name, payload.agent_asker))
+      .toBe(`Don't allow ${HARTOS_SAYS}`);
+  });
+
+  test('an ask from a HARTOS before agent_asker is still worded, by the fallback', () => {
+    expect(askerOf({agent_name: 'Vijai'})).toBe('Agent Vijai');
+    expect(declineLabel('computer_control', '61', 'Vijai')).toBe("Don't allow Agent Vijai");
+  });
+});

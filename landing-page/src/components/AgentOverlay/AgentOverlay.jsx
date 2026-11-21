@@ -1626,6 +1626,13 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
     // raw JSON; the answer listener below is what acts on it.
     if (CONSENT_ANSWER_TYPES.includes(type)) return;
 
+    // An agent's contact request and an owned agent's message have their
+    // own cards (App.js: AgentContactRequest with its Accept and Deny, and
+    // AgentMessageToast).  They name an agent, so they travel here too, and
+    // this overlay has no card for them: the default branch drew a second
+    // one under the type's name with the payload as raw JSON.
+    if (type === 'agent_contact_request' || type === 'agent_message') return;
+
     // Navigate type: orchestrate page navigation, don't render overlay
     if (type === 'navigate' && navigate && payload.target) {
       navigate(payload.target);
