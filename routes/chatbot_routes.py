@@ -107,6 +107,7 @@ def _fire_nunba_tts(text, user_id, request_id, language='en'):
             from integrations.channels.media.tts_text_normalizer import (
                 CHAT_REPLY_SOURCE,
                 normalize_for_tts,
+                nothing_to_say,
             )
 
             from tts.tts_engine import synthesize_text
@@ -118,7 +119,7 @@ def _fire_nunba_tts(text, user_id, request_id, language='en'):
                 use_llm=llm_rewrite_allowed(
                     SOURCE_URGENCY.get(CHAT_REPLY_SOURCE, 'normal')),
                 source=CHAT_REPLY_SOURCE)
-            if not _clean or not _clean.strip():
+            if nothing_to_say(_clean):
                 return
             audio_path = synthesize_text(_clean, language=language)
             if audio_path and os.path.isfile(audio_path):
@@ -1317,11 +1318,12 @@ def tts_synthesize():
         from integrations.channels.media.tts_router import detect_language
         from integrations.channels.media.tts_text_normalizer import (
             normalize_for_tts,
+            nothing_to_say,
         )
         spoken = normalize_for_tts(
             text, language or detect_language(text), use_llm=False,
             source='read_aloud')
-        if not spoken.strip():
+        if nothing_to_say(spoken):      # '** **', '...', a lone emoji
             return jsonify({"error": "No text provided",
                             "spoken_text": ""}), 400
 

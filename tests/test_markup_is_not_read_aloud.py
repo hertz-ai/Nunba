@@ -112,6 +112,16 @@ class TestThePagesSpeakRoute:
         assert resp.get_json() == {'error': 'No text provided',
                                    'spoken_text': ''}
 
+    def test_lone_marks_are_nothing_to_say(self, client, spoken):
+        """A lone mark stays in the text (a sum needs it), so text that is
+        only marks must be refused here, not handed to the engine."""
+        resp = client.post('/tts/synthesize', json={
+            'text': '** \U0001F642 **', 'language': 'en'})
+        assert spoken == []
+        assert resp.status_code == 400
+        assert resp.get_json() == {'error': 'No text provided',
+                                   'spoken_text': ''}
+
     def test_no_language_is_read_from_the_text(self, client, spoken):
         client.post('/tts/synthesize', json={'text': '**Hello** there'})
         assert spoken == ['Hello there']
