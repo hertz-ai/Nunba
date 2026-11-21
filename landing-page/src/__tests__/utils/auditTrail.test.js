@@ -126,9 +126,58 @@ describe('trailCheckChip', () => {
     expect(chip.title).toContain('line 2 does not match the line before it');
   });
 
-  it('says when a node did not check the event log at all', () => {
+  it('says when a node did not check the event log at all, and never intact', () => {
+    // Review of 1c6863d4: an older HARTOS sends no event_log, and the chip
+    // said green "intact" over a log nobody read.
     const chip = trailCheckChip({state: 'done', ok: true, segments: [day], missing: []});
     expect(chip.title).toContain('Security event log: not checked by this node');
+    expect(chip.label).toBe('Whole trail on this node: event log not checked');
+    expect(chip.color).toBe('#FF9800');
+  });
+
+  it('calls a break found before a read failed red, never orange', () => {
+    const chip = trailCheckChip({state: 'done', ok: false, segments: [day], missing: [],
+      event_log: {ok: false, checked: 8000, total: null, broken: 2,
+        newest_checked_id: 311396, oldest_checked_id: 303397,
+        broken_ranges: [{from_id: 305000, to_id: 305001, count: 2}],
+        reason: 'Chain broken at entries 305000-305001: 2 of 8,000 checked entries fail '
+          + 'their own hash or their link; the audit log could not be read (OSError), so '
+          + 'the rest was not checked'}});
+    expect(chip.label).toBe('Whole trail on this node: broken');
+    expect(chip.color).toBe('#F44336');
+  });
+
+  it('keeps every broken range HARTOS returned, each once', () => {
+    // Review of 1c6863d4: the reason names the first 5 ranges, and ranges
+    // 6-20, still in broken_ranges, appeared nowhere.
+    const ranges = Array.from({length: 20}, (_, k) => (
+      {from_id: 1 + 5 * k, to_id: 2 + 5 * k, count: 2}));
+    const chip = trailCheckChip({state: 'done', ok: false, segments: [day], missing: [],
+      event_log: {ok: false, checked: 311396, total: 311396, broken: 300,
+        newest_checked_id: 311396, oldest_checked_id: 1, broken_ranges: ranges,
+        ranges_capped: true,
+        reason: 'Chain broken at entries 1-2, 6-7, 11-12, 16-17, 21-22 and 15+ more ranges, '
+          + 'between ids 1 and 300000: 300 of 311,396 checked entries fail their own hash '
+          + 'or their link'}});
+    ranges.forEach((r, k) => {
+      const named = `${r.from_id}-${r.to_id}`;
+      const listed = `${r.from_id} to ${r.to_id} (2)`;
+      expect(chip.title.includes(k < 5 ? named : listed)).toBe(true);
+      expect(chip.title.includes(listed)).toBe(k >= 5);
+    });
+    expect(chip.title).toContain('Also broken: 26 to 27 (2), ');
+    expect(chip.title).toContain(', and more ranges HARTOS did not list.');
+  });
+
+  it('lists every range the reason does not name, uncapped too', () => {
+    const ranges = Array.from({length: 7}, (_, k) => ({from_id: 10 * (k + 1),
+      to_id: 10 * (k + 1), count: 1}));
+    const chip = trailCheckChip({state: 'done', ok: false, segments: [day], missing: [],
+      event_log: {ok: false, checked: 100, total: 100, broken: 7, broken_ranges: ranges,
+        ranges_capped: false,
+        reason: 'Chain broken at entries 10, 20, 30, 40, 50 and 2 more ranges, between ids '
+          + '10 and 70: 7 of 100 checked entries fail their own hash or their link'}});
+    expect(chip.title.endsWith('Also broken: 60, 70.')).toBe(true);
   });
 
   /* Review of f6472d08: an event log HARTOS could not read showed red

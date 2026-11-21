@@ -68,13 +68,14 @@ export function trailBody(row) {
 // What the whole-node check says, as the page's chip: label, colour and a
 // title naming every part checked.  HARTOS checks the trail's day files AND
 // walks the security event log newest first (event_log: ok, reason,
-// checked, total, newest_checked_id, oldest_checked_id, broken_ranges; the
-// reason lists the broken ranges).  Red "broken" means something failed its
-// hash: a day file, or event-log entries.  Orange "event log not checked"
-// means HARTOS could not read any of the event log, which is not tampering;
-// orange "partly checked (N ...)" means only N entries were read, because
-// the walk stopped before the oldest or a read failed partway.  "intact"
-// only when both stores were read whole and valid.
+// checked, total, newest_checked_id, oldest_checked_id, broken_ranges).  Red
+// "broken" means something failed its hash: a day file, or event-log
+// entries, even when a read failed after them.  Orange "event log not
+// checked" means none of the event log was read (HARTOS could not, or an
+// older HARTOS does not check it), which is not tampering; orange "partly
+// checked (N ...)" means only N entries were read, because the walk stopped
+// before the oldest or a read failed partway.  "intact" only when both
+// stores were read whole and valid.
 // `check` is {state: 'checking'|'failed'|'done', ...answer}.
 export function trailCheckChip(check) {
   if (check.state === 'checking') {
@@ -87,13 +88,23 @@ export function trailCheckChip(check) {
   const missing = check.missing || [];
   const ev = check.event_log;
   const read = ev && ev.checked > 0;
-  // Nothing of the event log was read.  HARTOS 3f65a9d8e said that as ok
-  // false with no total.
-  const evUnread = !!ev && !read && (ev.ok == null || (ev.ok === false && ev.total == null));
+  // Nothing of the event log was read: no event_log at all (an older
+  // HARTOS), ok null, or HARTOS 3f65a9d8e's ok false with no total.
+  const evUnread = !ev || (!read && (ev.ok == null || (ev.ok === false && ev.total == null)));
   const trailParts = [
     ...missing.map((m) => `day file missing: ${m}`),
     ...segments.filter((s) => !s.ok).map((s) => `${s.segment}: ${s.reason}`),
   ];
+  // HARTOS's reason names the first broken ranges ("Chain broken at entries
+  // 1-2, 6-7 and 15+ more ranges, ..."); every other range it returned is
+  // listed after it, so none is dropped and none repeated.  Should that
+  // wording change, nothing matches and every range is listed.
+  const ranges = (ev && ev.broken_ranges) || [];
+  const rangeText = (r) => (r.from_id === r.to_id ? `${r.from_id}` : `${r.from_id}-${r.to_id}`);
+  const named = new Set(((ev && ev.reason || '').match(
+    /broken at entr(?:y|ies) (.+?)(?: and \d+\+? more ranges|, between ids |: )/) || ['', ''])[1]
+    .split(', '));
+  const unnamed = ranges.filter((r) => !named.has(rangeText(r)));
   const title = [
     trailParts.length
       ? `Trail: ${trailParts.join('; ')}`
@@ -101,6 +112,12 @@ export function trailCheckChip(check) {
     ev ? `Security event log: ${ev.reason}` : 'Security event log: not checked by this node',
     ev && ev.newest_checked_id != null
       ? `Entries ${ev.oldest_checked_id} to ${ev.newest_checked_id} checked, newest first`
+      : '',
+    unnamed.length
+      ? `${unnamed.length < ranges.length ? 'Also broken' : 'Broken entries'}: `
+        + unnamed.map((r) => (r.from_id === r.to_id ? `${r.from_id}`
+          : `${r.from_id} to ${r.to_id} (${r.count})`)).join(', ')
+        + (ev.ranges_capped ? ', and more ranges HARTOS did not list' : '')
       : '',
   ].filter(Boolean).map((s) => (/[.!?…]$/.test(s) ? s : `${s}.`)).join(' ');
   if (trailParts.length || (ev && ev.ok === false && !evUnread)) {
