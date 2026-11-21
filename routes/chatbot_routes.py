@@ -1986,7 +1986,11 @@ def voice_transcribe():
             pass
 
         # Emit present-tense audio perception event + evaluate audio watchers
-        _uid = request.form.get('user_id', request.headers.get('X-User-Id', ''))
+        # A phone the owner allowed is heard as its token's user, named or
+        # not (it was heard as '', nobody, when its form named none).
+        _uid = admitted_device_user()
+        if _uid is None:
+            _uid = request.form.get('user_id', request.headers.get('X-User-Id', ''))
         _text = result.get('text', '')
         try:
             import time as _time
@@ -2108,7 +2112,9 @@ def voice_diarize():
         # Emit speaker diarization event
         try:
             from core.platform.events import emit_event
-            _uid = request.form.get('user_id', request.headers.get('X-User-Id', ''))
+            _uid = admitted_device_user()       # a phone: its token's user
+            if _uid is None:
+                _uid = request.form.get('user_id', request.headers.get('X-User-Id', ''))
             emit_event('perception.audio.speaker', {
                 'user_id': _uid,
                 'speaker_count': result.get('no_of_speaker', 0),
