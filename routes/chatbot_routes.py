@@ -100,17 +100,25 @@ def _fire_nunba_tts(text, user_id, request_id, language='en'):
 
     def _bg():
         try:
-            import re
+            from integrations.channels.media.tts_router import (
+                SOURCE_URGENCY,
+                llm_rewrite_allowed,
+            )
+            from integrations.channels.media.tts_text_normalizer import (
+                CHAT_REPLY_SOURCE,
+                normalize_for_tts,
+            )
 
             from tts.tts_engine import synthesize_text
-            # Clean text for TTS
-            _clean = re.sub(r'```[\s\S]*?```', '', text)
-            _clean = re.sub(r'`[^`]+`', '', _clean)
-            _clean = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', _clean)
-            _clean = re.sub(r'https?://\S+', '', _clean)
-            _clean = re.sub(r'[*_~]{1,3}', '', _clean)
-            _clean = re.sub(r'\s+', ' ', _clean).strip()
-            if not _clean:
+            # What a chat reply sounds like is HARTOS's rule (markup, emoji
+            # and bare links cut, numbers said as words), the same call its
+            # own chat path makes.  No second copy of the cuts here.
+            _clean = normalize_for_tts(
+                text, language,
+                use_llm=llm_rewrite_allowed(
+                    SOURCE_URGENCY.get(CHAT_REPLY_SOURCE, 'normal')),
+                source=CHAT_REPLY_SOURCE)
+            if not _clean or not _clean.strip():
                 return
             audio_path = synthesize_text(_clean, language=language)
             if audio_path and os.path.isfile(audio_path):
@@ -1283,6 +1291,10 @@ def tts_synthesize():
     if not TTS_AVAILABLE:
         return jsonify({"error": "TTS not available"}), 503
 
+    # The words that are spoken, once the request's text is cut down to them.
+    # An error answer carries them as "spoken_text", so the page's own voice
+    # says the same words when it takes over.
+    spoken = None
     try:
         data = request.get_json() or {}
         text = data.get("text", "").strip()
@@ -1298,8 +1310,23 @@ def tts_synthesize():
         if len(text) > 5000:
             return jsonify({"error": "Text too long (max 5000 characters)"}), 400
 
+        # Markup and emoji are written for the eye: HARTOS's normalizer cuts
+        # them and says numbers as words, as it does for every other
+        # speaker.  The rule pass only (use_llm=False): this request waits
+        # on the audio, and before this call it waited on no model.
+        from integrations.channels.media.tts_router import detect_language
+        from integrations.channels.media.tts_text_normalizer import (
+            normalize_for_tts,
+        )
+        spoken = normalize_for_tts(
+            text, language or detect_language(text), use_llm=False,
+            source='read_aloud')
+        if not spoken.strip():
+            return jsonify({"error": "No text provided",
+                            "spoken_text": ""}), 400
+
         # Synthesize using unified engine (language triggers engine routing)
-        audio_path = synthesize_text(text, voice=voice, speed=speed,
+        audio_path = synthesize_text(spoken, voice=voice, speed=speed,
                                       language=language)
 
         if audio_path and os.path.exists(audio_path):
@@ -1320,11 +1347,15 @@ def tts_synthesize():
                 download_name="speech.wav"
             )
         else:
-            return jsonify({"error": "Synthesis failed"}), 500
+            return jsonify({"error": "Synthesis failed",
+                            "spoken_text": spoken}), 500
 
     except Exception as e:
         logger.error(f"TTS synthesis error: {e}")
-        return jsonify({"error": str(e)}), 500
+        body = {"error": str(e)}
+        if spoken is not None:
+            body["spoken_text"] = spoken
+        return jsonify(body), 500
 
 
 def tts_voices():
