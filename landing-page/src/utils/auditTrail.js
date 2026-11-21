@@ -65,6 +65,42 @@ export function trailBody(row) {
   return bits.join(' · ') || row.kind;
 }
 
+// What the whole-node check says, as the page's chip: label, colour and a
+// title naming every part checked.  HARTOS checks the trail's day files AND
+// walks the security event log's chain (event_log: ok, reason, checked,
+// total); "intact" is said only when the trail is whole and every event-log
+// entry was read and valid.  A walk the node cut short is "partly checked",
+// never "intact".  `check` is {state: 'checking'|'failed'|'done', ...answer}.
+export function trailCheckChip(check) {
+  if (check.state === 'checking') {
+    return {label: 'Checking the whole trail…', color: 'rgba(255,255,255,0.4)', title: ''};
+  }
+  if (check.state === 'failed') {
+    return {label: 'Trail not checked', color: '#FF9800', title: check.why};
+  }
+  const segments = check.segments || [];
+  const missing = check.missing || [];
+  const ev = check.event_log;
+  const trailParts = [
+    ...missing.map((m) => `day file missing: ${m}`),
+    ...segments.filter((s) => !s.ok).map((s) => `${s.segment}: ${s.reason}`),
+  ];
+  const trailSays = trailParts.length
+    ? `Trail: ${trailParts.join('; ')}`
+    : `Trail: ${segments.length} day file(s) checked, every agent's lines, intact`;
+  const eventSays = ev
+    ? `Security event log: ${ev.reason}`
+    : 'Security event log: not checked by this node';
+  const title = `${trailSays}. ${eventSays}.`;
+  if (trailParts.length || (ev && ev.ok === false)) {
+    return {label: 'Whole trail on this node: broken', color: '#F44336', title};
+  }
+  if (!check.ok || (ev && ev.checked !== ev.total)) {
+    return {label: 'Whole trail on this node: partly checked', color: '#FF9800', title};
+  }
+  return {label: 'Whole trail on this node: intact', color: '#4CAF50', title};
+}
+
 // Why the trail could not be read, so a refusal never looks like "nothing
 // recorded".  The calls pass keepStatus, so the rejection carries the status.
 export function trailError(err) {

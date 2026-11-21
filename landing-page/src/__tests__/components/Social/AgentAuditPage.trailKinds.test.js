@@ -4,7 +4,9 @@ import React from 'react';
 /* The agent page's trail filters come from HARTOS (meta.kinds on the trail
  * response), not from a copy of the trail's kinds kept here (parallel-path
  * audit row N12), and an entry of HARTOS's security event log shows in the
- * same trail (owner 2026-11-21, "One view, two stores").  Rendered through the
+ * same trail (owner 2026-11-21, "One view, two stores"), so the whole-node
+ * check and the export note speak for both stores (review of 11c79a22).
+ * Rendered through the
  * real RoleGuard, as AgentAuditPage.roleAccess.test.js does; only the social
  * context and the audit API are stubbed. */
 
@@ -14,6 +16,12 @@ jest.mock('../../../contexts/SocialContext', () => ({
 }));
 
 const mockGetTrail = jest.fn();
+const mockVerify = jest.fn();
+const mockExport = jest.fn();
+const mockSave = jest.fn();
+jest.mock('../../../utils/nativeFilePicker', () => ({
+  saveTextFile: (...args) => mockSave(...args),
+}));
 jest.mock('../../../services/socialApi', () => ({
   auditApi: {
     listAgents: jest.fn(() =>
@@ -21,8 +29,8 @@ jest.mock('../../../services/socialApi', () => ({
     ),
     getTimeline: jest.fn(() => Promise.resolve({data: []})),
     getTrail: (...args) => mockGetTrail(...args),
-    verifyTrail: jest.fn(() => Promise.resolve({data: {ok: true, segments: []}})),
-    exportTrail: jest.fn(() => Promise.resolve('')),
+    verifyTrail: (...args) => mockVerify(...args),
+    exportTrail: (...args) => mockExport(...args),
     getDaemonGoals: jest.fn(() => Promise.resolve({data: []})),
     getDaemonActivity: jest.fn(() => Promise.resolve({data: []})),
     getComputeNodes: jest.fn(() => Promise.resolve({data: []})),
@@ -54,6 +62,31 @@ describe('the agent trail', () => {
       data: [SECURITY_ROW],
       meta: {kinds: ['message', 'security_event', 'tool_receipt']},
     }));
+    mockVerify.mockReset();
+    mockVerify.mockImplementation(() => Promise.resolve({data: {ok: true, segments: []}}));
+    mockExport.mockReset();
+    mockExport.mockImplementation(() => Promise.resolve(''));
+    mockSave.mockReset();
+  });
+
+  test('the whole-node check states the event log result', async () => {
+    mockVerify.mockImplementation(() => Promise.resolve({data: {ok: false, missing: [],
+      segments: [{segment: '2026-11-21_1-000.jsonl', lines: 1, ok: true, reason: ''}],
+      event_log: {ok: false, checked: 2, total: 9,
+        reason: 'Chain broken at entry 3: expected ab..., got cd...'}}}));
+    await openTrail();
+    const chip = await screen.findByText('Whole trail on this node: broken');
+    expect(chip.closest('[title]').getAttribute('title'))
+      .toContain('Security event log: Chain broken at entry 3');
+  });
+
+  test('a capped export says where the security events are kept', async () => {
+    mockExport.mockImplementation(() => Promise.resolve('{"kind":"message"}\n'.repeat(5000)));
+    mockSave.mockImplementation(() => Promise.resolve({saved: true, where: 'C:/audit_a1.jsonl'}));
+    await openTrail();
+    fireEvent.click(await screen.findByText('Export'));
+    expect(await screen.findByText(/Exported 5000 line/)).toHaveTextContent(
+      'the security events in its database');
   });
 
   test('offers the filters the server sent, and only those', async () => {

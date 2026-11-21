@@ -1,7 +1,9 @@
 /* eslint-disable no-unused-vars */
 import {useSocial} from '../../../contexts/SocialContext';
 import {auditApi} from '../../../services/socialApi';
-import {trailBody, trailError, trailKindFilters, trailWho} from '../../../utils/auditTrail';
+import {
+  trailBody, trailCheckChip, trailError, trailKindFilters, trailWho,
+} from '../../../utils/auditTrail';
 import {saveTextFile} from '../../../utils/nativeFilePicker';
 import {formatTier} from '../../../utils/tier';
 import {useRoleAccess} from '../../RoleGuard';
@@ -243,7 +245,7 @@ function TrailView({agentId}) {
         return;
       }
       const capped = lines >= TRAIL_EXPORT_CAP
-        ? ` That is the ${TRAIL_EXPORT_CAP}-line limit, so there may be older lines; the complete record is in the node's audit_trail folder.`
+        ? ` That is the ${TRAIL_EXPORT_CAP}-line limit, so there may be older lines; the complete record is on the node: the trail's lines in its audit_trail folder, the security events in its database.`
         : '';
       setExportNote(`Exported ${lines} line(s) to ${res.where}.${capped}`);
     } catch (err) {
@@ -251,16 +253,7 @@ function TrailView({agentId}) {
     }
   };
 
-  const checkChip = check.state === 'checking'
-    ? {label: 'Checking the whole trail…', color: 'rgba(255,255,255,0.4)', title: ''}
-    : check.state === 'failed'
-      ? {label: 'Trail not checked', color: '#FF9800', title: check.why}
-      : check.ok
-        ? {label: 'Whole trail on this node: intact', color: '#4CAF50',
-           title: `${(check.segments || []).length} day file(s) checked, every agent's lines`}
-        : {label: 'Whole trail on this node: broken', color: '#F44336',
-           title: JSON.stringify({missing: check.missing,
-                                  segments: (check.segments || []).filter((s) => !s.ok)})};
+  const checkChip = trailCheckChip(check);
 
   return (
     <Box sx={{mb: 2}}>

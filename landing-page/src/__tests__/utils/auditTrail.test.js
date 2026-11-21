@@ -5,7 +5,9 @@
  * at 20,000 characters showed no note, the person's role read as the agent's
  * ("agent · human admin flat"), and Video had no filter.
  */
-import {trailBody, trailError, trailKindFilters, trailWho} from '../../utils/auditTrail';
+import {
+  trailBody, trailCheckChip, trailError, trailKindFilters, trailWho,
+} from '../../utils/auditTrail';
 
 describe('trailWho', () => {
   it('labels the agent role and the person role apart', () => {
@@ -81,6 +83,51 @@ describe('trailKindFilters', () => {
   it('offers only All when the server sent no kinds', () => {
     expect(trailKindFilters(undefined)).toEqual([['', 'All']]);
     expect(trailKindFilters(['', null, 7])).toEqual([['', 'All']]);
+  });
+});
+
+/* Review of 11c79a22: a broken event-log chain showed only
+ * {"missing":[],"segments":[]} and "intact" never named the event log. */
+describe('trailCheckChip', () => {
+  const day = {segment: '2026-11-21_1-000.jsonl', lines: 4, ok: true, reason: ''};
+
+  it('says intact only with both stores whole, and names each', () => {
+    const chip = trailCheckChip({state: 'done', ok: true, segments: [day], missing: [],
+      event_log: {ok: true, reason: 'Chain valid (1005 entries)', checked: 1005, total: 1005}});
+    expect(chip.label).toBe('Whole trail on this node: intact');
+    expect(chip.title).toBe("Trail: 1 day file(s) checked, every agent's lines, intact. "
+      + 'Security event log: Chain valid (1005 entries).');
+  });
+
+  it('calls a broken event log broken and says where', () => {
+    const chip = trailCheckChip({state: 'done', ok: false, segments: [day], missing: [],
+      event_log: {ok: false, reason: 'Chain broken at entry 3: expected ab..., got cd...',
+        checked: 2, total: 9}});
+    expect(chip.label).toBe('Whole trail on this node: broken');
+    expect(chip.title).toContain('Security event log: Chain broken at entry 3');
+  });
+
+  it('calls a walk the node cut short partly checked, never intact', () => {
+    const chip = trailCheckChip({state: 'done', ok: false, segments: [day], missing: [],
+      event_log: {ok: true, checked: 175000, total: 311396,
+        reason: '175000 of 311396 entries checked, all valid; the newer 136396 were '
+          + 'not read in the time allowed'}});
+    expect(chip.label).toBe('Whole trail on this node: partly checked');
+    expect(chip.title).toContain('175000 of 311396 entries checked');
+  });
+
+  it('names a missing day file and a broken one in plain words', () => {
+    const chip = trailCheckChip({state: 'done', ok: false, missing: ['2026-11-20_1-000.jsonl'],
+      segments: [{...day, ok: false, reason: 'line 2 does not match the line before it'}],
+      event_log: {ok: true, reason: 'Chain valid (2 entries)', checked: 2, total: 2}});
+    expect(chip.label).toBe('Whole trail on this node: broken');
+    expect(chip.title).toContain('day file missing: 2026-11-20_1-000.jsonl');
+    expect(chip.title).toContain('line 2 does not match the line before it');
+  });
+
+  it('says when a node did not check the event log at all', () => {
+    const chip = trailCheckChip({state: 'done', ok: true, segments: [day], missing: []});
+    expect(chip.title).toContain('Security event log: not checked by this node');
   });
 });
 
