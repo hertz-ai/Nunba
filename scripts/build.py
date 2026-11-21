@@ -35,6 +35,10 @@ Developer Setup — Clone repos (sibling directories):
     The build script auto-discovers these sibling directories. If not found
     locally, it falls back to pip install from GitHub (requires git credentials
     for private repos).
+
+    Node.js 20 (npm comes with it) must be on PATH: every build that freezes
+    the app rebuilds the React bundle in landing-page/ first.  Without node
+    or npm the build stops there and says so; it never ships an old bundle.
 """
 import argparse
 import datetime
@@ -868,8 +872,8 @@ def _ship_hartos_license(site_packages_dir):
 
 def build_react_landing_page(install_deps=True):
     """Build the React landing-page bundle; False when it cannot be built
-    (no Node.js, npm install or the build failed), never a pass that leaves
-    the old bundle to ship.
+    (no Node.js, no npm, npm install or the build failed), never a pass
+    that leaves the old bundle to ship.
 
     ``install_deps=False`` (--skip-deps) skips `npm install`, never the
     build: without node_modules the build then fails."""
@@ -878,6 +882,9 @@ def build_react_landing_page(install_deps=True):
     if not os.path.isdir(landing_dir):
         print_info("No landing-page directory found, skipping React build.")
         return True
+
+    # Every refusal for a missing tool names the fix (review of 6b442c4ab).
+    node_fix = "Install Node.js 20 and put node on PATH, then build again."
 
     # Check if Node.js is available
     try:
@@ -889,7 +896,8 @@ def build_react_landing_page(install_deps=True):
     except (FileNotFoundError, OSError):
         # No bundle built is never a pass: the freeze would ship whatever
         # landing-page/build holds (review of 9bdd47e0).
-        print_error("Node.js not found: the React bundle cannot be built.")
+        print_error("Node.js not found: the React bundle cannot be built. "
+                    + node_fix)
         return False
 
     print_header("Building React landing-page")
@@ -903,21 +911,31 @@ def build_react_landing_page(install_deps=True):
     npm_cmd = 'npm.cmd' if IS_WINDOWS else 'npm'
     node_modules = os.path.join(landing_dir, 'node_modules')
 
+    # Node.js without npm on PATH used to end the build in an uncaught
+    # FileNotFoundError; it is the same refusal as no Node.js.
+    npm_missing = (f"{npm_cmd} not found (Node.js is there): the React "
+                   "bundle cannot be built. npm comes with Node.js. "
+                   + node_fix)
+
     if not install_deps:
         print_info("--skip-deps: npm install skipped, the bundle is still built.")
-    elif os.path.isdir(node_modules):
-        subprocess.run(
-            [npm_cmd, 'install', '--legacy-peer-deps'],
-            cwd=landing_dir, check=False
-        )
     else:
-        result = subprocess.run(
-            [npm_cmd, 'install', '--legacy-peer-deps'],
-            cwd=landing_dir, check=False
-        )
-        if result.returncode != 0:
-            print_error("npm install failed: the React bundle cannot be built.")
+        had_node_modules = os.path.isdir(node_modules)
+        try:
+            result = subprocess.run(
+                [npm_cmd, 'install', '--legacy-peer-deps'],
+                cwd=landing_dir, check=False
+            )
+        except OSError:
+            print_error(npm_missing)
             return False
+        if result.returncode != 0:
+            if not had_node_modules:
+                print_error("npm install failed: the React bundle cannot be built.")
+                return False
+            # A refresh over an earlier install: the build step decides.
+            print_warn("npm install failed. Building with the node_modules "
+                       "of an earlier install; packages may be out of date.")
 
     # Build — increase Node.js heap to prevent OOM on large bundles.
     # 4GB was insufficient on the current landing-page bundle size
@@ -934,10 +952,14 @@ def build_react_landing_page(install_deps=True):
 
     # stdin=DEVNULL: on Windows CI npm can emit 'Terminate batch job (Y/N)?'
     # and block forever waiting on a console that will never answer.
-    result = subprocess.run(
-        [npm_cmd, 'run', 'build'],
-        cwd=landing_dir, env=env, check=False, stdin=subprocess.DEVNULL
-    )
+    try:
+        result = subprocess.run(
+            [npm_cmd, 'run', 'build'],
+            cwd=landing_dir, env=env, check=False, stdin=subprocess.DEVNULL
+        )
+    except OSError:
+        print_error(npm_missing)
+        return False
     if result.returncode != 0:
         print_error("React build failed! Fix the build errors before freezing.")
         print_error("The frozen app will ship a broken frontend otherwise.")
@@ -2867,6 +2889,19 @@ def main():
             return 1
         return 0 if sign_macos() else 1
 
+    # Build React landing-page: every build that freezes the app, with or
+    # without --skip-deps (it skips npm install only).  Gated on --skip-deps
+    # too, a quick build froze whatever landing-page/build held: b36e2275
+    # (2026-11-21) shipped the 2026-11-12 bundle, without the camera fix
+    # 06c1e29e.  The installer mode packages build/Nunba as it is.
+    # Toolchain before resources here too: this step holds the only Node.js
+    # check, so it runs before the venv and the pip phase.  A machine
+    # without Node.js is refused in the first seconds, not after them.
+    if args.mode != 'installer':
+        if not build_react_landing_page(install_deps=not args.skip_deps):
+            print_error("Cannot proceed without a React build.")
+            return 1
+
     # Get Python executable (from venv if available)
     python_exe = activate_venv()
 
@@ -2876,16 +2911,6 @@ def main():
 
     # Stamp VERSION into runtime files (desktop/config.py, crash_reporter.py)
     stamp_version()
-
-    # Build React landing-page: every build that freezes the app, with or
-    # without --skip-deps (it skips npm install only).  Gated on --skip-deps
-    # too, a quick build froze whatever landing-page/build held: b36e2275
-    # (2026-11-21) shipped the 2026-11-12 bundle, without the camera fix
-    # 06c1e29e.  The installer mode packages build/Nunba as it is.
-    if args.mode != 'installer':
-        if not build_react_landing_page(install_deps=not args.skip_deps):
-            print_error("Cannot proceed without a React build.")
-            return 1
 
     # Run setup wizard for crash reporting configuration
     if not args.skip_wizard and args.mode != 'installer':
