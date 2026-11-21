@@ -112,7 +112,8 @@ describe('trailCheckChip', () => {
       event_log: {ok: true, checked: 175000, total: 311396,
         reason: '175000 of 311396 entries checked, all valid; the newer 136396 were '
           + 'not read in the time allowed'}});
-    expect(chip.label).toBe('Whole trail on this node: partly checked');
+    expect(chip.label).toBe(
+      'Whole trail on this node: partly checked (175,000 of 311,396 event-log entries)');
     expect(chip.title).toContain('175000 of 311396 entries checked');
   });
 
@@ -154,7 +155,7 @@ describe('trailCheckChip', () => {
     expect(chip.title.endsWith('got bb...')).toBe(true);
   });
 
-  it('shows how far back the newest-first check reached and every broken range', () => {
+  it('shows how far back the newest-first check reached, and the ranges once', () => {
     const chip = trailCheckChip({state: 'done', ok: false, segments: [day], missing: [],
       event_log: {ok: false, checked: 170000, total: 311396, newest_checked_id: 311396,
         oldest_checked_id: 141397, broken: 4, ranges_capped: false,
@@ -165,7 +166,19 @@ describe('trailCheckChip', () => {
           + 'checked in this request'}});
     expect(chip.label).toBe('Whole trail on this node: broken');
     expect(chip.title).toContain('Entries 141397 to 311396 checked, newest first.');
-    expect(chip.title).toContain('Broken entries: 141400 to 141402 (3), 141900.');
+    // Review of 5ba34eb8: the reason lists the ranges, and a second list repeated them.
+    expect(chip.title.split('141400').length - 1).toBe(1);
+    expect(chip.title.split('141900').length - 1).toBe(1);
+  });
+
+  it('says partly checked, with the count, when a read failed partway', () => {
+    const chip = trailCheckChip({state: 'done', ok: false, segments: [day], missing: [],
+      event_log: {ok: null, checked: 5000, total: null, newest_checked_id: 311396,
+        oldest_checked_id: 306397, broken: 0, broken_ranges: [],
+        reason: 'newest 5,000 entries checked, all valid; the audit log could not be '
+          + 'read (RuntimeError), so the rest was not checked'}});
+    expect(chip.label).toBe('Whole trail on this node: partly checked (5,000 event-log entries)');
+    expect(chip.color).toBe('#FF9800');
   });
 });
 
