@@ -129,6 +129,44 @@ describe('trailCheckChip', () => {
     const chip = trailCheckChip({state: 'done', ok: true, segments: [day], missing: []});
     expect(chip.title).toContain('Security event log: not checked by this node');
   });
+
+  /* Review of f6472d08: an event log HARTOS could not read showed red
+   * "broken", which reads as tampering; a reason ending in "..." got a fifth
+   * dot; the newest-first coverage and broken ranges were not shown. */
+  it('calls an event log the node could not read orange, never broken', () => {
+    const unread = trailCheckChip({state: 'done', ok: false, segments: [day], missing: [],
+      event_log: {ok: null, checked: 0, total: null, broken_ranges: [],
+        reason: 'Not checked; the audit log could not be read, so nothing was checked '
+          + '(RuntimeError: database unreachable)'}});
+    expect(unread.label).toBe('Whole trail on this node: event log not checked');
+    expect(unread.color).toBe('#FF9800');
+    expect(unread.title).toContain('database unreachable');
+    const older = trailCheckChip({state: 'done', ok: false, segments: [day], missing: [],
+      event_log: {ok: false, checked: 0, total: null,
+        reason: 'the security event log could not be checked: boom'}});
+    expect(older.label).toBe('Whole trail on this node: event log not checked');
+  });
+
+  it('never adds a dot after a reason that already ends in one', () => {
+    const chip = trailCheckChip({state: 'done', ok: false, segments: [day], missing: [],
+      event_log: {ok: false, checked: 0, total: 5,
+        reason: 'Chain broken at entry 1: expected aa..., got bb...'}});
+    expect(chip.title.endsWith('got bb...')).toBe(true);
+  });
+
+  it('shows how far back the newest-first check reached and every broken range', () => {
+    const chip = trailCheckChip({state: 'done', ok: false, segments: [day], missing: [],
+      event_log: {ok: false, checked: 170000, total: 311396, newest_checked_id: 311396,
+        oldest_checked_id: 141397, broken: 4, ranges_capped: false,
+        broken_ranges: [{from_id: 141400, to_id: 141402, count: 3},
+          {from_id: 141900, to_id: 141900, count: 1}],
+        reason: 'Chain broken at entries 141400-141402, 141900: 4 of 170,000 checked '
+          + 'entries fail their own hash or their link; 141,396 older entries not '
+          + 'checked in this request'}});
+    expect(chip.label).toBe('Whole trail on this node: broken');
+    expect(chip.title).toContain('Entries 141397 to 311396 checked, newest first.');
+    expect(chip.title).toContain('Broken entries: 141400 to 141402 (3), 141900.');
+  });
 });
 
 describe('a security event line', () => {

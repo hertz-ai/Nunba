@@ -67,10 +67,14 @@ export function trailBody(row) {
 
 // What the whole-node check says, as the page's chip: label, colour and a
 // title naming every part checked.  HARTOS checks the trail's day files AND
-// walks the security event log's chain (event_log: ok, reason, checked,
-// total); "intact" is said only when the trail is whole and every event-log
-// entry was read and valid.  A walk the node cut short is "partly checked",
-// never "intact".  `check` is {state: 'checking'|'failed'|'done', ...answer}.
+// walks the security event log newest first (event_log: ok, reason,
+// checked, total, newest_checked_id, oldest_checked_id, broken_ranges).
+// Red "broken" means something failed its hash: a day file, or event-log
+// entries.  Orange "event log not checked" means HARTOS could not read the
+// event log at all (ok null), which is not tampering; orange "partly
+// checked" means the walk stopped before the oldest entry.  "intact" only
+// when both stores were read whole and valid.
+// `check` is {state: 'checking'|'failed'|'done', ...answer}.
 export function trailCheckChip(check) {
   if (check.state === 'checking') {
     return {label: 'Checking the whole trail…', color: 'rgba(255,255,255,0.4)', title: ''};
@@ -81,19 +85,32 @@ export function trailCheckChip(check) {
   const segments = check.segments || [];
   const missing = check.missing || [];
   const ev = check.event_log;
+  // HARTOS 3f65a9d8e said "could not check" as ok false with no total.
+  const evUnread = !!ev && (ev.ok == null || (ev.ok === false && ev.total == null));
   const trailParts = [
     ...missing.map((m) => `day file missing: ${m}`),
     ...segments.filter((s) => !s.ok).map((s) => `${s.segment}: ${s.reason}`),
   ];
-  const trailSays = trailParts.length
-    ? `Trail: ${trailParts.join('; ')}`
-    : `Trail: ${segments.length} day file(s) checked, every agent's lines, intact`;
-  const eventSays = ev
-    ? `Security event log: ${ev.reason}`
-    : 'Security event log: not checked by this node';
-  const title = `${trailSays}. ${eventSays}.`;
-  if (trailParts.length || (ev && ev.ok === false)) {
+  const ranges = (ev && ev.broken_ranges) || [];
+  const title = [
+    trailParts.length
+      ? `Trail: ${trailParts.join('; ')}`
+      : `Trail: ${segments.length} day file(s) checked, every agent's lines, intact`,
+    ev ? `Security event log: ${ev.reason}` : 'Security event log: not checked by this node',
+    ev && ev.newest_checked_id != null
+      ? `Entries ${ev.oldest_checked_id} to ${ev.newest_checked_id} checked, newest first`
+      : '',
+    ranges.length
+      ? `Broken entries: ${ranges.map((r) => (r.from_id === r.to_id ? `${r.from_id}`
+        : `${r.from_id} to ${r.to_id} (${r.count})`)).join(', ')}`
+        + (ev.ranges_capped ? ', and more' : '')
+      : '',
+  ].filter(Boolean).map((s) => (/[.!?…]$/.test(s) ? s : `${s}.`)).join(' ');
+  if (trailParts.length || (ev && ev.ok === false && !evUnread)) {
     return {label: 'Whole trail on this node: broken', color: '#F44336', title};
+  }
+  if (evUnread) {
+    return {label: 'Whole trail on this node: event log not checked', color: '#FF9800', title};
   }
   if (!check.ok || (ev && ev.checked !== ev.total)) {
     return {label: 'Whole trail on this node: partly checked', color: '#FF9800', title};
