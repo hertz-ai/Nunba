@@ -441,8 +441,8 @@ function ComputeNodeCard({node}) {
 
 export default function AgentAuditPage() {
   const {accessTier} = useSocial();
-  const {canAccess} = useRoleAccess();
-  const canSeeCompute = canAccess('regional');
+  // useRoleAccess has no canAccess; calling it threw on every render.
+  const {isRegional: canSeeCompute} = useRoleAccess();
 
   const [tab, setTab] = useState(0);
   const [agents, setAgents] = useState([]);
