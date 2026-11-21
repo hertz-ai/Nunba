@@ -866,8 +866,12 @@ def _ship_hartos_license(site_packages_dir):
         sys.exit(1)
 
 
-def build_react_landing_page():
-    """Build React landing-page if Node.js is available"""
+def build_react_landing_page(install_deps=True):
+    """Build React landing-page if Node.js is available.
+
+    ``install_deps=False`` (--skip-deps) skips `npm install`, never the
+    build: without node_modules the build then fails instead of the old
+    bundle shipping."""
     landing_dir = 'landing-page'
 
     if not os.path.isdir(landing_dir):
@@ -897,7 +901,9 @@ def build_react_landing_page():
     npm_cmd = 'npm.cmd' if IS_WINDOWS else 'npm'
     node_modules = os.path.join(landing_dir, 'node_modules')
 
-    if os.path.isdir(node_modules):
+    if not install_deps:
+        print_info("--skip-deps: npm install skipped, the bundle is still built.")
+    elif os.path.isdir(node_modules):
         subprocess.run(
             [npm_cmd, 'install', '--legacy-peer-deps'],
             cwd=landing_dir, check=False
@@ -2869,9 +2875,13 @@ def main():
     # Stamp VERSION into runtime files (desktop/config.py, crash_reporter.py)
     stamp_version()
 
-    # Build React landing-page
-    if not args.skip_deps and args.mode != 'installer':
-        if not build_react_landing_page():
+    # Build React landing-page: every build that freezes the app, with or
+    # without --skip-deps (it skips npm install only).  Gated on --skip-deps
+    # too, a quick build froze whatever landing-page/build held: b36e2275
+    # (2026-11-21) shipped the 2026-11-12 bundle, without the camera fix
+    # 06c1e29e.  The installer mode packages build/Nunba as it is.
+    if args.mode != 'installer':
+        if not build_react_landing_page(install_deps=not args.skip_deps):
             print_error("Cannot proceed without a React build.")
             return 1
 
