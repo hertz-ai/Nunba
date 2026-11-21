@@ -11,7 +11,10 @@ desktop the page then held the camera 83 minutes after its socket closed
 
 The installer mode packages build/Nunba as it is (Nunba_Installer.iss,
 Source: build\\Nunba\\*), so it still builds no bundle.  --skip-deps skips
-`npm install` only.
+`npm install` only.  No Node.js, or a first `npm install` that fails, is a
+failed bundle step, never a pass that leaves the old bundle to ship (review
+of 9bdd47e0).  This replaces the harness's A4 check, which read build.py's
+text and passed while the gate skipped the rebuild.
 
 main() runs here as written; everything around the bundle step is replaced:
 the build lock, the disk/process/temp checks, the dependency install, the
@@ -114,7 +117,8 @@ class _Done:
         self.returncode = returncode
 
 
-def _npm(build, monkeypatch, tmp_path, *, node_modules=True, build_rc=0):
+def _npm(build, monkeypatch, tmp_path, *, node_modules=True, build_rc=0,
+         node=True, install_rc=0):
     """build_react_landing_page's commands, from a landing-page made here."""
     (tmp_path / 'landing-page').mkdir()
     if node_modules:
@@ -125,9 +129,13 @@ def _npm(build, monkeypatch, tmp_path, *, node_modules=True, build_rc=0):
     def run(cmd, *args, **kwargs):
         ran.append(list(cmd))
         if cmd[:2] == ['node', '--version']:
+            if not node:
+                raise FileNotFoundError('node')
             return _Done(0)
         if 'build' in cmd:
             return _Done(build_rc)
+        if 'install' in cmd:
+            return _Done(install_rc)
         return _Done(0)
 
     monkeypatch.setattr(build.subprocess, 'run', run)
@@ -152,3 +160,17 @@ class TestTheBundleStep:
         assert build.build_react_landing_page() is True
         steps = [c[1] for c in ran if c[0] != 'node']
         assert steps == ['install', 'run']
+
+    # Review of 9bdd47e0: "Using existing landing-page/build" was a pass.
+    @pytest.mark.parametrize('install_deps', [True, False])
+    def test_no_node_is_a_failed_bundle_not_the_old_one(
+            self, build, monkeypatch, tmp_path, install_deps):
+        ran = _npm(build, monkeypatch, tmp_path, node=False)
+        assert build.build_react_landing_page(install_deps=install_deps) is False
+        assert not [c for c in ran if c[0] != 'node']
+
+    def test_a_failed_first_npm_install_is_a_failed_bundle_not_the_old_one(
+            self, build, monkeypatch, tmp_path):
+        ran = _npm(build, monkeypatch, tmp_path, node_modules=False, install_rc=1)
+        assert build.build_react_landing_page() is False
+        assert not [c for c in ran if c[1:] == ['run', 'build']]

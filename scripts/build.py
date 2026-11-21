@@ -867,11 +867,12 @@ def _ship_hartos_license(site_packages_dir):
 
 
 def build_react_landing_page(install_deps=True):
-    """Build React landing-page if Node.js is available.
+    """Build the React landing-page bundle; False when it cannot be built
+    (no Node.js, npm install or the build failed), never a pass that leaves
+    the old bundle to ship.
 
     ``install_deps=False`` (--skip-deps) skips `npm install`, never the
-    build: without node_modules the build then fails instead of the old
-    bundle shipping."""
+    build: without node_modules the build then fails."""
     landing_dir = 'landing-page'
 
     if not os.path.isdir(landing_dir):
@@ -886,9 +887,10 @@ def build_react_landing_page(install_deps=True):
         if result.returncode != 0:
             raise FileNotFoundError
     except (FileNotFoundError, OSError):
-        print_warn("Node.js not found. Skipping React build.")
-        print_info("Using existing landing-page/build.")
-        return True
+        # No bundle built is never a pass: the freeze would ship whatever
+        # landing-page/build holds (review of 9bdd47e0).
+        print_error("Node.js not found: the React bundle cannot be built.")
+        return False
 
     print_header("Building React landing-page")
     # Unconditional `npm run build` — no mtime heuristic, no
@@ -914,8 +916,8 @@ def build_react_landing_page(install_deps=True):
             cwd=landing_dir, check=False
         )
         if result.returncode != 0:
-            print_warn("npm install failed. Using existing landing-page/build.")
-            return True
+            print_error("npm install failed: the React bundle cannot be built.")
+            return False
 
     # Build — increase Node.js heap to prevent OOM on large bundles.
     # 4GB was insufficient on the current landing-page bundle size
