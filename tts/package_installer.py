@@ -2452,12 +2452,15 @@ class _WeightsRefused(Exception):
     row back by itself once the key is stored (HARTOS ModelEntry.
     setup_failure_current)."""
 
-def _hub_snapshot_download(repo_id: str, used_by: str = 'voice setup', **kwargs):
+def _hub_snapshot_download(repo_id: str, used_by: str = 'voice setup',
+                           engine: str = '', **kwargs):
     """huggingface_hub.snapshot_download with the owner's token, answering a
     gated or missing repo as _WeightsRefused instead of a raw HTTP error that
-    raised out of setup.  The token lookup and the gated answer (which asks
-    the owner for the key once) are HARTOS's, the ones the voice worker uses.
-    ``used_by`` names the voice in that ask (rv_66voice S2)."""
+    raised out of setup.  The token lookup and both gated answers (no key:
+    the owner is asked once; a key the repo refuses: nobody is asked) are
+    HARTOS's, the ones the voice worker uses.  ``engine`` is the voice's
+    registry id: HARTOS words the ask from it (rv_66voice S2), so the voice
+    has one name whether its download or its worker hit the gate."""
     from huggingface_hub import snapshot_download
     from huggingface_hub.errors import (
         GatedRepoError, HfHubHTTPError, RepositoryNotFoundError)
@@ -2465,17 +2468,10 @@ def _hub_snapshot_download(repo_id: str, used_by: str = 'voice setup', **kwargs)
     token = hf_token()
     if token:
         kwargs.setdefault('token', token)
-    page = f"https://huggingface.co/{repo_id}"
 
     def gated():
-        if token:
-            # The key is there and the repo still refuses it: its terms
-            # were never accepted.  Not "needs" a key, so the row keeps
-            # the failure and nobody is asked for a key they gave.
-            return _WeightsRefused(
-                f"{repo_id} refused the stored HEVOLVE_HF_TOKEN; accept its "
-                f"terms at {page} with that account")
-        return _WeightsRefused(gated_weights_answer(repo_id, used_by))
+        return _WeightsRefused(
+            gated_weights_answer(repo_id, used_by, voice=engine))
 
     # Most specific first: GatedRepoError is a RepositoryNotFoundError, and
     # both are HfHubHTTPError.
@@ -2523,8 +2519,8 @@ def _download_model_weights(backend: str,
         return False, "huggingface_hub not available"
 
     def snapshot_download(repo_id, **kwargs):   # its key ask names this voice
-        return _hub_snapshot_download(repo_id, used_by=f'the {backend} voice',
-                                      **kwargs)
+        return _hub_snapshot_download(
+            repo_id, engine=registry_engine_id(backend), **kwargs)
 
     if backend in ('chatterbox_turbo', 'chatterbox_multilingual'):
         model_id = 'ResembleAI/chatterbox-turbo'
