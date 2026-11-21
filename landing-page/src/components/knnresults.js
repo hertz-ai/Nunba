@@ -9,8 +9,10 @@ import React, {useState, useEffect, useCallback} from 'react';
 import {ExternalLink, Phone} from 'react-feather';
 import {useEffectOnce} from 'react-use';
 
+// Not our host: the person's token stays here (sendToken: false).
 const githubRawApi = createApiClient('https://raw.githubusercontent.com', {
   handle401: false,
+  sendToken: false,
 });
 
 function medFilter(feature) {

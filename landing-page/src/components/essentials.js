@@ -7,8 +7,10 @@ import ContentLoader from 'react-content-loader';
 import * as Icon from 'react-feather';
 import {useMeasure} from 'react-use';
 
+// Not our host: the person's token stays here (sendToken: false).
 const geocodeApi = createApiClient('https://api.bigdatacloud.net', {
   handle401: false,
+  sendToken: false,
 });
 
 function EssentialsLoader() {

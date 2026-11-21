@@ -21,7 +21,11 @@ import Parallax from './parallaxCodepen';
 
 import Footer from '../pages/Layouts/footer';
 
-const geocodeApi = createApiClient('https://api.bigdatacloud.net', { handle401: false });
+// Not our host: the person's token stays here (sendToken: false).
+const geocodeApi = createApiClient('https://api.bigdatacloud.net', {
+  handle401: false,
+  sendToken: false,
+});
 
 function ConsearchLoader() {
   const [svgElement, {width}] = useMeasure();
