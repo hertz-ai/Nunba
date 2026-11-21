@@ -47,9 +47,15 @@ export function createApiClient(
   });
 
   // ── Auth interceptor ────────────────────────────────────────────────
+  // sendToken (per request): false keeps the bearer token off that one
+  // request.  The checkout's /makepayment asks for no token (the account
+  // store wants it only on /addsubscription_by_phone), and every other
+  // request of a client carries it.
   instance.interceptors.request.use((config) => {
     const token = localStorage.getItem('access_token');
-    if (token) config.headers.Authorization = `Bearer ${token}`;
+    if (token && config.sendToken !== false) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
     return config;
   });
 
