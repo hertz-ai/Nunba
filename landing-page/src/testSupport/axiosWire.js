@@ -41,7 +41,10 @@ export function wireAxios() {
       if (error && error.response) {
         throw new real.AxiosError(
           error.message,
-          'ERR_BAD_RESPONSE',
+          // as axios settles a response: 4xx is a bad request, 5xx a bad response
+          Math.floor(error.response.status / 100) === 4
+            ? 'ERR_BAD_REQUEST'
+            : 'ERR_BAD_RESPONSE',
           config,
           null,
           {statusText: '', headers: {}, ...error.response, config}

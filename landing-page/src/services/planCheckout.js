@@ -1,7 +1,13 @@
 /**
  * The one checkout for a plan: create the subscription row, THEN pay.
  *
- * Port of Hevolve web's src/services/planCheckout.js (commits ab8555c, cae609f).
+ * It began as a port of Hevolve web's src/services/planCheckout.js (commits
+ * ab8555c, cae609f) and keeps that file's contract with the account store:
+ * the same two routes, bodies, order and outcomes.  It is no longer a copy.
+ * The web's file calls axios itself and reads a refusal from
+ * error.response.data.detail; this one goes through axiosFactory's client and
+ * reads the keepStatus rejection (error.detail, error.status).  A change to
+ * one is not a change to the other: each has its own callers and tests.
  *
  * Contract (account store commits 11b2401f and c1eeb2131, #286 and #202):
  *   POST /addsubscription_by_phone  needs 'Authorization: Bearer <access_token>'
