@@ -5,7 +5,7 @@
  * at 20,000 characters showed no note, the person's role read as the agent's
  * ("agent · human admin flat"), and Video had no filter.
  */
-import {TRAIL_KINDS, trailBody, trailError, trailWho} from '../../utils/auditTrail';
+import {trailBody, trailError, trailKindFilters, trailWho} from '../../utils/auditTrail';
 
 describe('trailWho', () => {
   it('labels the agent role and the person role apart', () => {
@@ -62,8 +62,35 @@ describe('trailError', () => {
   });
 });
 
-it('has a filter for every kind the trail records, and none it never records', () => {
-  const kinds = TRAIL_KINDS.map(([k]) => k).filter(Boolean);
-  expect(kinds.sort()).toEqual(['action', 'audio', 'file', 'image_caption', 'llm_call',
-    'message', 'screen_caption', 'speech_out', 'transcript', 'video_caption']);
+/* Owner 2026-11-21, "One view, two stores": the page shows the trail and
+ * HARTOS's security event log as one trail, and HARTOS sends the kinds it can
+ * filter by (meta.kinds), so the page keeps no copy of the trail's kinds
+ * (parallel-path audit row N12). */
+describe('trailKindFilters', () => {
+  it('offers All and exactly the kinds the server sent, in its order', () => {
+    expect(trailKindFilters(['message', 'security_event', 'action'])).toEqual([
+      ['', 'All'], ['message', 'Messages'], ['security_event', 'Security events'],
+      ['action', 'Actions']]);
+  });
+
+  it('names a kind it has no label for by the kind itself', () => {
+    expect(trailKindFilters(['tool_receipt'])).toEqual([['', 'All'],
+      ['tool_receipt', 'tool_receipt']]);
+  });
+
+  it('offers only All when the server sent no kinds', () => {
+    expect(trailKindFilters(undefined)).toEqual([['', 'All']]);
+    expect(trailKindFilters(['', null, 7])).toEqual([['', 'All']]);
+  });
+});
+
+describe('a security event line', () => {
+  const row = {kind: 'security_event', ts: '2026-11-21T08:00:01.000+00:00',
+    text: 'a2ui_push: push card component', actor: 'owner', agent_id: '54',
+    hash: 'h1', prev: 'h0', detail: {type: 'card'}, source: 'event_log'};
+
+  it('reads as its event and action, and names who acted', () => {
+    expect(trailBody(row)).toBe('a2ui_push: push card component');
+    expect(trailWho(row)).toBe('owner');
+  });
 });

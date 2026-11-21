@@ -1,7 +1,7 @@
 /* eslint-disable no-unused-vars */
 import {useSocial} from '../../../contexts/SocialContext';
 import {auditApi} from '../../../services/socialApi';
-import {TRAIL_KINDS, trailBody, trailError, trailWho} from '../../../utils/auditTrail';
+import {trailBody, trailError, trailKindFilters, trailWho} from '../../../utils/auditTrail';
 import {saveTextFile} from '../../../utils/nativeFilePicker';
 import {formatTier} from '../../../utils/tier';
 import {useRoleAccess} from '../../RoleGuard';
@@ -189,6 +189,8 @@ const TRAIL_EXPORT_CAP = 5000;
 
 function TrailView({agentId}) {
   const [kind, setKind] = useState('');
+  // The kinds HARTOS says this trail can be filtered by (meta.kinds).
+  const [kinds, setKinds] = useState([]);
   const [rows, setRows] = useState([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -202,7 +204,10 @@ function TrailView({agentId}) {
     setExportNote('');
     auditApi
       .getTrail(agentId, {kinds: kind || undefined, limit: TRAIL_PAGE})
-      .then((res) => setRows(res?.data || []))
+      .then((res) => {
+        setRows(res?.data || []);
+        if (Array.isArray(res?.meta?.kinds)) setKinds(res.meta.kinds);
+      })
       .catch((err) => {
         setRows([]);
         setError(trailError(err));
@@ -279,7 +284,7 @@ function TrailView({agentId}) {
         </Typography>
       )}
       <Box sx={{display: 'flex', gap: 0.5, mb: 1, flexWrap: 'wrap'}}>
-        {TRAIL_KINDS.map(([k, label]) => (
+        {trailKindFilters(kinds).map(([k, label]) => (
           <Chip key={k || 'all'} label={label} size="small" variant="outlined"
             onClick={() => setKind(k)}
             sx={{

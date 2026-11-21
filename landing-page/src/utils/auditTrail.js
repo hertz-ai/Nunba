@@ -4,22 +4,35 @@
  * so the wording is tested without the page.
  */
 
-// The audit trail's kinds (HARTOS security.audit_trail.KINDS, less the
-// trail's own gap / storage lines), as filters.  Raw video is not a kind:
+// How each kind of line is named on the page (wording only).  WHICH kinds
+// the page offers comes from HARTOS with the lines (meta.kinds, from
+// security.audit_trail.VIEW_KINDS), so this file keeps no copy of that list.
+// security_event is an entry of HARTOS's security event log
+// (ImmutableAuditLog), shown in the same trail.  Raw video is not a kind:
 // camera input reaches the trail as video_caption.
-export const TRAIL_KINDS = [
-  ['', 'All'],
-  ['message', 'Messages'],
-  ['transcript', 'Transcripts'],
-  ['audio', 'Audio'],
-  ['file', 'Files'],
-  ['image_caption', 'Image captions'],
-  ['screen_caption', 'Screen captions'],
-  ['video_caption', 'Video captions'],
-  ['llm_call', 'Model calls'],
-  ['speech_out', 'Spoken replies'],
-  ['action', 'Actions'],
-];
+export const TRAIL_KIND_LABELS = {
+  message: 'Messages',
+  transcript: 'Transcripts',
+  audio: 'Audio',
+  file: 'Files',
+  image_caption: 'Image captions',
+  screen_caption: 'Screen captions',
+  video_caption: 'Video captions',
+  llm_call: 'Model calls',
+  speech_out: 'Spoken replies',
+  action: 'Actions',
+  security_event: 'Security events',
+};
+
+// The filter chips: 'All', then each kind the server says the page can
+// filter by, named from TRAIL_KIND_LABELS, or by the kind itself when this
+// page has no name for it yet.
+export function trailKindFilters(kinds) {
+  const offered = Array.isArray(kinds)
+    ? kinds.filter((k) => typeof k === 'string' && k)
+    : [];
+  return [['', 'All'], ...offered.map((k) => [k, TRAIL_KIND_LABELS[k] || k])];
+}
 
 // Who acted, then the agent's role and the person's role as separate labels:
 // a person's role is never an agent's, nor the reverse (owner, 2026-11-07).
