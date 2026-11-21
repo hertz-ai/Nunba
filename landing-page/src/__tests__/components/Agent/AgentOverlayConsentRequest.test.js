@@ -209,6 +209,57 @@ describe('AgentOverlay consent.request', () => {
     expect(screen.queryByText('79211163351')).not.toBeInTheDocument();
   });
 
+  test('an ask that says who asks is shown in its own words: text, button and badge', async () => {
+    // HARTOS sends agent_asker beside agent_name (consent_service._named).
+    // The wording here is one the page's own rule would never produce, so
+    // the card can only have taken it from the ask.
+    const send = mountOverlay();
+    send({
+      type: 'consent.request',
+      msg_id: 'consent.request:row-asker',
+      consent_type: 'computer_control',
+      scope: '*',
+      agent_id: '79211163351',
+      agent_name: 'Vijai',
+      agent_asker: 'The agent Vijai',
+      reason: '',
+    });
+
+    expect(
+      await screen.findByText('The agent Vijai asks to control this computer.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', {name: "Don't allow The agent Vijai"}),
+    ).toBeInTheDocument();
+    expect(screen.getByText('The agent Vijai')).toBeInTheDocument();
+    expect(screen.queryByText('Agent Vijai')).not.toBeInTheDocument();
+    expect(screen.queryByText('Vijai')).not.toBeInTheDocument();
+  });
+
+  test('a no to an ask that says who asks is written for the same agent and scope', async () => {
+    const send = mountOverlay();
+    send({
+      type: 'consent.request',
+      msg_id: 'consent.request:row-asker-no',
+      consent_type: 'computer_control',
+      scope: '*',
+      agent_id: '79211163351',
+      agent_name: 'Vijai',
+      agent_asker: 'Agent Vijai',
+      reason: '',
+    });
+    fireEvent.click(
+      await screen.findByRole('button', {name: "Don't allow Agent Vijai"}),
+    );
+    await waitFor(() => {
+      expect(consentApi.decline).toHaveBeenCalledWith({
+        consent_type: 'computer_control',
+        scope: '*',
+        agent_id: '79211163351',
+      });
+    });
+  });
+
   test("the camera tool's ask names its agent as an agent at the top", async () => {
     // HARTOS's real camera ask (hartos/helper.py: ask_owner('camera_capture',
     // 'Camera access needed: ...')) carries a reason, which the card shows in

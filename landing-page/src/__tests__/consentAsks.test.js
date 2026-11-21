@@ -9,7 +9,7 @@
  * the security control").
  */
 import {
-  CONSENT_ASKS, FINGERPRINT_CAPTION, PRIVACY_CARD_TYPES, askTitle, askerName, canDecline,
+  CONSENT_ASKS, FINGERPRINT_CAPTION, PRIVACY_CARD_TYPES, askTitle, askerName, askerOf, canDecline,
   declineLabel, declineNote, deviceFingerprint, grantLabel, isPerRequester,
 } from '../constants/consentAsks';
 
@@ -102,5 +102,53 @@ describe('declineNote: only a credential promises "Allow asking again"', () => {
     const other = declineNote('data_access', 'No');
     expect(other).not.toMatch(/Allow asking again/);
     expect(other).not.toMatch(/Privacy settings/);
+  });
+});
+
+describe('askerOf: the page shows who asks as HARTOS said it', () => {
+  // HARTOS consent_service._named sends agent_asker beside agent_name: the
+  // name as a card says it.  The page shows that text and words nothing
+  // itself; a made-up wording here proves it is not re-derived from the name.
+  test("the ask's own wording is shown as sent", () => {
+    expect(askerOf({agent_name: 'Vijai', agent_asker: 'Agent Vijai'})).toBe('Agent Vijai');
+    expect(askerOf({agent_name: 'Vijai', agent_asker: 'The agent Vijai'})).toBe('The agent Vijai');
+    expect(askerOf({agent_name: 'Vijai', agent_asker: '  Agent Vijai '})).toBe('Agent Vijai');
+  });
+
+  test('a payload with only a name is worded as before', () => {
+    expect(askerOf({agent_name: 'Vijai'})).toBe('Agent Vijai');
+    expect(askerOf({agent_name: 'Agent Smith'})).toBe('Agent Smith');
+    expect(askerOf({agent_name: 'agent smith'})).toBe('agent smith');
+    expect(askerOf({agent_name: 'Agentic'})).toBe('Agent Agentic');
+    expect(askerOf({agent_name: 'Vijai', agent_asker: '   '})).toBe('Agent Vijai');
+    expect(askerOf({agent_name: 'Vijai', agent_asker: null})).toBe('Agent Vijai');
+  });
+
+  test('nobody named is "An agent"', () => {
+    expect(askerOf({})).toBe('An agent');
+    expect(askerOf({agent_name: '  '})).toBe('An agent');
+    expect(askerOf(undefined)).toBe('An agent');
+  });
+});
+
+describe("declineLabel: the button says the ask's own wording", () => {
+  test('an ask that says who asks is declined in those words', () => {
+    expect(declineLabel('computer_control', '7', 'Vijai', 'The agent Vijai'))
+      .toBe("Don't allow The agent Vijai");
+    expect(declineLabel('computer_control', '7', 'Vijai', 'Agent Vijai'))
+      .toBe("Don't allow Agent Vijai");
+  });
+
+  test('without it the name is worded as before, and no name is "this agent"', () => {
+    expect(declineLabel('computer_control', '7', 'Vijai')).toBe("Don't allow Agent Vijai");
+    expect(declineLabel('computer_control', '7', 'Agent Smith', '')).toBe("Don't allow Agent Smith");
+    expect(declineLabel('computer_control', '7', '', '')).toBe("Don't allow this agent");
+    expect(declineLabel('computer_control', '7')).toBe("Don't allow this agent");
+  });
+
+  test("a phone's button never names anyone, whatever the ask carries", () => {
+    expect(declineLabel('device_access', null, 'Giri', 'Agent Giri')).toBe("Don't allow");
+    expect(declineLabel('device_access', '7', 'Giri', 'Agent Giri')).toBe("Don't allow");
+    expect(declineLabel('computer_control', null, 'Vijai', 'Agent Vijai')).toBe("Don't allow");
   });
 });

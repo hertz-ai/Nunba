@@ -229,6 +229,16 @@ export function askerName(name) {
   return /^agent\b/i.test(who) ? who : `Agent ${who}`;
 }
 
+// Who asks, from what was sent.  A HARTOS ask or notice says it itself:
+// agent_asker is agent_name as a card says it (consent_service._named), and
+// the page shows that text as sent.  askerName is for a payload that carries
+// only a name: a card that did not come from the consent service (an agent's
+// message carries just agent_name), or a HARTOS from before agent_asker.
+export function askerOf(data) {
+  const said = String((data && data.agent_asker) || '').trim();
+  return said || askerName(data && data.agent_name);
+}
+
 // The card's title.  A phone's name is what the phone said about itself,
 // so it is quoted as a claim, never stated.
 export function askTitle(consentType, requesterName) {
@@ -279,11 +289,13 @@ export function declineNote(consentType, label) {
 
 // The decline button: a phone's ask is declined for that phone ("Don't
 // allow"; the phone is the title); an ask that names an agent is declined
-// for it only, and says which one when the agent has a name.
-export function declineLabel(consentType, agentId, name) {
+// for it only, and says which one when the agent has a name.  `asker` is the
+// ask's own agent_asker (see askerOf); without it the name is worded here.
+export function declineLabel(consentType, agentId, name, asker) {
   if (isPerRequester(consentType) || !agentId) return "Don't allow";
   const who = String(name || '').trim();
-  return who ? `Don't allow ${askerName(who)}` : "Don't allow this agent";
+  const said = String(asker || '').trim() || (who && askerName(who));
+  return said ? `Don't allow ${said}` : "Don't allow this agent";
 }
 
 // The events HARTOS broadcasts when an ask is answered, on any surface.
