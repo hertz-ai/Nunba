@@ -3586,9 +3586,21 @@ def _run_chat_turn(data):
                     #   evidence 2026-05-10 22:03:02 showed a chat served
                     #   while HARTOS was still loading; HARTOS's bg TTS
                     #   thread did NOT fire so Nunba MUST step in).
-                    # - Non-English (frozen HARTOS doesn't always pass
-                    #   preferred_lang to the synth pipeline; Indic Parler
-                    #   / Kokoro routing lives in Nunba's tts_engine).
+                    # - Non-English, when the reply did not come from
+                    #   HARTOS's own /chat in this process (Tier-2 HTTP,
+                    #   whose HARTOS may not pass preferred_lang to the
+                    #   synth pipeline; Indic Parler / Kokoro routing
+                    #   lives in Nunba's tts_engine).  A Tier-1 reply
+                    #   (result '_tier' == 'direct') is spoken already:
+                    #   HARTOS's _chat_reply speaks the turn, every message
+                    #   it sent and then the reply, as ONE clip under the
+                    #   request id, through this same tts_engine and in
+                    #   the language this request carried (its chat()
+                    #   persists preferred_lang before the turn runs, and
+                    #   _chat_reply reads it back).  A second clip from
+                    #   here replaced that one on the page (ttsClipPlayer
+                    #   loads a new url over the one playing), so a Tamil
+                    #   turn's sends were cut off by a reply-only clip.
                     #
                     # The earlier 2d574bc4 attempt to drop the
                     # `not _ensure_hartos()` clause (claiming "HARTOS
@@ -3603,7 +3615,8 @@ def _run_chat_turn(data):
                     # legitimate Nunba fallback.
                     from routes.hartos_backend_adapter import _ensure_hartos
                     _nunba_handles_tts = (not _ensure_hartos() or
-                                          (preferred_lang and not preferred_lang.startswith('en')))
+                                          (preferred_lang and not preferred_lang.startswith('en')
+                                           and result.get('_tier') != 'direct'))
                     if audio_mode and response_text and _nunba_handles_tts:
                         _fire_nunba_tts(response_text, user_id, request_id, preferred_lang)
                     return jsonify(response_json)
