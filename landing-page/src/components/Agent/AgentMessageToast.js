@@ -1,3 +1,4 @@
+import {askerOf} from '../../constants/consentAsks';
 import realtimeService from '../../services/realtimeService';
 import {useToast} from '../shared/ToastProvider';
 
@@ -10,7 +11,11 @@ import {useEffect} from 'react';
  * chatbot_routes.agent_contact_request` delivers an OWNED agent's message
  * straight through (`creator_user_id == target_user_id`, so no consent step) by
  * calling `on_notification` with `type: 'agent_message'`, and the payload carries
- * `agent_name`, `message`, `reason` and `request_id`.
+ * `agent_name`, `agent_asker`, `message`, `reason` and `request_id`.
+ *
+ * The headline is who sent it: the payload's own `agent_asker` (HARTOS's wording
+ * of the name, "Agent <name>"), picked by constants/consentAsks.askerOf. A
+ * payload that names no agent at all keeps the headline "Your agent".
  *
  * App.js received that event and wrote the payload to
  * `localStorage['agent_proactive_message']` with the comment "so Agent component
@@ -38,8 +43,10 @@ export default function AgentMessageToast() {
       // `reason` is the fallback the sender fills when it has no message body.
       const message = data.message || data.reason;
       if (!message) return;
+      const named = String(data.agent_asker || '').trim()
+        || String(data.agent_name || '').trim();
       showToast('mention', {
-        title: data.agent_name || 'Your agent',
+        title: named ? askerOf(data) : 'Your agent',
         message,
       });
     });

@@ -51,16 +51,19 @@ test('subscribes to agent_message', () => {
   expect(registeredHandler()).toBeInstanceOf(Function);
 });
 
-test('an owned agent message is shown with the agent name and the body', () => {
+test('an owned agent message is shown with who sent it and the body', () => {
+  // The payload as routes/chatbot_routes.agent_contact_request sends it:
+  // agent_asker is HARTOS's wording of agent_name, and is what is shown.
   mount();
   act(() => {
     registeredHandler()({
       agent_id: 'ag-1',
       agent_name: 'Compute Recruiter',
+      agent_asker: 'Agent Compute Recruiter',
       message: 'I finished the sweep you asked for.',
     });
   });
-  expect(screen.getByText('Compute Recruiter')).toBeInTheDocument();
+  expect(screen.getByText('Agent Compute Recruiter')).toBeInTheDocument();
   expect(screen.getByText('I finished the sweep you asked for.')).toBeInTheDocument();
 });
 

@@ -4509,7 +4509,11 @@ def agent_contact_request():
     agent_name = (agent_config or {}).get('name', f'Agent {agent_id[:8]}')
     # The name as a card says it ("Agent <name>"), worded by HARTOS's one
     # rule and sent beside the bare name, as a consent ask carries it
-    # (consent_service._named): the page shows this text and words nothing.
+    # (consent_service._named).  The two cards these payloads have on the
+    # page read it through constants/consentAsks.askerOf: AgentContactRequest
+    # (its name line) and AgentMessageToast (its headline).  Until 2026-11-22
+    # both showed the bare agent_name and nothing read this key.  The browser
+    # embed mounts neither card.
     from integrations.social.consent_service import agent_as_asker
     agent_asker = agent_as_asker(agent_name)
 

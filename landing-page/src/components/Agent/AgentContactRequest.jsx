@@ -4,11 +4,18 @@
  * Shows when a non-owned agent proactively reaches out. User can Accept or Deny.
  * Owned agent messages bypass this and go directly to chat.
  *
+ * Who asks is the payload's own agent_asker, HARTOS's wording of the name
+ * ("Agent <name>"), picked by constants/consentAsks.askerOf, the one place
+ * that picks.  A payload from before agent_asker carries the name alone and
+ * is worded by that file's dated fallback.
+ *
  * Props:
- *   request    - { request_id, agent_id, agent_name, reason, requires_consent }
+ *   request    - { request_id, agent_id, agent_name, agent_asker, reason, requires_consent }
  *   onAccept   - (request) => void
  *   onDeny     - (request) => void
  */
+import { askerOf } from '../../constants/consentAsks';
+
 import CallIcon from '@mui/icons-material/Call';
 import CallEndIcon from '@mui/icons-material/CallEnd';
 import SmartToyIcon from '@mui/icons-material/SmartToy';
@@ -73,7 +80,7 @@ const AgentContactRequest = ({ request, onAccept, onDeny }) => {
                 lineHeight: 1.2,
               }}
             >
-              {request.agent_name}
+              {askerOf(request)}
             </Typography>
             <Typography
               sx={{
