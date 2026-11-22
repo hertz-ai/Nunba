@@ -172,8 +172,10 @@ class TestMainBuildsTheBundle:
 
 
 class _Done:
-    def __init__(self, returncode=0):
+    def __init__(self, returncode=0, stdout='', stderr=''):
         self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
 
 
 _OLD_BUNDLE = 'the bundle of an earlier build'
@@ -181,7 +183,7 @@ _OLD_BUNDLE = 'the bundle of an earlier build'
 
 def _npm(build, monkeypatch, tmp_path, *, node_modules=True, build_rc=0,
          node=True, install_rc=0, npm=True, old_bundle=False,
-         node_error=None, npm_error=None):
+         node_error=None, npm_error=None, node_done=None, seen=None):
     """build_react_landing_page's commands, from a landing-page made here.
 
     ``old_bundle`` leaves landing-page/build/index.html from an earlier
@@ -198,8 +200,12 @@ def _npm(build, monkeypatch, tmp_path, *, node_modules=True, build_rc=0,
     def run(cmd, *args, **kwargs):
         ran.append(list(cmd))
         if cmd[:2] == ['node', '--version']:
+            if seen is not None:
+                seen.append(kwargs)
             if node_error is not None:
                 raise node_error
+            if node_done is not None:
+                return node_done
             if not node:
                 raise FileNotFoundError('node')
             return _Done(0)
@@ -338,6 +344,51 @@ class TestTheBundleStep:
         assert 'Install Node.js' not in errors[0]
         assert type(error).__name__ in errors[0] and str(error) in errors[0]
         assert 'node could not be started' in errors[0]
+        assert ran == [['node', '--version']]
+        assert _old_bundle_is_untouched(tmp_path)
+
+    # Review of 4482af66: a node that starts and exits non-zero was turned
+    # into FileNotFoundError and reported as "Node.js not found".
+    @pytest.mark.parametrize('done, shown', [
+        (_Done(1, stderr='node: bad option\nnode: error while loading icudt.dll\n'),
+         'node: error while loading icudt.dll'),
+        (_Done(3221225781, stdout=''), ''),
+        (_Done(127, stdout='v20 is broken\n'), 'v20 is broken'),
+    ], ids=['stderr', 'silent', 'stdout'])
+    def test_node_that_runs_and_fails_is_not_called_missing(
+            self, build, monkeypatch, tmp_path, done, shown):
+        ran = _npm(build, monkeypatch, tmp_path, node_done=done, old_bundle=True)
+        said = _said(build, monkeypatch)
+        assert _bundle_step(build) is False
+        errors = [text for kind, text in said if kind == 'error']
+        assert len(errors) == 1
+        assert 'not found' not in errors[0]
+        assert 'Install Node.js' not in errors[0]
+        assert f'exit code {done.returncode}' in errors[0]
+        assert shown in errors[0]
+        assert ('(' in errors[0]) == bool(shown)
+        assert 'Check' in errors[0] and 'build again' in errors[0]
+        assert ran == [['node', '--version']]
+        assert _old_bundle_is_untouched(tmp_path)
+
+    def test_the_node_check_is_given_a_time_limit(self, build, monkeypatch, tmp_path):
+        seen = []
+        _npm(build, monkeypatch, tmp_path, seen=seen)
+        assert build.build_react_landing_page() is True
+        assert len(seen) == 1
+        assert isinstance(seen[0].get('timeout'), (int, float)) and 0 < seen[0]['timeout'] <= 120
+
+    def test_a_node_that_never_answers_stops_the_build_and_says_so(
+            self, build, monkeypatch, tmp_path):
+        hang = build.subprocess.TimeoutExpired(['node', '--version'], 60)
+        ran = _npm(build, monkeypatch, tmp_path, node_error=hang, old_bundle=True)
+        said = _said(build, monkeypatch)
+        assert _bundle_step(build) is False
+        errors = [text for kind, text in said if kind == 'error']
+        assert len(errors) == 1
+        assert 'no answer' in errors[0] and 'seconds' in errors[0]
+        assert 'not found' not in errors[0] and 'Install Node.js' not in errors[0]
+        assert 'Check' in errors[0] and 'build again' in errors[0]
         assert ran == [['node', '--version']]
         assert _old_bundle_is_untouched(tmp_path)
 

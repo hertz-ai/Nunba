@@ -897,13 +897,20 @@ def build_react_landing_page(install_deps=True):
                 "antivirus) and that the machine has free memory and paging "
                 "file, then build again.")
 
-    # Check if Node.js is available
+    # Check if Node.js is available.  The answer comes at once from a
+    # working install; a node that hangs must not hang the build with it.
+    node_check_seconds = 60
     try:
         result = subprocess.run(
-            ['node', '--version'], capture_output=True, text=True
+            ['node', '--version'], capture_output=True, text=True,
+            timeout=node_check_seconds
         )
-        if result.returncode != 0:
-            raise FileNotFoundError
+    except subprocess.TimeoutExpired:
+        print_error(f"`node --version` gave no answer in {node_check_seconds} "
+                    "seconds: the React bundle cannot be built. This is not a "
+                    "missing Node.js. Check that node runs in a terminal "
+                    "(antivirus, a broken install), then build again.")
+        return False
     except FileNotFoundError:
         # No bundle built is never a pass: the freeze would ship whatever
         # landing-page/build holds (review of 9bdd47e0).
@@ -912,6 +919,17 @@ def build_react_landing_page(install_deps=True):
         return False
     except OSError as err:
         print_error(not_started('node', err))
+        return False
+    if result.returncode != 0:
+        # Found and started, and it failed: a third thing "Node.js not
+        # found" was said for (review of 4482af66).
+        said = (result.stderr or result.stdout or '').strip().splitlines()
+        print_error(f"`node --version` ended with exit code {result.returncode}"
+                    + (f" ({said[-1]})" if said else "")
+                    + ": the React bundle cannot be built. This is not a "
+                    "missing Node.js: node is there and does not run. Check "
+                    "it in a terminal and repair or reinstall Node.js 20, "
+                    "then build again.")
         return False
 
     print_header("Building React landing-page")
