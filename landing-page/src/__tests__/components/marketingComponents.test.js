@@ -45,6 +45,13 @@ const COMPONENTS = [
   'useForm',
 ];
 
+// The last part of every path a piece of source imports: `from '...'`,
+// `require('...')`, `import('...')`, and `import(/* webpackChunkName: "x" */
+// '...')`, where a comment sits between the bracket and the path (the first
+// version of this check did not see that one).
+const IMPORT_SPEC = /(?:from|import|require)\s*\(?\s*(?:\/\*[\s\S]*?\*\/\s*)*['"`][^'"`]*\/([^'"`/]+)['"`]/g;
+const importedNames = (source) => [...source.matchAll(IMPORT_SPEC)].map((found) => found[1]);
+
 // Five pages nothing imported were deleted on 2026-11-22, with the reason, in
 // axiosFactoryTokenStaysHome.test.js.  One of them coming back fails here.
 const DELETED = ['curriculai', 'essentials', 'hertz', 'knnresults', 'parallaxCodepen'];
@@ -63,14 +70,54 @@ describe('Marketing / legacy pages that were deleted stay deleted', () => {
           // Every module a live line imports, by the last part of its path.
           const live = fs.readFileSync(full, 'utf-8').split('\n')
             .filter((line) => !/^\s*(\/\/|\*)/.test(line)).join('\n');
-          const imported = [...live.matchAll(
-            /(?:from|import|require)\s*\(?\s*['"`][^'"`]*\/([^'"`/]+)['"`]/g,
-          )].map((found) => found[1].replace(/\.jsx?$/, '').toLowerCase());
+          const imported = importedNames(live)
+            .map((found) => found.replace(/\.jsx?$/, '').toLowerCase());
           if (imported.includes(name.toLowerCase())) importers.push(full);
         }
       }
     })(path.join(__dirname, '..', '..'));
     expect(importers).toEqual([]);
+  });
+});
+
+describe('how an import of a deleted page is recognised', () => {
+  it.each([
+    ["import Hertz from './hertz';", 'hertz'],
+    ["export {default} from '../components/hertz.js';", 'hertz.js'],
+    ["const H = require('./hertz');", 'hertz'],
+    ["const H = React.lazy(() => import('./hertz'));", 'hertz'],
+    ["const H = lazy(() => import(/* webpackChunkName: \"hertz\" */ './hertz'));", 'hertz'],
+    ["import(/* webpackChunkName: 'h' */ /* webpackPrefetch: true */ `./hertz`)", 'hertz'],
+    ["import(\n  /* webpackChunkName: \"h\" */\n  './hertz'\n)", 'hertz'],
+  ])('%s', (line, name) => {
+    expect(importedNames(line)).toEqual([name]);
+  });
+});
+
+// The two style files only the deleted pages imported (parallaxCodepen:
+// parallax.scss; curriculai: progressStyles.css) went with them.
+describe('style files only the deleted pages used stay deleted', () => {
+  it.each(['parallax.scss', 'progressStyles.css'])('%s is gone and nothing names it', (name) => {
+    const src = path.join(__dirname, '..', '..');
+    expect(fs.existsSync(path.join(src, 'components', name))).toBe(false);
+    const stem = name.replace(/\.\w+$/, '');
+    const users = [];
+    (function walk(dir) {
+      for (const entry of fs.readdirSync(dir, {withFileTypes: true})) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name !== 'node_modules' && entry.name !== '__tests__') walk(full);
+        } else if (/\.(js|jsx|ts|tsx|css|scss|sass)$/.test(entry.name)) {
+          const live = fs.readFileSync(full, 'utf-8').split('\n')
+            .filter((line) => !/^\s*(\/\/|\*)/.test(line));
+          const wanted = new Set([name, stem, `_${stem}`]);
+          if (live.some((line) => [...line.matchAll(/['"`]([^'"`]+)['"`]/g)]
+            .some((found) => wanted.has(found[1].split('/').pop())
+              && /import|require|@use|@forward|from/.test(line)))) users.push(full);
+        }
+      }
+    })(src);
+    expect(users).toEqual([]);
   });
 });
 
