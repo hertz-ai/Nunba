@@ -193,6 +193,43 @@ describe('the browser voice says what the server would have said', () => {
     }
   });
 
+  // The step before that fallback (review of 567eed90): a first play() that
+  // is blocked is tried once more after the audio context is resumed, and
+  // when that works the server's audio is what is heard.
+  it('plays the server audio when a second play() is allowed', async () => {
+    const hadCreate = 'createObjectURL' in URL;
+    const create = URL.createObjectURL;
+    const hadContext = 'AudioContext' in window;
+    const context = window.AudioContext;
+    URL.createObjectURL = jest.fn(() => 'blob:speech');
+    const resume = jest.fn(() => Promise.resolve());
+    window.AudioContext = jest.fn(function () {
+      this.state = 'suspended';
+      this.resume = resume;
+    });
+    window.HTMLMediaElement.prototype.play
+      .mockRejectedValueOnce(new Error('NotAllowedError: play() blocked'))
+      .mockResolvedValue(undefined);
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const {returned, result} = await speakWithServerAnswer(
+        {ok: true, status: 200, blob: () => Promise.resolve(new Blob(['wav']))},
+        'Hello there'
+      );
+      expect(resume).toHaveBeenCalledTimes(1);
+      expect(window.HTMLMediaElement.prototype.play).toHaveBeenCalledTimes(2);
+      expect(returned).toBe('blob:speech');
+      expect(uttered).toEqual([]);
+      expect(window.speechSynthesis.speak).not.toHaveBeenCalled();
+      expect(result.current.isSpeaking).toBe(true);
+    } finally {
+      if (hadCreate) URL.createObjectURL = create;
+      else delete URL.createObjectURL;
+      if (hadContext) window.AudioContext = context;
+      else delete window.AudioContext;
+    }
+  });
+
   it('still speaks when the server names words on a 400', async () => {
     const {returned} = await speakWithServerAnswer(
       {ok: false, status: 400, json: () => Promise.resolve({spoken_text: 'Hi'})},
