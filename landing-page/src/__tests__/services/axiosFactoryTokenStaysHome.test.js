@@ -2,12 +2,19 @@
  * The person's bearer token never leaves for somebody else's host.
  *
  * services/axiosFactory attaches localStorage access_token to every request
- * of every client it makes.  Four clients are made for hosts that are not
+ * of every client it makes.  Four clients were made for hosts that are not
  * ours (a reverse geocoder at api.bigdatacloud.net in curriculai, essentials
  * and hertz; a file on raw.githubusercontent.com in knnresults), so a
- * signed-in person's token went to those hosts with each call (found in the
- * review of a2c1dc49).  A client says sendToken: false and no request of it
- * carries the token.
+ * signed-in person's token would have gone to those hosts with each call
+ * (found in the review of a2c1dc49).  A client says sendToken: false and no
+ * request of it carries the token.
+ *
+ * That leak was latent, never live: nothing in the app imported those four
+ * pages or parallaxCodepen (they imported only each other), knnresults needs
+ * packages that are not installed, and the shipped bundle never held the
+ * geocoder's host.  The five files were deleted on 2026-11-22, so today no
+ * client is made for a foreign host at all.  The option and both checks
+ * stay, for the next one.
  *
  * Two checks:
  *   - at the wire, with the real factory: what leaves for a foreign host has
@@ -137,13 +144,10 @@ describe('over the source', () => {
   );
 
   test('the walk finds the clients it is about', () => {
-    expect(clients.length).toBeGreaterThanOrEqual(15);
-    expect(foreign.map((c) => c.file).sort()).toEqual([
-      'components/curriculai.js',
-      'components/essentials.js',
-      'components/hertz.js',
-      'components/knnresults.js',
-    ]);
+    expect(clients.length).toBeGreaterThanOrEqual(11);
+    // None since the five dead pages were deleted (2026-11-22).  A new one
+    // shows up here and must pass the next test.
+    expect(foreign.map((c) => c.file).sort()).toEqual([]);
   });
 
   test('every client made for a foreign host keeps the token home', () => {
