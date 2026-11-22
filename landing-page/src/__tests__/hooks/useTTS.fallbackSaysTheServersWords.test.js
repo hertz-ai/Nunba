@@ -150,6 +150,49 @@ describe('the browser voice says what the server would have said', () => {
     expect(result.current.isSpeaking).toBe(false);
   });
 
+  // The two other ways into the browser voice (review rv_537b of bb142dd0):
+  // neither has a server answer naming words, so the text as sent is said.
+  it('speaks the text as sent when the request never reaches the server', async () => {
+    global.fetch = jest.fn((url) =>
+      String(url).endsWith('/synthesize')
+        ? Promise.reject(new TypeError('Failed to fetch'))
+        : Promise.resolve(statusOk)
+    );
+    const {result} = renderHook(() => useTTS());
+    await act(async () => {
+      await result.current.checkStatus();
+    });
+    let returned;
+    await act(async () => {
+      returned = await result.current.speak('Hello there');
+    });
+    expect(returned).toBe('webspeech');
+    expect(uttered).toEqual(['Hello there']);
+    expect(result.current.isSpeaking).toBe(true);
+  });
+
+  it('speaks the text as sent when the audio came but may not be played', async () => {
+    const hadCreate = 'createObjectURL' in URL;
+    const create = URL.createObjectURL;
+    URL.createObjectURL = jest.fn(() => 'blob:speech');
+    window.HTMLMediaElement.prototype.play.mockRejectedValue(
+      new Error('NotAllowedError: play() blocked')
+    );
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const {returned} = await speakWithServerAnswer(
+        {ok: true, status: 200, blob: () => Promise.resolve(new Blob(['wav']))},
+        'Hello there'
+      );
+      expect(window.HTMLMediaElement.prototype.play).toHaveBeenCalled();
+      expect(returned).toBe('webspeech');
+      expect(uttered).toEqual(['Hello there']);
+    } finally {
+      if (hadCreate) URL.createObjectURL = create;
+      else delete URL.createObjectURL;
+    }
+  });
+
   it('still speaks when the server names words on a 400', async () => {
     const {returned} = await speakWithServerAnswer(
       {ok: false, status: 400, json: () => Promise.resolve({spoken_text: 'Hi'})},
