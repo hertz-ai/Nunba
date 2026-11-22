@@ -253,10 +253,9 @@ def test_the_load_a_chat_with_no_model_asks_for_writes_the_private_config(
         person, no_gpu_probe, monkeypatch):
     """The 21 Nov path itself, from the function the background thread runs,
     with the start replaced by a recorder."""
-    from models.orchestrator import LlamaLoader
-
     from llama.llama_config import LlamaConfig
     from llama.llama_installer import MODEL_PRESETS
+    from models.orchestrator import LlamaLoader
     home, private = person
     asked = []
     monkeypatch.setattr(
