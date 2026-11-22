@@ -51,6 +51,11 @@ const COMPONENTS = [
 // version of this check did not see that one).
 const IMPORT_SPEC = /(?:from|import|require)\s*\(?\s*(?:\/\*[\s\S]*?\*\/\s*)*['"`][^'"`]*\/([^'"`/]+)['"`]/g;
 const importedNames = (source) => [...source.matchAll(IMPORT_SPEC)].map((found) => found[1]);
+// A stylesheet's own imports: `@import 'x';`, `@import url("x");`, `@use "x"`,
+// `@forward 'x'`.  Last part of the path, as importedNames gives it.
+const STYLE_IMPORT_SPEC = /@(?:import|use|forward)\s+(?:url\(\s*)?['"]([^'"]+)['"]/g;
+const styleImports = (source) => [...source.matchAll(STYLE_IMPORT_SPEC)]
+  .map((found) => found[1].split('/').pop());
 
 // Five pages nothing imported were deleted on 2026-11-22, with the reason, in
 // axiosFactoryTokenStaysHome.test.js.  One of them coming back fails here.
@@ -108,16 +113,36 @@ describe('style files only the deleted pages used stay deleted', () => {
         if (entry.isDirectory()) {
           if (entry.name !== 'node_modules' && entry.name !== '__tests__') walk(full);
         } else if (/\.(js|jsx|ts|tsx|css|scss|sass)$/.test(entry.name)) {
+          // Whole text, not line by line: an import may run over several
+          // lines (`import(\n  /* webpackChunkName */\n  './parallax.scss')`).
           const live = fs.readFileSync(full, 'utf-8').split('\n')
-            .filter((line) => !/^\s*(\/\/|\*)/.test(line));
+            .filter((line) => !/^\s*(\/\/|\*)/.test(line)).join('\n');
           const wanted = new Set([name, stem, `_${stem}`]);
-          if (live.some((line) => [...line.matchAll(/['"`]([^'"`]+)['"`]/g)]
-            .some((found) => wanted.has(found[1].split('/').pop())
-              && /import|require|@use|@forward|from/.test(line)))) users.push(full);
+          const named = [...importedNames(live), ...styleImports(live)];
+          if (named.some((found) => wanted.has(found))) users.push(full);
         }
       }
     })(src);
     expect(users).toEqual([]);
+  });
+});
+
+describe('how an import of a deleted style file is recognised', () => {
+  it.each([
+    ["import './parallax.scss';", ['parallax.scss']],
+    ["import(\n  /* webpackChunkName: \"p\" */\n  './parallax.scss'\n);", ['parallax.scss']],
+    ["require('../components/progressStyles.css');", ['progressStyles.css']],
+  ])('%s', (source, names) => {
+    expect(importedNames(source)).toEqual(names);
+  });
+
+  it.each([
+    ["@import 'components/parallax';", ['parallax']],
+    ['@import url("./progressStyles.css");', ['progressStyles.css']],
+    ["@use '../components/_parallax';", ['_parallax']],
+    ["@forward 'parallax';", ['parallax']],
+  ])('%s', (source, names) => {
+    expect(styleImports(source)).toEqual(names);
   });
 });
 
