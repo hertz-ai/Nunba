@@ -1550,7 +1550,7 @@ class TTSEngine:
         self._demoted_backends: set[str] = set()
         # When each demotion was first written and when it expires, kept so
         # a later save does not restart an older entry's 7-day clock.
-        self._demotion_meta: dict[str, dict[str, float]] = {}
+        self._demotion_meta: dict[str, dict[str, Any]] = {}
         # 3 strikes is the same threshold the model_lifecycle.py
         # eviction guard uses — keep it consistent across the codebase
         # so failures observed by either subsystem trip a single,
@@ -1570,6 +1570,15 @@ class TTSEngine:
             self._load_persisted_demotions()
         except Exception as _he:
             logger.debug(f"TTS demotion hydrate skipped: {_he}")
+        # A voice set aside for want of a key comes back when the key is
+        # stored: the vault says so where it stores it.  Without HARTOS no
+        # voice is ever set aside for a key.
+        try:
+            from hartos.ai_key_vault import on_credential_stored
+        except ImportError:
+            pass
+        else:
+            on_credential_stored(TTSEngine.restore_voices_waiting_for)
 
         # Hardware info (detected lazily)
         self.gpu_info = None
@@ -2108,20 +2117,20 @@ class TTSEngine:
     )
 
     @staticmethod
-    def _refused_key_signatures() -> tuple[str, ...]:
-        """HARTOS's mark for a stored key that the repo refuses, as a
-        signature.  The same token is refused on the next start, so one
-        failed start is enough: the raw 401 it replaced was structural by
-        'worker startup failed' (review rv_66ba of HARTOS 585586a04).
-
-        The mark is HARTOS's (ai_key_vault.GATED_REFUSED_MARK), next to the
-        answer it words; no sentence of that answer is kept here.  Without
-        HARTOS there is no such answer and no signature."""
-        try:
-            from hartos.ai_key_vault import GATED_REFUSED_MARK
-        except ImportError:
-            return ()
-        return (GATED_REFUSED_MARK.lower(),)
+    def _needed_key(error: BaseException | None) -> str:
+        """The key a failure says the voice's repo wants ('' when it wants
+        none): the worker answer's ``needs_key`` field, which the adapter
+        puts on the exception.  Looked for along the cause chain."""
+        seen: set[int] = set()
+        cur = error
+        while cur is not None and id(cur) not in seen:
+            seen.add(id(cur))
+            key = getattr(cur, 'needs_key', '')
+            if key:
+                return str(key)
+            cur = (getattr(cur, '__cause__', None)
+                   or getattr(cur, '__context__', None))
+        return ''
 
     @classmethod
     def _is_structural_error(cls, error: Exception | None) -> bool:
@@ -2135,14 +2144,24 @@ class TTSEngine:
         """
         if error is None:
             return False
-        signatures = (cls._STRUCTURAL_FAILURE_SIGNATURES
-                      + cls._refused_key_signatures())
+        # The worker's own flags come before any text.  ``transient``: the
+        # failure passes by itself (a crash mid-request, or a start that hit
+        # the network, the disk or the GPU's memory), whatever its words
+        # say; 'worker startup failed' alone read every such start as a
+        # broken voice.  ``key_refused``: the repo turned the stored key down
+        # and will refuse it again, so one start is enough (HARTOS
+        # ai_key_vault.gated_weights_failure; no sentence of that answer is
+        # matched here).
+        if getattr(error, 'transient', False):
+            return False
         seen: set[int] = set()
         cur: BaseException | None = error
         while cur is not None and id(cur) not in seen:
             seen.add(id(cur))
+            if getattr(cur, 'key_refused', False):
+                return True
             blob = f"{type(cur).__name__.lower()} {(str(cur) or '').lower()}"
-            for sig in signatures:
+            for sig in cls._STRUCTURAL_FAILURE_SIGNATURES:
                 if sig in blob:
                     return True
             cur = (getattr(cur, '__cause__', None)
@@ -2237,6 +2256,16 @@ class TTSEngine:
 
         if n >= threshold and backend not in self._demoted_backends:
             self._demoted_backends.add(backend)
+            # A voice set aside for want of a key says which key, so that
+            # storing it brings the voice back (restore_voices_waiting_for).
+            needed = self._needed_key(error)
+            if needed:
+                import time as _time
+                _now = _time.time()
+                self._demotion_meta.setdefault(backend, {
+                    'first_demoted_at': _now,
+                    'expires_at': _now + _DEMOTION_TTL_SECONDS,
+                })['needs_key'] = needed
             kind = 'STRUCTURAL' if structural else 'transient'
             err_summary = ''
             if error is not None:
@@ -2347,6 +2376,8 @@ class TTSEngine:
                     first, (int, float)) else now,
                 'expires_at': expires_at,
             }
+            if isinstance(info.get('needs_key'), str) and info['needs_key']:
+                self._demotion_meta[backend]['needs_key'] = info['needs_key']
             hydrated.append(backend)
 
         if hydrated:
@@ -2396,6 +2427,8 @@ class TTSEngine:
                 'failures_at_demotion': self._consecutive_failures.get(
                     backend, self._failure_threshold),
             }
+            if meta.get('needs_key'):
+                demoted_payload[backend]['needs_key'] = meta['needs_key']
         payload = {
             'schema': _TTS_STATE_SCHEMA,
             'updated_at': now,
@@ -2431,6 +2464,47 @@ class TTSEngine:
                 raise
         except OSError as e:
             logger.warning(f"Failed to persist TTS demotion state: {e}")
+
+    @classmethod
+    def restore_voices_waiting_for(cls, key_name: str) -> list[str]:
+        """Put back every voice that was set aside for want of ``key_name``
+        (its repo turned the stored key down, or none was stored), and only
+        those: on file, and in the running engine.  Returns their names.
+
+        Called by HARTOS's key vault each time a credential is stored
+        (ai_key_vault.on_credential_stored; the name only, never a value).
+        Without it a voice demoted for 7 days stayed demoted after the
+        owner stored a working key (review rv_2ae3).  If the new key is
+        refused too, the next start demotes the voice again."""
+        if not key_name:
+            return []
+        waiting: set[str] = set()
+        path = _get_tts_state_path()
+        try:
+            with open(path, encoding='utf-8') as _f:
+                persisted = json.load(_f).get('demoted')
+        except (OSError, ValueError, AttributeError):
+            persisted = None
+        if isinstance(persisted, dict):
+            waiting.update(
+                backend for backend, info in persisted.items()
+                if isinstance(info, dict) and info.get('needs_key') == key_name)
+        engine = _engine
+        if engine is not None:
+            waiting.update(
+                backend for backend, meta in list(engine._demotion_meta.items())
+                if meta.get('needs_key') == key_name)
+            for backend in waiting:
+                engine._demoted_backends.discard(backend)
+                engine._demotion_meta.pop(backend, None)
+                engine._consecutive_failures[backend] = 0
+        for backend in waiting:
+            cls.clear_persisted_demotions(backend)
+        if waiting:
+            logger.info(
+                f"TTS: {key_name} was stored; back on the ladder: "
+                f"{', '.join(sorted(waiting))}")
+        return sorted(waiting)
 
     @classmethod
     def clear_persisted_demotions(cls, backend: str | None = None) -> int:
@@ -4008,6 +4082,10 @@ class _SubprocessTTSBackend:
             # OOM, instead of walking every other GPU engine.
             err = RuntimeError(f"{self._engine_id}: {result['error']}")
             err.transient = bool(result.get('transient'))  # type: ignore[attr-defined]
+            # Which key the voice's repo wants, and whether it refused the
+            # stored one (HARTOS ai_key_vault.gated_weights_failure).
+            err.needs_key = str(result.get('needs_key') or '')  # type: ignore[attr-defined]
+            err.key_refused = bool(result.get('key_refused'))  # type: ignore[attr-defined]
             raise err
         return result.get('path', output_path)
 

@@ -9,8 +9,10 @@ stored HEVOLVE_HF_TOKEN; ..."), and the ladder, which matched sentences,
 read those words as a failure that may pass: three failed starts, each one
 a worker spawn, before the same 7-day demotion.
 
-The ladder now reads HARTOS's own mark for that answer
-(hartos.ai_key_vault.GATED_REFUSED_MARK).  The words stay HARTOS's.
+The ladder now reads a field of the worker's answer, ``key_refused``
+(hartos.ai_key_vault.gated_weights_failure), which the adapter puts on the
+exception beside ``transient``.  No words of the answer are matched: text
+that only carries the sentence is not read as that failure.
 
 Real: HARTOS's ToolWorker.call/synthesize and gated_weights_answer, Nunba's
 _SubprocessTTSBackend.synthesize, _is_structural_error and
@@ -98,10 +100,28 @@ def test_a_refused_stored_key_demotes_after_one_start(ladder, monkeypatch):
     err = start_error()
     assert str(err) == (f'{VOICE}: {REPO} refused the stored HEVOLVE_HF_TOKEN; '
                         f'accept its terms at {PAGE} with that account')
+    assert getattr(err, 'key_refused', None) is True
+    assert getattr(err, 'needs_key', None) == 'HEVOLVE_HF_TOKEN'
     assert engine._is_structural_error(err) is True
     del starts[:]
     assert _starts_until_demoted(engine, start_error) == 1
     assert len(starts) == 1
+
+
+def test_the_field_is_read_not_the_words(ladder):
+    """The same sentence with no field is a failure like any other; the
+    field with other words is the refused key."""
+    engine, _, _ = ladder
+    words_only = RuntimeError(
+        f'{VOICE}: {REPO} refused the stored HEVOLVE_HF_TOKEN; accept its '
+        f'terms at {PAGE} with that account')
+    assert engine._is_structural_error(words_only) is False
+    field_only = RuntimeError(f'{VOICE}: said some other way')
+    field_only.key_refused = True
+    assert engine._is_structural_error(field_only) is True
+    wrapped = RuntimeError('synthesis failed')
+    wrapped.__cause__ = field_only
+    assert engine._is_structural_error(wrapped) is True
 
 
 def test_the_demotion_is_kept_for_the_next_boot(ladder, monkeypatch):
@@ -120,6 +140,8 @@ def test_a_missing_key_is_still_given_three_starts(ladder):
     engine, start_error, _ = ladder
     err = start_error()
     assert str(err).startswith(f'{VOICE}: needs HEVOLVE_HF_TOKEN:')
+    assert getattr(err, 'key_refused', None) is False
+    assert getattr(err, 'needs_key', None) == 'HEVOLVE_HF_TOKEN'
     assert engine._is_structural_error(err) is False
     assert _starts_until_demoted(engine, start_error) == 3
 
@@ -133,9 +155,10 @@ def test_the_raw_401_and_a_passing_failure_are_read_as_before(ladder):
     assert engine._is_structural_error(None) is False
 
 
-def test_the_ladder_keeps_no_sentence_of_hartos():
-    """The mark is HARTOS's: its words are not copied here."""
+def test_source_guard_the_ladder_matches_no_words_of_hartos():
+    """Neither the sentence nor the mark it is built from: the field."""
     src = open(os.path.join(PROJECT_ROOT, 'tts', 'tts_engine.py'),
                encoding='utf-8').read()
     assert 'refused the stored' not in src
-    assert 'GATED_REFUSED_MARK' in src
+    assert 'GATED_REFUSED_MARK' not in src
+    assert "result.get('key_refused')" in src
