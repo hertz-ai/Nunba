@@ -18,8 +18,9 @@ so nothing a fixture sets is still in place.
 
 tests/hermetic_run.install() sets, for the whole process (tests/conftest.py
 calls it at import; a runner that loads no conftest.py calls it itself):
-  - an audit hook that refuses every Popen of llama-server, whichever class
-    or shell it goes through, and (unless NUNBA_TEST_INSTALLED_APP=1) every
+  - an audit hook, on every event through which Python starts a program,
+    that refuses every start of llama-server, whichever class, shell or
+    launcher it goes through, and (unless NUNBA_TEST_INSTALLED_APP=1) every
     start of the installed Nunba and every stop of Nunba by name;
   - the app's own switches that keep main from booting a model;
   - NUNBA_TEST_HOME, a private folder that llama.llama_installer.home_dir
@@ -126,6 +127,19 @@ LLAMA_SERVER_STARTS = [
     ['sh', '-c', 'cd /tmp; exec /usr/local/bin/llama-server --port 8082'],
     ['bash', '-c', 'true || llama-server'],
     ['cmd', '/c', 'cmd', '/c', 'llama-server'],
+    # Through a launcher (review of 604a9825: a rule that looked for the start
+    # itself let each of these reach the operating system).
+    ['cmd', '/c', 'start', '/wait', 'llama-server'],
+    ['cmd', '/c', 'start', '/min', 'llama-server'],
+    ['cmd', '/c', 'timeout 1 > nul & llama-server'],
+    ['powershell', '-Command', 'Start-Process llama-server'],
+    ['powershell', '-Command',
+     "Start-Process -FilePath 'C:\\a b\\llama-server.exe' -ArgumentList '--port 1'"],
+    ['wmic', 'process', 'call', 'create', 'llama-server.exe'],
+    ['wmic', 'process', 'call', 'create', 'C:\\x\\llama-server.exe --port 1'],
+    ['explorer.exe', _EXE],
+    ['a-wrapper-nobody-listed', '--binary', _EXE],
+    ['"C:\\Program Files\\Git\\bin\\bash.exe"', '-c', 'llama-server'],
 ]
 
 
@@ -144,6 +158,9 @@ def test_a_llama_server_start_never_reaches_the_operating_system(
 @pytest.mark.parametrize('command', [
     'llama-server --port 8082',
     'echo starting && llama-server --port 8082',
+    'start "" llama-server --port 1',
+    'start /wait llama-server --port 1',
+    'start /b "" "C:\\Program Files\\llama.cpp\\llama-server.exe"',
 ], ids=repr)
 def test_a_start_through_the_shell_flag_is_refused(command, handed_to_the_os):
     refusal = _try_to_start(command, shell=True)
@@ -201,6 +218,9 @@ OTHER_PROGRAMS = [
     ['git', '-C', os.path.join(_BIN, 'llama-server'), 'status'],
     'tasklist | findstr llama-server',
     ['my-llama-server-wrapper', '--port', '8082'],
+    # a stand-in binary of another name is not llama-server
+    ['mock-llama-server', '--port', '8082'],
+    [os.path.join(_BIN, 'fake-llama-server.exe'), '--port', '8082'],
     ['llama-server-bench.exe'],
     # A shell that only names one.
     ['cmd', '/c', 'taskkill', '/F', '/IM', 'llama-server.exe'],
@@ -210,6 +230,10 @@ OTHER_PROGRAMS = [
     ['powershell', '-Command', 'Get-Process llama-server'],
     ['bash', 'llama-server-notes.sh'],
     ['cmd', '/c', 'echo', 'llama-server'],
+    ['type', 'llama-server.log'],
+    ['shutdown', '/a'],
+    ['npm.cmd', 'run', 'build'],
+    [sys.executable, '-c', 'print("llama-server", "taskkill /IM Nunba.exe")'],
 ]
 
 
@@ -307,6 +331,15 @@ TOUCHES_THE_INSTALLED_APP = [
     ['C:/Program Files/HevolveAI/Nunba/Nunba.exe'],
     ['/Applications/Nunba.app/Contents/MacOS/Nunba'],
     ['/opt/nunba/Nunba', '--background'],
+    # Review of 604a9825: each of these reached the operating system.
+    ['taskkill', '/F', '/FI', 'IMAGENAME eq Nunba.exe'],
+    ['taskkill', '/T', '/IM', 'NUNBA.EXE'],
+    ['wmic', 'process', 'where', "name='Nunba.exe'", 'delete'],
+    ['powershell', '-Command', 'Get-Process Nunba | Stop-Process'],
+    ['cmd', '/c', 'start', '/b', 'taskkill', '/IM', 'Nunba.exe'],
+    ['psexec', 'taskkill', '/F', '/FI', 'IMAGENAME eq Nunba.exe'],
+    ['explorer.exe', _INSTALLED],
+    ['powershell', '-Command', f"Start-Process '{_INSTALLED}'"],
 ]
 
 
@@ -325,6 +358,95 @@ def test_the_installed_app_is_not_started_or_stopped_unasked(
     assert isinstance(refusal, OSError), refusal
     assert 'NUNBA_TEST_INSTALLED_APP=1' in str(refusal), (
         'the refusal must say how to do it on purpose')
+
+
+@pytest.mark.parametrize('command', [
+    f'start "" "{_INSTALLED}"',
+    'start "" Nunba.exe',
+    'taskkill /F /FI "IMAGENAME eq Nunba.exe"',
+], ids=repr)
+def test_the_installed_app_through_the_shell_flag_is_refused(
+        command, handed_to_the_os, not_asked):
+    refusal = _try_to_start(command, shell=True)
+
+    assert handed_to_the_os == []
+    assert isinstance(refusal, OSError), refusal
+    assert 'NUNBA_TEST_INSTALLED_APP=1' in str(refusal)
+
+
+# Every other way Python starts a program raises its own audit event.  The
+# interpreter raises it just before it acts, so raising the event here is the
+# same question put to the same hook, with nothing started.
+_MODEL = 'ModelServerStartRefused'
+_APP = 'InstalledAppNotAsked'
+OTHER_WAYS_TO_START = [
+    (_MODEL, 'os.system', ('llama-server --port 1',)),
+    (_MODEL, 'os.system', (b'start "" llama-server',)),
+    (_MODEL, 'os.system', ('echo hi && llama-server --port 1',)),
+    (_APP, 'os.system', ('echo hi & taskkill /IM Nunba.exe',)),
+    (_MODEL, 'os.startfile', ('llama-server.exe', None)),
+    (_MODEL, 'os.startfile/2', (_EXE, 'open', '--port 1', None, 1)),
+    (_MODEL, 'os.spawn', (0, _EXE, ['llama-server'], None)),
+    (_MODEL, 'os.spawn', (0, 'C:\\x\\run.exe', ['llama-server'], None)),
+    (_MODEL, 'os.posix_spawn', ('llama-server', ['llama-server'], {})),
+    (_MODEL, 'os.exec', ('/usr/bin/llama-server', ['llama-server'], None)),
+    (_MODEL, '_winapi.CreateProcess', (None, f'"{_EXE}" --port 1', None)),
+    (_MODEL, '_winapi.CreateProcess', (_EXE, 'x --port 1', None)),
+    (_APP, 'os.system', ('taskkill /F /IM Nunba.exe',)),
+    (_APP, 'os.system', (f'start "" "{_INSTALLED}"',)),
+    (_APP, 'os.startfile', (_INSTALLED, None)),
+    (_APP, 'os.startfile/2', (_INSTALLED, 'open', '', None, 1)),
+    (_APP, 'os.spawn', (0, _INSTALLED, ['Nunba'], None)),
+    (_APP, 'os.exec', (_INSTALLED, [_INSTALLED], None)),
+    (_APP, '_winapi.CreateProcess', (None, 'taskkill /F /FI "IMAGENAME eq Nunba.exe"', None)),
+    ('', 'os.system', ('tasklist | findstr llama-server',)),
+    ('', 'os.system', ('echo Nunba.exe',)),
+    ('', 'os.startfile', ('C:\\docs\\readme.txt', None)),
+    ('', 'os.spawn', (0, sys.executable, ['python', '-c', 'pass'], None)),
+    ('', '_winapi.CreateProcess', (None, 'taskkill /F /PID 12', None)),
+    ('', 'os.kill', (1234, 9)),
+]
+
+
+@pytest.mark.parametrize('wanted, event, args', OTHER_WAYS_TO_START,
+                         ids=lambda v: v if isinstance(v, str) else repr(v)[:60])
+def test_every_way_python_starts_a_program_is_asked(wanted, event, args, not_asked):
+    try:
+        sys.audit(event, *args)
+        said = ''
+    except OSError as refusal:
+        said = type(refusal).__name__
+
+    assert said == wanted
+
+
+def test_asked_for_the_other_ways_let_the_installed_app_through_only(monkeypatch):
+    monkeypatch.setenv('NUNBA_TEST_INSTALLED_APP', '1')
+    for wanted, event, args in OTHER_WAYS_TO_START:
+        try:
+            sys.audit(event, *args)
+            said = ''
+        except OSError as refusal:
+            said = type(refusal).__name__
+        assert said == (wanted if wanted == _MODEL else ''), (event, args)
+
+
+def test_a_test_that_starts_the_real_app_on_purpose_can_shed_the_runs_variables():
+    """install() sets four variables for the whole process.  The one file
+    that starts the installed app on purpose must not hand them on: the app
+    would boot no model and look in a private home."""
+    helper = _hermetic_run()
+    assert hasattr(helper, 'env_outside_the_run'), 'tests/hermetic_run.py has no such helper'
+    inside = {'NUNBA_TEST_HOME': 'a;b', 'HEVOLVE_EAGER_LLM': '0',
+              'NUNBA_DISABLE_LLAMA_AUTOSTART': '1', 'HEVOLVE_DRAFT_FIRST': '0',
+              'PATH': 'kept', 'NUNBA_TEST_INSTALLED_APP': '1', 'HEVOLVE_OTHER': 'kept'}
+
+    assert helper.env_outside_the_run(inside) == {
+        'PATH': 'kept', 'NUNBA_TEST_INSTALLED_APP': '1', 'HEVOLVE_OTHER': 'kept'}
+    assert set(helper.env_outside_the_run()) == set(os.environ) - set(helper.RUN_VARIABLES)
+    assert set(helper.RUN_VARIABLES) == {
+        'NUNBA_TEST_HOME', 'HEVOLVE_EAGER_LLM', 'NUNBA_DISABLE_LLAMA_AUTOSTART',
+        'HEVOLVE_DRAFT_FIRST'}
 
 
 def test_the_installed_app_named_only_as_the_executable_is_refused(
@@ -378,10 +500,12 @@ def _not_the_installed_app(tmp_path):
         [str(tmp_path / 'app' / 'Nunba.exe')],
         ['Nunba-setup.exe'],
         ['cmd', '/c', 'echo', 'Nunba.exe'],
+        ['explorer.exe', str(tmp_path)],
+        ['powershell', '-Command', 'Get-Process Nunba'],
     ]
 
 
-@pytest.mark.parametrize('index', range(10))
+@pytest.mark.parametrize('index', range(12))
 def test_what_is_not_the_installed_app_starts_as_before(
         index, tmp_path, handed_to_the_os, not_asked):
     command = _not_the_installed_app(tmp_path)[index]
@@ -688,6 +812,11 @@ for command in (["llama-server", "--port", "8082"], ["taskkill", "/F", "/IM", "N
         print("STARTED", command[0])
     except OSError as refusal:
         print("refused", command[0], type(refusal).__name__)
+try:
+    sys.audit("os.system", "start /wait llama-server")
+    print("os.system let through")
+except OSError as refusal:
+    print("os.system refused", type(refusal).__name__)
 print("loaded", sorted(m for m in sys.modules if m.split(".")[0] in ("llama", "main", "routes", "core", "integrations")))
 '''
 
@@ -706,6 +835,7 @@ def test_a_runner_that_loads_no_conftest_gets_all_of_it_from_one_call(tmp_path):
         'home True True',
         'refused llama-server ModelServerStartRefused',
         'refused taskkill InstalledAppNotAsked',
+        'os.system refused ModelServerStartRefused',
         'loaded []',
     ], done.stdout + done.stderr
     # the child's private home was removed when it exited
