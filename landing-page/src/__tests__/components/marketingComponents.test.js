@@ -56,6 +56,16 @@ const importedNames = (source) => [...source.matchAll(IMPORT_SPEC)].map((found) 
 const STYLE_IMPORT_SPEC = /@(?:import|use|forward)\s+(?:url\(\s*)?['"]([^'"]+)['"]/g;
 const styleImports = (source) => [...source.matchAll(STYLE_IMPORT_SPEC)]
   .map((found) => found[1].split('/').pop());
+// The two ways a file is reached by path without an import statement:
+// `require.resolve('./x')` and `new URL('./x', import.meta.url)`.  The check
+// before 63b6582d caught both (it read any quoted path on a line with
+// `require` or `import` in it); 63b6582d's did not (review rv_n7).
+const PATH_USE_SPEC = /(?:require\s*\.\s*resolve|new\s+URL)\s*\(\s*(?:\/\*[\s\S]*?\*\/\s*)*['"`]([^'"`]+)['"`]/g;
+const pathUses = (source) => [...source.matchAll(PATH_USE_SPEC)]
+  .map((found) => found[1].split('/').pop());
+// Every way a source names another file.
+const namedFiles = (source) => [
+  ...importedNames(source), ...styleImports(source), ...pathUses(source)];
 
 // Five pages nothing imported were deleted on 2026-11-22, with the reason, in
 // axiosFactoryTokenStaysHome.test.js.  One of them coming back fails here.
@@ -118,8 +128,7 @@ describe('style files only the deleted pages used stay deleted', () => {
           const live = fs.readFileSync(full, 'utf-8').split('\n')
             .filter((line) => !/^\s*(\/\/|\*)/.test(line)).join('\n');
           const wanted = new Set([name, stem, `_${stem}`]);
-          const named = [...importedNames(live), ...styleImports(live)];
-          if (named.some((found) => wanted.has(found))) users.push(full);
+          if (namedFiles(live).some((found) => wanted.has(found))) users.push(full);
         }
       }
     })(src);
@@ -143,6 +152,24 @@ describe('how an import of a deleted style file is recognised', () => {
     ["@forward 'parallax';", ['parallax']],
   ])('%s', (source, names) => {
     expect(styleImports(source)).toEqual(names);
+  });
+});
+
+describe('how a deleted style file reached by path is recognised', () => {
+  it.each([
+    ["const p = require.resolve('./parallax.scss');", ['parallax.scss']],
+    ["const u = new URL('./parallax.scss', import.meta.url);", ['parallax.scss']],
+    ["const u = new URL(\n  /* the old sheet */\n  '../components/progressStyles.css',\n  import.meta.url,\n);",
+      ['progressStyles.css']],
+    ["require . resolve(`./parallax.scss`)", ['parallax.scss']],
+  ])('%s', (source, names) => {
+    expect(pathUses(source)).toEqual(names);
+    expect(namedFiles(source)).toEqual(expect.arrayContaining(names));
+  });
+
+  it('a path that is only a string is not a use', () => {
+    expect(namedFiles("const note = 'see ./parallax.scss';")).toEqual([]);
+    expect(namedFiles("fetch('/api/parallax.scss');")).toEqual([]);
   });
 });
 
