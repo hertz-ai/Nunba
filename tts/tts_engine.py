@@ -1438,6 +1438,17 @@ def _is_venv_backend(backend: str) -> bool:
         return False
 
 
+def _spoke_this_session(backend: str) -> bool:
+    """True when a handshake of ``backend`` produced real audio in this
+    run (tts_handshake.is_verified_backend).  False when that cannot be
+    read."""
+    try:
+        from tts import tts_handshake
+        return bool(tts_handshake.is_verified_backend(backend))
+    except Exception:
+        return False
+
+
 def _probe_backend_runnable(backend: str, required_pkg: str) -> bool:
     """Single-call probe: is this backend runnable right now?
 
@@ -1725,8 +1736,18 @@ class TTSEngine:
                     backend, required_pkg,
                 )
             if not TTSEngine._import_check_cache[cache_key]:
-                logger.debug(f"Backend {backend} skipped: '{required_pkg}' not runnable")
-                return False
+                # The import probe said no, and a real synthesis through
+                # this backend has passed since (tts_handshake): audio on
+                # disk outranks a probe.  The probe cannot run at all in a
+                # source run (it needs the frozen app's python-embed) and
+                # answers "not runnable" there for every backend, so a
+                # voice that had just been set up, verified and used was
+                # "missing" again on the next turn: its setup was started
+                # again and the line was handed to Piper, which has no
+                # voice for the language (live walk, 22 Nov 2026, Tamil).
+                if not _spoke_this_session(backend):
+                    logger.debug(f"Backend {backend} skipped: '{required_pkg}' not runnable")
+                    return False
 
         # ── GPU backends need working CUDA in torch ──
         required_vram = cap.get('vram_gb', 0)
