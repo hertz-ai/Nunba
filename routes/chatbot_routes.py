@@ -4418,6 +4418,19 @@ def vault_store():
                           "HART OS and enter it again."),
             })
 
+        if key_type != 'channel_secret':
+            # A key typed on this computer's card is kept by the desktop
+            # vault and never passes through HARTOS's store_credential, so
+            # HARTOS is told here, by name: whatever was set aside for want
+            # of this key (a voice whose repo refused or lacked it) is put
+            # back.  An older HART OS has nobody to tell.
+            try:
+                from hartos.ai_key_vault import announce_credential_stored
+            except ImportError:
+                pass
+            else:
+                announce_credential_stored(key_name)
+
         return jsonify({'success': True, 'key_name': key_name, 'stored': True})
     except Exception as e:
         logger.error(f'Vault store error: {e}')

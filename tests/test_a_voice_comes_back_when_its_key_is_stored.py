@@ -12,6 +12,10 @@ Two defects in the ladder's 7-day demotion (review rv_2ae3):
     ladder puts back the voices that were waiting for that key, and only
     those (TTSEngine.restore_voices_waiting_for).
 
+  - later is not the next line.  Such a start is left alone for a while by
+    HARTOS's worker (30 s doubling to 10 minutes), so 20 lines cost one
+    start, not 20 (review rv_4625).
+
   - a passing failure read as a broken voice.  A network timeout, a full
     disk or the GPU out of memory while the worker STARTS all answered
     "worker startup failed", which the ladder demotes for 7 days after one
@@ -19,7 +23,11 @@ Two defects in the ladder's 7-day demotion (review rv_2ae3):
     mid-request already carries); a start that is really broken (a missing
     package, a bad model file) is demoted after one start as before.
 
-Real: HARTOS AIKeyVault.store_credential, gated_weights_failure,
+  - and the other way.  When a revoke takes a consent answer's key back
+    (hartos.ai_key_vault.on_credential_removed), the voices that key
+    brought back are set aside again with the demotion they had.
+
+Real: HARTOS AIKeyVault.store_credential, take_back_answer, gated_weights_failure,
 ToolWorker.call/synthesize; Nunba _SubprocessTTSBackend.synthesize,
 _is_structural_error, _record_backend_failure, the saved state file and its
 reload.  Faked: the worker's start (raises; nothing is spawned), the
@@ -54,6 +62,16 @@ class _Store:
     def set_secret(self, name, value):
         self._cache[name] = value
 
+    def set_secrets(self, changes):
+        for name, value in changes.items():
+            if value is None:
+                self._cache.pop(name, None)
+            else:
+                self._cache[name] = value
+
+    def delete_secret(self, name):
+        self._cache.pop(name, None)
+
 
 @pytest.fixture
 def world(monkeypatch, tmp_path):
@@ -71,13 +89,20 @@ def world(monkeypatch, tmp_path):
         sys.modules, 'security.immutable_audit_log',
         types.SimpleNamespace(get_audit_log=lambda: types.SimpleNamespace(
             log_event=lambda *a, **k: None)))
+    monkeypatch.setitem(
+        sys.modules, 'security.audit_trail',
+        types.SimpleNamespace(record=lambda *a, **k: None,
+                              current_request_id=lambda: None))
     vault = akv.AIKeyVault()
     vault._sm = _Store()
+    vault._granted_names = lambda: set()
     monkeypatch.setattr(akv, 'get_ai_key_vault', lambda: vault)
     # The key stays in the vault: a test never sets it in the environment.
     monkeypatch.setattr(akv, 'reads_from_env', lambda name: False)
     monkeypatch.setattr(akv, 'is_node_secret', lambda name: False)
     monkeypatch.setattr(akv, '_STORED_LISTENERS', [], raising=False)
+    monkeypatch.setattr(akv, '_REMOVED_LISTENERS', [], raising=False)
+    monkeypatch.setattr(te.TTSEngine, '_restored_for', {}, raising=False)
     asked = []
     monkeypatch.setattr(akv, 'request_credential',
                         lambda desc, agent_id=None, **kw: asked.append(desc))
@@ -277,7 +302,6 @@ def test_a_start_that_may_pass_is_not_a_broken_voice(world, why):
     "ModuleNotFoundError: No module named 'parler_tts'",
     'FileNotFoundError: model file not found: config.json',
     'RuntimeError: Error(s) in loading state_dict for ParlerTTS',
-    'indic_parler: startup timeout (120s)',
 ])
 def test_a_start_that_is_broken_is_demoted_after_one_start(world, why):
     engine = world.boot()
@@ -290,6 +314,17 @@ def test_a_start_that_is_broken_is_demoted_after_one_start(world, why):
     assert engine._is_demoted(VOICE)
     assert VOICE in _on_file(world)
     assert 'needs_key' not in _on_file(world)[VOICE]
+
+
+def test_the_workers_own_startup_deadline_is_a_broken_start(world):
+    """A worker that never answers is not started again on every line."""
+    engine = world.boot()
+    err = world.start_error(world.backend(
+        world.gw.WorkerTimeout(f'{VOICE}: startup timeout (120s)')))
+    assert err.transient is False
+    assert engine._is_structural_error(err) is True
+    engine._record_backend_failure(VOICE, err)
+    assert engine._is_demoted(VOICE)
 
 
 def test_a_broken_start_whose_last_lines_mention_the_network_stays_broken(world):
@@ -312,3 +347,302 @@ def test_a_death_at_startup_for_want_of_memory_may_pass(world):
     err = world.start_error(world.backend(crash))
     assert err.transient is True
     assert engine._is_structural_error(err) is False
+
+
+# ── later, not on the next line (review rv_4625) ────────────────────
+
+class _Piper:
+    """The last-resort voice: always speaks."""
+
+    def synthesize(self, text, output_path=None, **kw):
+        with open(output_path, 'wb') as f:
+            f.write(b'RIFF' + b'\0' * 20000)
+        return output_path
+
+
+def _speaking_engine(world, monkeypatch, tmp_path, why):
+    """(engine, worker, speak): the ladder with the gated voice selected
+    over a worker whose start dies of ``why``, and Piper behind it."""
+    te, gw = world.te, world.gw
+    monkeypatch.setattr(te.TTSEngine, '_get_vram_tool_name',
+                        classmethod(lambda cls, backend: None))
+    # no other voice is built for a fallback: nothing real is spawned
+    monkeypatch.setattr(te.TTSEngine, '_create_backend',
+                        lambda self, backend: None)
+    crash = gw.WorkerCrash(f'{VOICE}: died during startup (exit=2)')
+    crash.stderr_tail = why
+    adapter = world.backend(crash)
+    worker = adapter._worker
+    starts = []
+    fail = worker._get_or_start
+
+    def _start():
+        starts.append(1)
+        return fail()
+    worker._get_or_start = _start
+    engine = world.boot()
+    engine._backends[te.BACKEND_PIPER] = _Piper()
+
+    def speak(lines):
+        spoken = 0
+        for _ in range(lines):
+            if VOICE not in engine._backends and not engine._is_demoted(VOICE):
+                engine._backends[VOICE] = adapter
+            if not engine._is_demoted(VOICE):
+                engine._active_backend = VOICE
+            if engine._speak_with_active_engine(
+                    'hello there friend', str(tmp_path / 'o.wav'), None, 'en'):
+                spoken += 1
+        return spoken
+    return engine, starts, speak
+
+
+@pytest.mark.parametrize('why', [
+    'OSError: [Errno 28] No space left on device',
+    'torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 2.00 GiB',
+    'MemoryError',
+])
+def test_twenty_lines_cost_one_start_while_the_cause_lasts(
+        world, monkeypatch, tmp_path, why):
+    """Was 20 starts for 20 lines: a failure that may pass was never
+    counted here and never held back there.  HARTOS's worker now leaves
+    the voice alone for a while (ToolWorker's start backoff); every line
+    is still spoken, by the voice behind it."""
+    engine, starts, speak = _speaking_engine(world, monkeypatch, tmp_path, why)
+    assert speak(20) == 20
+    assert len(starts) == 1
+    assert not engine._is_demoted(VOICE)
+    assert not os.path.exists(world.state)
+
+
+def test_a_broken_voice_costs_one_start_and_is_set_aside(
+        world, monkeypatch, tmp_path):
+    engine, starts, speak = _speaking_engine(
+        world, monkeypatch, tmp_path,
+        "ModuleNotFoundError: No module named 'parler_tts'")
+    assert speak(20) == 20
+    assert len(starts) == 1
+    assert engine._is_demoted(VOICE)
+
+
+def test_a_model_file_that_will_not_load_is_broken_whatever_its_log_says(
+        world, monkeypatch, tmp_path):
+    """The hub's "Read timed out ... Retrying" above the real cause."""
+    engine, starts, speak = _speaking_engine(
+        world, monkeypatch, tmp_path,
+        "ReadTimeoutError: Read timed out. (read timeout=10)\n"
+        "Retrying in 1s [Retry 1/5].\n"
+        "safetensors_rust.SafetensorError: Error while deserializing header: "
+        "HeaderTooLarge")
+    assert speak(6) == 6
+    assert len(starts) == 1
+    assert engine._is_demoted(VOICE)
+
+
+def test_a_refused_key_costs_one_start_over_many_lines(
+        world, monkeypatch, tmp_path):
+    world.vault.store_credential(KEY, 'made-up-first-key')
+    engine, starts, speak = _speaking_engine(
+        world, monkeypatch, tmp_path, GATED_401)
+    assert speak(20) == 20
+    assert len(starts) == 1
+    assert engine._is_demoted(VOICE)
+    assert _on_file(world)[VOICE].get('needs_key') == KEY
+
+
+# ── whose key it is ─────────────────────────────────────────────────
+
+def test_a_fallback_voice_does_not_inherit_the_first_voices_key(world):
+    """A fallback fails inside the ``except`` of the voice before it, so
+    that voice's failure is its ``__context__``.  Review rv_4625: xtts_v2,
+    which died of something else, was recorded as waiting for the key."""
+    engine = world.boot()
+    world.vault.store_credential(KEY, 'made-up-first-key')
+    gated = world.backend(world.gw.WorkerError(GATED_401))
+    broken = world.backend(
+        world.gw.WorkerError('xtts_v2: died during startup (exit=2)'),
+        voice='xtts_v2')
+    try:
+        gated.synthesize('vanakkam', output_path='a.wav', language='ta')
+    except RuntimeError as first:
+        engine._record_backend_failure(VOICE, first)
+        try:
+            broken.synthesize('vanakkam', output_path='a.wav', language='ta')
+        except RuntimeError as second:
+            assert second.__context__ is first
+            assert engine._needed_key(second) == ''
+            engine._record_backend_failure('xtts_v2', second)
+    assert _on_file(world)[VOICE].get('needs_key') == KEY
+    assert 'needs_key' not in _on_file(world)['xtts_v2']
+
+    world.vault.store_credential(KEY, 'made-up-second-key')
+
+    assert not engine._is_demoted(VOICE)
+    assert engine._is_demoted('xtts_v2')
+
+
+def test_a_passing_failure_under_a_refused_key_is_not_read_as_the_key(world):
+    engine = world.boot()
+    first = RuntimeError(f'{VOICE}: said some way')
+    first.key_refused = True
+    second = RuntimeError('piper: audio encode failed')
+    second.__context__ = first
+    assert engine._is_structural_error(first) is True
+    assert engine._is_structural_error(second) is False
+
+
+# ── the key typed on this computer's card ───────────────────────────
+
+def test_a_key_typed_on_the_desktop_card_brings_the_voice_back(
+        world, monkeypatch, tmp_path):
+    """POST /api/vault/store keeps the value in the desktop vault and the
+    environment; it never passes through HARTOS's store_credential.
+    Review rv_4625: the voice stayed demoted."""
+    import flask
+
+    import desktop.ai_key_vault as dv
+    import routes.chatbot_routes as routes
+    engine = world.boot()
+    gated = world.backend(world.gw.WorkerError(GATED_401))
+    for _ in range(3):
+        engine._record_backend_failure(VOICE, world.start_error(gated))
+    _demote_for_another_reason(world, engine)
+    assert engine._is_demoted(VOICE)
+
+    home = tmp_path / 'nunba_home'
+    monkeypatch.setattr(dv, '_NUNBA_DIR', home)
+    monkeypatch.setattr(dv, '_VAULT_PATH', home / 'ai_keys.enc')
+    monkeypatch.setattr(dv, '_SALT_PATH', home / 'vault.salt')
+    monkeypatch.setattr(dv.AIKeyVault, '_instance', None)
+    # the card's store sets the key in the environment: taken out again
+    monkeypatch.setenv(KEY, 'placeholder')
+    monkeypatch.delenv(KEY)
+    monkeypatch.setattr(dv, 'reads_from_env', lambda name: name == KEY)
+    monkeypatch.setattr(routes, '_is_owner_credential', lambda name: False)
+    app = flask.Flask(__name__)
+    with app.test_request_context(json={
+            'key_type': 'tool_key', 'key_name': KEY,
+            'value': 'made-up-card-key'}):
+        answer = routes.vault_store()
+    body = (answer[0] if isinstance(answer, tuple) else answer).get_json()
+    assert body == {'success': True, 'key_name': KEY, 'stored': True}
+
+    assert not engine._is_demoted(VOICE)
+    assert VOICE not in _on_file(world)
+    assert engine._is_demoted(OTHER)
+    assert 'made-up-card-key' not in open(world.state, encoding='utf-8').read()
+
+
+def test_two_keys_stored_together_lose_no_saved_demotion(world):
+    """restore_voices_waiting_for reads the saved file and writes it back:
+    one caller at a time."""
+    import threading
+    engine = world.boot()
+    _demote_for_refused_key(world, engine)
+    _demote_for_another_reason(world, engine)
+    restore = world.te.TTSEngine.restore_voices_waiting_for
+    lock = getattr(world.te.TTSEngine, '_restore_lock', None)
+    assert lock is not None
+    done = []
+    with lock:
+        t = threading.Thread(target=lambda: done.append(restore(KEY)))
+        t.start()
+        t.join(0.3)
+        assert done == []           # it waits for whoever holds the file
+    t.join(5)
+    assert done == [[VOICE]]
+    assert list(_on_file(world)) == [OTHER]
+
+
+# ── a key that is taken back ────────────────────────────────────────
+
+def _phone_answer_brings_the_voice_back(world, engine):
+    """Demoted for a missing key, then the phone's answer: stored, and
+    announced once its grant has committed (consent_api.grant_consent)."""
+    gated = world.backend(world.gw.WorkerError(GATED_401))
+    for _ in range(3):
+        engine._record_backend_failure(VOICE, world.start_error(gated))
+    assert engine._is_demoted(VOICE)
+    kept = dict(_on_file(world)[VOICE])
+    world.vault.store_credential(KEY, 'made-up-phone-key', granted_only=True)
+    assert engine._is_demoted(VOICE), 'brought back before the grant stood'
+    world.akv.announce_credential_stored(KEY)
+    assert not engine._is_demoted(VOICE)
+    return kept
+
+
+def test_a_key_that_is_taken_back_sets_its_voice_aside_again(world):
+    """HARTOS says when a revoke takes a consent answer's value back
+    (on_credential_removed).  A voice brought back for that key would be
+    started once more for nothing."""
+    engine = world.boot()
+    _demote_for_another_reason(world, engine)
+    kept = _phone_answer_brings_the_voice_back(world, engine)
+    assert VOICE not in _on_file(world)
+
+    assert world.vault.take_back_answer(KEY, revoked=True) == 1
+
+    assert not world.vault.get_tool_key(KEY)
+    assert engine._is_demoted(VOICE)
+    # the demotion it had, with its own clock
+    assert _on_file(world).get(VOICE) == kept
+    assert engine._is_demoted(OTHER)
+    assert world.boot()._is_demoted(VOICE)
+
+    # and a key that arrives again brings it back again
+    world.vault.store_credential(KEY, 'made-up-second-key')
+    assert not world.te._engine._is_demoted(VOICE)
+    assert VOICE not in _on_file(world)
+
+
+def test_it_is_set_aside_again_with_no_engine_running(world):
+    engine = world.boot()
+    kept = _phone_answer_brings_the_voice_back(world, engine)
+    world.te._engine = None
+
+    world.vault.take_back_answer(KEY, revoked=True)
+
+    assert _on_file(world).get(VOICE) == kept
+    assert world.boot()._is_demoted(VOICE)
+
+
+def test_a_voice_restored_from_the_saved_file_alone_is_set_aside_again(world):
+    """Demoted in an earlier run; the key arrives and is taken back before
+    the voice engine exists in this one."""
+    engine = world.boot()
+    gated = world.backend(world.gw.WorkerError(GATED_401))
+    for _ in range(3):
+        engine._record_backend_failure(VOICE, world.start_error(gated))
+    kept = dict(_on_file(world)[VOICE])
+    world.te._engine = None
+    world.vault.store_credential(KEY, 'made-up-phone-key', granted_only=True)
+    world.akv.announce_credential_stored(KEY)
+    assert VOICE not in _on_file(world)
+
+    world.vault.take_back_answer(KEY, revoked=True)
+
+    assert _on_file(world).get(VOICE) == kept
+
+
+def test_a_key_taken_back_sets_aside_only_what_it_brought_back(world):
+    """A voice nobody restored, and a key nobody was waiting for."""
+    engine = world.boot()
+    _demote_for_another_reason(world, engine)
+    before = _on_file(world)
+    set_aside = getattr(world.te.TTSEngine, 'set_aside_voices_restored_for',
+                        None)
+    assert set_aside is not None
+    assert set_aside(KEY) == []
+    assert set_aside('') == []
+    assert _on_file(world) == before
+    assert not engine._is_demoted(VOICE)
+    # taken back twice: the second finds nothing left to do
+    _phone_answer_brings_the_voice_back(world, engine)
+    assert set_aside(KEY) == [VOICE]
+    assert set_aside(KEY) == []
+
+
+def test_the_ladder_listens_for_a_key_taken_back_once(world):
+    for _ in range(3):
+        world.boot()
+    assert len(world.akv._REMOVED_LISTENERS) == 1

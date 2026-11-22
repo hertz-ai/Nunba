@@ -1579,6 +1579,14 @@ class TTSEngine:
             pass
         else:
             on_credential_stored(TTSEngine.restore_voices_waiting_for)
+        # ... and is set aside again when the key is taken back (a HARTOS
+        # from before that signal has none to give).
+        try:
+            from hartos.ai_key_vault import on_credential_removed
+        except ImportError:
+            pass
+        else:
+            on_credential_removed(TTSEngine.set_aside_voices_restored_for)
 
         # Hardware info (detected lazily)
         self.gpu_info = None
@@ -2120,17 +2128,14 @@ class TTSEngine:
     def _needed_key(error: BaseException | None) -> str:
         """The key a failure says the voice's repo wants ('' when it wants
         none): the worker answer's ``needs_key`` field, which the adapter
-        puts on the exception.  Looked for along the cause chain."""
-        seen: set[int] = set()
-        cur = error
-        while cur is not None and id(cur) not in seen:
-            seen.add(id(cur))
-            key = getattr(cur, 'needs_key', '')
-            if key:
-                return str(key)
-            cur = (getattr(cur, '__cause__', None)
-                   or getattr(cur, '__context__', None))
-        return ''
+        puts on the exception.
+
+        Read from this exception only, never from what it was raised
+        under.  A fallback voice fails inside the ``except`` of the voice
+        before it, so the first voice's failure is its ``__context__``: a
+        fallback that died of something else was recorded as waiting for
+        the first voice's key (review rv_4625: xtts_v2)."""
+        return str(getattr(error, 'needs_key', '') or '')
 
     @classmethod
     def _is_structural_error(cls, error: Exception | None) -> bool:
@@ -2154,12 +2159,14 @@ class TTSEngine:
         # matched here).
         if getattr(error, 'transient', False):
             return False
+        # This exception's own field only: what it was raised under may be
+        # another voice's failure (see _needed_key).
+        if getattr(error, 'key_refused', False):
+            return True
         seen: set[int] = set()
         cur: BaseException | None = error
         while cur is not None and id(cur) not in seen:
             seen.add(id(cur))
-            if getattr(cur, 'key_refused', False):
-                return True
             blob = f"{type(cur).__name__.lower()} {(str(cur) or '').lower()}"
             for sig in cls._STRUCTURAL_FAILURE_SIGNATURES:
                 if sig in blob:
@@ -2478,7 +2485,20 @@ class TTSEngine:
         refused too, the next start demotes the voice again."""
         if not key_name:
             return []
+        with cls._restore_lock:
+            return cls._restore_voices_waiting_for(key_name)
+
+    _restore_lock = threading.Lock()
+
+    @classmethod
+    def _restore_voices_waiting_for(cls, key_name: str) -> list[str]:
+        """restore_voices_waiting_for, one caller at a time: two keys stored
+        together each read the saved file and write it back."""
         waiting: set[str] = set()
+        # What each voice's demotion was, kept for this run: if the key is
+        # taken back (set_aside_voices_restored_for) the same demotion, with
+        # its own clock, is put back.
+        was = cls._restored_for.setdefault(key_name, {})
         path = _get_tts_state_path()
         try:
             with open(path, encoding='utf-8') as _f:
@@ -2486,14 +2506,18 @@ class TTSEngine:
         except (OSError, ValueError, AttributeError):
             persisted = None
         if isinstance(persisted, dict):
-            waiting.update(
-                backend for backend, info in persisted.items()
-                if isinstance(info, dict) and info.get('needs_key') == key_name)
+            for backend, info in persisted.items():
+                if isinstance(info, dict) and info.get('needs_key') == key_name:
+                    waiting.add(backend)
+                    was[backend] = dict(info)
         engine = _engine
         if engine is not None:
-            waiting.update(
-                backend for backend, meta in list(engine._demotion_meta.items())
-                if meta.get('needs_key') == key_name)
+            for backend, meta in list(engine._demotion_meta.items()):
+                if meta.get('needs_key') == key_name:
+                    waiting.add(backend)
+                    was.setdefault(backend, dict(
+                        meta, failures_at_demotion=engine._consecutive_failures
+                        .get(backend, engine._failure_threshold)))
             for backend in waiting:
                 engine._demoted_backends.discard(backend)
                 engine._demotion_meta.pop(backend, None)
@@ -2505,6 +2529,53 @@ class TTSEngine:
                 f"TTS: {key_name} was stored; back on the ladder: "
                 f"{', '.join(sorted(waiting))}")
         return sorted(waiting)
+
+    # key name -> {voice: the demotion it had}, for the voices this run put
+    # back when that key was stored.
+    _restored_for: dict[str, dict[str, dict[str, Any]]] = {}
+
+    @classmethod
+    def set_aside_voices_restored_for(cls, key_name: str) -> list[str]:
+        """The other way: ``key_name`` was taken back (a revoked consent
+        answer; HARTOS ai_key_vault.on_credential_removed).  The voices this
+        run put back when that key was stored are set aside again, with the
+        demotion they had, on file and in the running engine.  Returns
+        their names.
+
+        Without it a voice brought back for a key that is gone again would
+        be started once more for nothing.  Only what this run restored is
+        known: after a restart the voice is found out by its next start,
+        as it was the first time."""
+        if not key_name:
+            return []
+        import time as _time
+        with cls._restore_lock:
+            was = cls._restored_for.pop(key_name, {})
+            now = _time.time()
+            again = {backend: info for backend, info in was.items()
+                     if backend not in (BACKEND_PIPER, BACKEND_NONE)
+                     and isinstance(info.get('expires_at'), (int, float))
+                     and info['expires_at'] > now}
+            if not again:
+                return []
+            # The running engine, or one made only to write the file the
+            # way every demotion is written (it loads what is saved first).
+            engine = _engine if _engine is not None else TTSEngine(
+                auto_init=False)
+            for backend, info in again.items():
+                engine._demoted_backends.add(backend)
+                engine._consecutive_failures[backend] = info.get(
+                    'failures_at_demotion', engine._failure_threshold)
+                engine._demotion_meta[backend] = {
+                    'first_demoted_at': info.get('first_demoted_at', now),
+                    'expires_at': info['expires_at'],
+                    'needs_key': key_name,
+                }
+            engine._save_persisted_demotions()
+            logger.info(
+                f"TTS: {key_name} was taken back; set aside again: "
+                f"{', '.join(sorted(again))}")
+            return sorted(again)
 
     @classmethod
     def clear_persisted_demotions(cls, backend: str | None = None) -> int:

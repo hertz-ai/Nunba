@@ -119,9 +119,10 @@ def test_the_field_is_read_not_the_words(ladder):
     field_only = RuntimeError(f'{VOICE}: said some other way')
     field_only.key_refused = True
     assert engine._is_structural_error(field_only) is True
-    wrapped = RuntimeError('synthesis failed')
-    wrapped.__cause__ = field_only
-    assert engine._is_structural_error(wrapped) is True
+    # the field of THIS failure: one raised under it is another voice's
+    under_it = RuntimeError('synthesis failed')
+    under_it.__context__ = field_only
+    assert engine._is_structural_error(under_it) is False
 
 
 def test_the_demotion_is_kept_for_the_next_boot(ladder, monkeypatch):
