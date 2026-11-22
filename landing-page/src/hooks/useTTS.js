@@ -429,6 +429,13 @@ export function useTTS(options = {}) {
         }
         return url;
       } catch (err) {
+        // The server found no words in the text (only markup or emoji: its
+        // answer names "" as what would be spoken).  There is nothing for
+        // the browser voice to say either: an empty utterance was handed
+        // to it and the page showed "speaking" over silence.
+        if (!spokenText.trim()) {
+          return null;
+        }
         // Server TTS failed — fall back to browser Web Speech API.
         // Auto-detect utterance language from the actual text content
         // rather than trusting the caller's `lang` (often stale — tied

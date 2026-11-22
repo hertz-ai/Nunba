@@ -75,12 +75,12 @@ async function speakWithServerAnswer(answer, text) {
   await act(async () => {
     returned = await result.current.speak(text);
   });
-  return returned;
+  return {returned, result};
 }
 
 describe('the browser voice says what the server would have said', () => {
   it('speaks the server-cut words, not the markup', async () => {
-    const returned = await speakWithServerAnswer(
+    const {returned} = await speakWithServerAnswer(
       {
         ok: false,
         status: 500,
@@ -119,5 +119,43 @@ describe('the browser voice says what the server would have said', () => {
       String(u).endsWith('/synthesize')
     );
     expect(JSON.parse(call[1].body).text).toBe('*Hi*');
+  });
+
+  // Review rv_66ba of aa885268: the page spoke an empty utterance and showed
+  // "speaking" (uttered=[""], isSpeaking=true) when the server found no words.
+  it('says nothing when the server found no words in the text', async () => {
+    const {returned, result} = await speakWithServerAnswer(
+      {
+        ok: false,
+        status: 400,
+        json: () =>
+          Promise.resolve({error: 'No text provided', spoken_text: ''}),
+      },
+      '** **'
+    );
+    expect(uttered).toEqual([]);
+    expect(window.speechSynthesis.speak).not.toHaveBeenCalled();
+    expect(returned).toBeNull();
+    expect(result.current.isSpeaking).toBe(false);
+    expect(result.current.isLoading).toBe(false);
+  });
+
+  it('says nothing when the words the server names are only spaces', async () => {
+    const {returned, result} = await speakWithServerAnswer(
+      {ok: false, status: 400, json: () => Promise.resolve({spoken_text: ' \n'})},
+      '\u{1F642}'
+    );
+    expect(uttered).toEqual([]);
+    expect(returned).toBeNull();
+    expect(result.current.isSpeaking).toBe(false);
+  });
+
+  it('still speaks when the server names words on a 400', async () => {
+    const {returned} = await speakWithServerAnswer(
+      {ok: false, status: 400, json: () => Promise.resolve({spoken_text: 'Hi'})},
+      '*Hi*'
+    );
+    expect(returned).toBe('webspeech');
+    expect(uttered).toEqual(['Hi']);
   });
 });
