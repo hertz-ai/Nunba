@@ -30,11 +30,18 @@ _OPT_IN = 'NUNBA_TEST_INSTALLED_APP'
 def machine_with_nunba_installed(tmp_path, monkeypatch):
     """Load the file as it would load on a Windows machine with Nunba
     installed, and return (module, started): `started` records every process
-    the file asks for.  Nothing real is started or stopped."""
+    the file asks for.  Nothing real is started or stopped, and the home the
+    file reads its logs from is a folder made here: two of its tests open
+    ~/Documents/Nunba/logs/langchain.log, which on a real home is the
+    person's own log (review of fc9f4e7f)."""
     exe = tmp_path / 'HevolveAI' / 'Nunba' / 'Nunba.exe'
     exe.parent.mkdir(parents=True)
     exe.write_bytes(b'')
     monkeypatch.setenv('ProgramFiles(x86)', str(tmp_path))
+    home = tmp_path / 'home'
+    home.mkdir()
+    monkeypatch.setenv('USERPROFILE', str(home))
+    monkeypatch.setenv('HOME', str(home))
     monkeypatch.setattr(sys, 'platform', 'win32')
 
     def load():
@@ -127,6 +134,39 @@ def test_asked_for_on_a_machine_with_it_installed_the_file_does_run(
     assert ['taskkill', '/F', '/IM', 'Nunba.exe'] in started
     assert [str(Path(os.environ['ProgramFiles(x86)']) / 'HevolveAI' / 'Nunba' / 'Nunba.exe'),
             '--background'] in started
+
+
+def _outcome(result, test_name):
+    for kind in ('skipped', 'failures', 'errors'):
+        for case, _text in getattr(result, kind):
+            if case.id().endswith('.' + test_name):
+                return kind
+    return 'passed'
+
+
+def test_the_log_the_file_reads_is_the_test_homes_not_the_persons(
+        tmp_path, machine_with_nunba_installed, monkeypatch):
+    """With the file opted in, its log test passes on a log written in the
+    test home and is skipped when that home has none.  Either way it never
+    depended on, or opened, the real ~/Documents/Nunba/logs/langchain.log."""
+    monkeypatch.setenv(_OPT_IN, '1')
+    logs = tmp_path / 'home' / 'Documents' / 'Nunba' / 'logs'
+
+    def run_with_the_app_up():
+        module, _started = machine_with_nunba_installed()
+        # the (recorded, never started) app answers at once, so the class
+        # gets past its start-up wait and its tests run
+        monkeypatch.setattr(module, 'MAX_STARTUP_WAIT', 5)
+        monkeypatch.setattr(module, '_is_flask_ready', lambda: True)
+        return _run(module)
+
+    without = run_with_the_app_up()
+    logs.mkdir(parents=True)
+    (logs / 'langchain.log').write_text('boot\n[BACKGROUND] repaint\n', encoding='utf-8')
+    with_log = run_with_the_app_up()
+
+    assert _outcome(without, 'TestBackgroundStart.test_webview_recovery_log_exists') == 'skipped'
+    assert _outcome(with_log, 'TestBackgroundStart.test_webview_recovery_log_exists') == 'passed'
 
 
 def test_asked_for_without_nunba_installed_it_is_still_skipped(
