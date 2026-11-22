@@ -13,7 +13,6 @@ folder name is listed too: build.py's presence check
 (deps.missing_embed_packages) would otherwise look for a "dnspython" folder,
 never find it, and fail every build.
 """
-import ast
 import os
 import re
 import sys
@@ -25,32 +24,8 @@ sys.path.insert(0, os.path.join(_ROOT, 'scripts'))
 
 import deps  # noqa: E402
 
-_GUARD_WITH_THE_RESOLVER = os.path.join(
-    _ROOT, 'tests', 'test_source_guard_one_ctx_size_authority.py')
-
-
-def _hartos_root():
-    """Where HARTOS lives, or None: HARTOS_REPO, the sibling checkout, then
-    whatever provides `core` to this interpreter.  The rule is the one in
-    test_source_guard_one_ctx_size_authority.py and is taken from there, not
-    written again; that module cannot be imported for it (importing it runs
-    the guard), so its one function is read out of its source."""
-    with open(_GUARD_WITH_THE_RESOLVER, encoding='utf-8') as fh:
-        tree = ast.parse(fh.read())
-    wanted = [node for node in tree.body
-              if isinstance(node, ast.FunctionDef) and node.name == '_hartos_root']
-    assert len(wanted) == 1, 'the HARTOS resolver moved out of ' + _GUARD_WITH_THE_RESOLVER
-    scope = {'os': os, '__file__': _GUARD_WITH_THE_RESOLVER}
-    exec(compile(ast.Module(body=wanted, type_ignores=[]),  # noqa: S102
-                 _GUARD_WITH_THE_RESOLVER, 'exec'), scope)
-    return scope['_hartos_root']()
-
-
-def _searched():
-    """The places that rule looks, for a skip text that says where it looked."""
-    return (f"HARTOS_REPO={os.environ.get('HARTOS_REPO') or '(unset)'}, "
-            f"{os.path.join(os.path.dirname(_ROOT), 'HARTOS')}, "
-            f"and the `core` package on this interpreter's path")
+from tests.hartos_root import hartos_root as _hartos_root  # noqa: E402
+from tests.hartos_root import searched as _searched  # noqa: E402
 
 
 def _hartos_requirements():
