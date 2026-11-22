@@ -108,7 +108,10 @@ describe('whether a payload says who asks is one check', () => {
     expect(declineLabel('computer_control', '61', '', 'Agent Vijai')).toBe("Don't allow Agent Vijai");
   });
 
-  test('the toast asks that check and keeps no copy of it', () => {
+  // SOURCE GUARD, not behaviour: it reads the component's text.  What the
+  // toast shows is pinned by the mounted tests below; this one only keeps a
+  // second copy of the check from growing back beside the first.
+  test('source guard: the toast asks that check and keeps no copy of it', () => {
     const toast = fs.readFileSync(path.join(
       __dirname, '..', '..', '..', 'components', 'Agent', 'AgentMessageToast.js'), 'utf8');
     expect(toast).toMatch(/saysWhoAsks\(data\)/);
