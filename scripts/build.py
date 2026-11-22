@@ -886,6 +886,17 @@ def build_react_landing_page(install_deps=True):
     # Every refusal for a missing tool names the fix (review of 6b442c4ab).
     node_fix = "Install Node.js 20 and put node on PATH, then build again."
 
+    def not_started(tool, err):
+        # The tool may well be installed: the system refused to start it
+        # (no access, the paging file too small, a bad executable).  Saying
+        # "not found, install Node.js" sent the reader to fix the wrong thing
+        # (review of 7e58a9a0c), so the error is named as it came.
+        return (f"{tool} could not be started ({type(err).__name__}: {err}): "
+                "the React bundle cannot be built. This is not a missing "
+                "Node.js. Check that this account may run it (permissions, "
+                "antivirus) and that the machine has free memory and paging "
+                "file, then build again.")
+
     # Check if Node.js is available
     try:
         result = subprocess.run(
@@ -893,11 +904,14 @@ def build_react_landing_page(install_deps=True):
         )
         if result.returncode != 0:
             raise FileNotFoundError
-    except (FileNotFoundError, OSError):
+    except FileNotFoundError:
         # No bundle built is never a pass: the freeze would ship whatever
         # landing-page/build holds (review of 9bdd47e0).
         print_error("Node.js not found: the React bundle cannot be built. "
                     + node_fix)
+        return False
+    except OSError as err:
+        print_error(not_started('node', err))
         return False
 
     print_header("Building React landing-page")
@@ -926,8 +940,11 @@ def build_react_landing_page(install_deps=True):
                 [npm_cmd, 'install', '--legacy-peer-deps'],
                 cwd=landing_dir, check=False
             )
-        except OSError:
+        except FileNotFoundError:
             print_error(npm_missing)
+            return False
+        except OSError as err:
+            print_error(not_started(npm_cmd, err))
             return False
         if result.returncode != 0:
             if not had_node_modules:
@@ -957,8 +974,11 @@ def build_react_landing_page(install_deps=True):
             [npm_cmd, 'run', 'build'],
             cwd=landing_dir, env=env, check=False, stdin=subprocess.DEVNULL
         )
-    except OSError:
+    except FileNotFoundError:
         print_error(npm_missing)
+        return False
+    except OSError as err:
+        print_error(not_started(npm_cmd, err))
         return False
     if result.returncode != 0:
         print_error("React build failed! Fix the build errors before freezing.")

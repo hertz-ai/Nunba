@@ -180,7 +180,8 @@ _OLD_BUNDLE = 'the bundle of an earlier build'
 
 
 def _npm(build, monkeypatch, tmp_path, *, node_modules=True, build_rc=0,
-         node=True, install_rc=0, npm=True, old_bundle=False):
+         node=True, install_rc=0, npm=True, old_bundle=False,
+         node_error=None, npm_error=None):
     """build_react_landing_page's commands, from a landing-page made here.
 
     ``old_bundle`` leaves landing-page/build/index.html from an earlier
@@ -197,9 +198,13 @@ def _npm(build, monkeypatch, tmp_path, *, node_modules=True, build_rc=0,
     def run(cmd, *args, **kwargs):
         ran.append(list(cmd))
         if cmd[:2] == ['node', '--version']:
+            if node_error is not None:
+                raise node_error
             if not node:
                 raise FileNotFoundError('node')
             return _Done(0)
+        if npm_error is not None:
+            raise npm_error
         if not npm:
             raise FileNotFoundError(2, 'The system cannot find the file specified', cmd[0])
         if 'build' in cmd:
@@ -293,6 +298,47 @@ class TestTheBundleStep:
         assert 'npm' in errors[0]
         assert all(word in errors[0] for word in _NAMES_THE_FIX)
         assert len([c for c in ran if c[0] != 'node']) == 1
+        assert _old_bundle_is_untouched(tmp_path)
+
+    # Review of 7e58a9a0c: any OSError from starting npm was reported as
+    # "npm.cmd not found ... Install Node.js 20", also when npm was there and
+    # Windows would not start it.  Only a missing file is "not found".
+    _NOT_A_MISSING_TOOL = [
+        PermissionError(13, 'Access is denied', 'npm.cmd'),
+        OSError(22, 'The paging file is too small for this operation to complete'),
+        OSError(8, 'Exec format error'),
+    ]
+
+    @pytest.mark.parametrize('error', _NOT_A_MISSING_TOOL, ids=lambda e: type(e).__name__ + str(e.errno))
+    @pytest.mark.parametrize('install_deps', [True, False])
+    def test_npm_that_is_there_and_will_not_start_is_not_called_missing(
+            self, build, monkeypatch, tmp_path, install_deps, error):
+        ran = _npm(build, monkeypatch, tmp_path, npm_error=error, old_bundle=True)
+        said = _said(build, monkeypatch)
+        assert _bundle_step(build, install_deps=install_deps) is False
+        errors = [text for kind, text in said if kind == 'error']
+        assert len(errors) == 1
+        assert 'not found' not in errors[0]
+        assert 'Install Node.js' not in errors[0]
+        assert type(error).__name__ in errors[0] and str(error) in errors[0]
+        assert 'npm' in errors[0] and 'could not be started' in errors[0]
+        assert 'Check' in errors[0] and 'build again' in errors[0]
+        assert len([c for c in ran if c[0] != 'node']) == 1
+        assert _old_bundle_is_untouched(tmp_path)
+
+    @pytest.mark.parametrize('error', _NOT_A_MISSING_TOOL, ids=lambda e: type(e).__name__ + str(e.errno))
+    def test_node_that_is_there_and_will_not_start_is_not_called_missing(
+            self, build, monkeypatch, tmp_path, error):
+        ran = _npm(build, monkeypatch, tmp_path, node_error=error, old_bundle=True)
+        said = _said(build, monkeypatch)
+        assert _bundle_step(build) is False
+        errors = [text for kind, text in said if kind == 'error']
+        assert len(errors) == 1
+        assert 'not found' not in errors[0]
+        assert 'Install Node.js' not in errors[0]
+        assert type(error).__name__ in errors[0] and str(error) in errors[0]
+        assert 'node could not be started' in errors[0]
+        assert ran == [['node', '--version']]
         assert _old_bundle_is_untouched(tmp_path)
 
     def test_a_failed_refresh_install_warns_and_the_build_step_decides(
