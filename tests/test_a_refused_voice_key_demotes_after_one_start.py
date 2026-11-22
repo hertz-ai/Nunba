@@ -98,8 +98,10 @@ def test_a_refused_stored_key_demotes_after_one_start(ladder, monkeypatch):
     engine, start_error, starts = ladder
     monkeypatch.setenv('HEVOLVE_HF_TOKEN', 'stored-key')
     err = start_error()
+    # HARTOS's words, then what the hub said to the worker (its cause)
     assert str(err) == (f'{VOICE}: {REPO} refused the stored HEVOLVE_HF_TOKEN; '
-                        f'accept its terms at {PAGE} with that account')
+                        f'accept its terms at {PAGE} with that account '
+                        f'(cause: Access to model {REPO} is restricted)')
     assert getattr(err, 'key_refused', None) is True
     assert getattr(err, 'needs_key', None) == 'HEVOLVE_HF_TOKEN'
     assert engine._is_structural_error(err) is True

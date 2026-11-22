@@ -4151,7 +4151,16 @@ class _SubprocessTTSBackend:
             # Preserve the transient flag on the exception so TTSEngine's
             # fallback chain can short-circuit straight to Piper on GPU
             # OOM, instead of walking every other GPU engine.
-            err = RuntimeError(f"{self._engine_id}: {result['error']}")
+            # What the worker died of, when it says so (HARTOS gpu_worker:
+            # the answer's ``cause``): the reason itself goes with the
+            # error, into the log line and to whoever reads this failure.
+            # The error's words alone were "died during startup (exit=1)".
+            said = str(result['error'])
+            cause = str(result.get('cause') or '')
+            if cause and cause not in said:
+                said = f"{said} (cause: {cause})"
+            err = RuntimeError(f"{self._engine_id}: {said}")
+            err.cause = cause  # type: ignore[attr-defined]
             err.transient = bool(result.get('transient'))  # type: ignore[attr-defined]
             # Which key the voice's repo wants, and whether it refused the
             # stored one (HARTOS ai_key_vault.gated_weights_failure).

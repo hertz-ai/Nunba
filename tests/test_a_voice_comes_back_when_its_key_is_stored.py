@@ -339,6 +339,31 @@ def test_a_broken_start_whose_last_lines_mention_the_network_stays_broken(world)
     assert engine._is_structural_error(err) is True
 
 
+def test_what_the_worker_died_of_goes_with_the_error(world):
+    """Owner ruling 2026-11-22: "Real failure reasons should be available to
+    the agent so that it can ask correct questions".  The error's own words
+    are "died during startup (exit=1)"; the worker's answer names the cause
+    beside them (HARTOS gpu_worker), and it was dropped here (review rv_vt
+    of HARTOS befa0bc31)."""
+    crash = world.gw.WorkerCrash(f'{VOICE}: died during startup (exit=1)')
+    crash.stderr_tail = ('loading model...\n'
+                         "ModuleNotFoundError: No module named 'parler_tts'")
+    err = world.start_error(world.backend(crash))
+    assert str(err) == (
+        f'{VOICE}: {VOICE} worker startup failed: {VOICE}: died during '
+        f"startup (exit=1) (cause: ModuleNotFoundError: No module named "
+        f"'parler_tts')")
+    assert getattr(err, 'cause', None) == \
+        "ModuleNotFoundError: No module named 'parler_tts'"
+
+
+def test_a_cause_the_error_already_says_is_not_said_twice(world):
+    err = world.start_error(world.backend(
+        world.gw.WorkerError('CUDA out of memory')))
+    assert str(err) == f'{VOICE}: {VOICE} worker startup failed: CUDA out of memory'
+    assert getattr(err, 'cause', None) == 'CUDA out of memory'
+
+
 def test_a_death_at_startup_for_want_of_memory_may_pass(world):
     """The usual shape: the child dies and its stderr says why."""
     engine = world.boot()
