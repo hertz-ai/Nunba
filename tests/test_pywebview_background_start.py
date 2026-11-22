@@ -36,6 +36,8 @@ import unittest
 
 import requests
 
+from tests.hermetic_run import env_outside_the_run
+
 NUNBA_EXE = os.path.join(
     os.environ.get('ProgramFiles(x86)', 'C:\\Program Files (x86)'),
     'HevolveAI', 'Nunba', 'Nunba.exe'
@@ -104,6 +106,10 @@ class TestBackgroundStart(unittest.TestCase):
             [NUNBA_EXE, '--background'],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            # The real app, as the person runs it: not with this test run's
+            # variables (no model boot, a private home), which would make
+            # test_llm_health_during_background measure the test run.
+            env=env_outside_the_run(),
         )
 
         # Wait for Flask to be ready
@@ -236,6 +242,10 @@ class TestBackgroundToForeground(unittest.TestCase):
             [NUNBA_EXE, '--background'],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            # The real app, as the person runs it: not with this test run's
+            # variables (no model boot, a private home), which would make
+            # test_llm_health_during_background measure the test run.
+            env=env_outside_the_run(),
         )
 
         # Wait for Flask

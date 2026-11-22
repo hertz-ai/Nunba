@@ -49,12 +49,14 @@ def machine_with_nunba_installed(tmp_path, monkeypatch):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         started = []
+        launch_envs.clear()
         # The file's own names for these modules are swapped, not the modules:
         # the rest of the test process keeps the real ones.
         real = module.subprocess
         monkeypatch.setattr(module, 'subprocess', SimpleNamespace(
             run=lambda cmd, *a, **k: started.append(list(cmd)) or MagicMock(),
-            Popen=lambda cmd, *a, **k: started.append(list(cmd)) or MagicMock(),
+            Popen=lambda cmd, *a, **k: (started.append(list(cmd)),
+                                        launch_envs.append(k.get('env')))[0] or MagicMock(),
             DEVNULL=real.DEVNULL, PIPE=real.PIPE, TimeoutExpired=real.TimeoutExpired))
         # No waiting, and no talking to whatever is on :5000.
         monkeypatch.setattr(module, 'MAX_STARTUP_WAIT', 0)
@@ -70,6 +72,34 @@ def machine_with_nunba_installed(tmp_path, monkeypatch):
         return module, started
 
     return load
+
+
+# The env= each recorded Popen was given, for the load in progress.
+launch_envs = []
+
+
+def test_asked_for_the_real_app_is_started_outside_the_test_runs_variables(
+        machine_with_nunba_installed, monkeypatch):
+    """tests/hermetic_run.install() sets four variables for every test
+    process.  Handed on, they would make the installed app boot no model and
+    look in a private home, and the file would measure that instead of the
+    app the person runs (review of fc9f4e7f/604a9825)."""
+    monkeypatch.setenv(_OPT_IN, '1')
+    for name, value in (('NUNBA_TEST_HOME', 'a' + os.pathsep + 'b'), ('HEVOLVE_EAGER_LLM', '0'),
+                        ('NUNBA_DISABLE_LLAMA_AUTOSTART', '1'), ('HEVOLVE_DRAFT_FIRST', '0'),
+                        ('A_VARIABLE_OF_THE_PERSONS', 'kept')):
+        monkeypatch.setenv(name, value)
+    module, started = machine_with_nunba_installed()
+
+    _run(module)
+
+    assert len(launch_envs) == 2, 'both classes start the app'
+    for env in launch_envs:
+        assert env is not None, 'the app was started with the test run\'s whole environment'
+        assert not {'NUNBA_TEST_HOME', 'HEVOLVE_EAGER_LLM', 'NUNBA_DISABLE_LLAMA_AUTOSTART',
+                    'HEVOLVE_DRAFT_FIRST'} & set(env)
+        assert env.get('A_VARIABLE_OF_THE_PERSONS') == 'kept'
+        assert env.get(_OPT_IN) == '1'
 
 
 def _cases(module):
