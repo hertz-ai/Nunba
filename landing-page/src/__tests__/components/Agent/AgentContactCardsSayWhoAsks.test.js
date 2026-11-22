@@ -85,6 +85,37 @@ beforeEach(() => {
   realtimeService.on.mockReturnValue(() => {});
 });
 
+describe('whether a payload says who asks is one check', () => {
+  const {saysWhoAsks, declineLabel} = require('../../../constants/consentAsks');
+
+  test.each([
+    [{agent_asker: 'Agent Vijai', agent_name: 'Vijai'}, true],
+    [{agent_asker: 'Agent Vijai'}, true],
+    [{agent_name: 'Vijai'}, true],
+    [{agent_asker: '  ', agent_name: 'Vijai'}, true],
+    [{agent_name: '   '}, false],
+    [{agent_asker: ' ', agent_name: ''}, false],
+    [{}, false],
+    [null, false],
+    [undefined, false],
+  ])('%j -> %s', (data, said) => {
+    expect(saysWhoAsks(data)).toBe(said);
+  });
+
+  test('the decline button and the toast agree on a blank name', () => {
+    expect(declineLabel('computer_control', '61', '   ', ' ')).toBe("Don't allow this agent");
+    expect(declineLabel('computer_control', '61', 'Vijai', '')).toBe("Don't allow Agent Vijai");
+    expect(declineLabel('computer_control', '61', '', 'Agent Vijai')).toBe("Don't allow Agent Vijai");
+  });
+
+  test('the toast asks that check and keeps no copy of it', () => {
+    const toast = fs.readFileSync(path.join(
+      __dirname, '..', '..', '..', 'components', 'Agent', 'AgentMessageToast.js'), 'utf8');
+    expect(toast).toMatch(/saysWhoAsks\(data\)/);
+    expect(toast).not.toMatch(/\.trim\(\)/);
+  });
+});
+
 describe('what the route sends', () => {
   test('a contact request names the agent both ways and needs an answer', () => {
     expect(routePayload('agent_contact_request')).toEqual({
@@ -201,7 +232,10 @@ describe("an owned agent's message toast", () => {
     ['no name at all', {}],
     ['a blank name', {agent_name: '   '}],
     ['a blank asker and no name', {agent_asker: ' '}],
-  ])('%s keeps the headline "Your agent"', (_label, names) => {
+  ])('%s is headed "Your agent"', (_label, names) => {
+    // Intended, and a change for the blank name: before 32c855fe the toast
+    // took agent_name as the headline whenever it was truthy, so '   ' gave
+    // a toast with an empty headline.  Only "no name at all" is as it was.
     mountToast();
     const bare = routePayload('agent_message');
     delete bare.agent_asker;

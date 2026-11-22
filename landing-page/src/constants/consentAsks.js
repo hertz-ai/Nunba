@@ -250,6 +250,14 @@ export function askerOf(data) {
   return said || askerName(data && data.agent_name);
 }
 
+// Does a payload say who asks at all: an agent_asker, or a name to word?
+// Blank counts as nothing said.  The ONE check: declineLabel ("this agent")
+// and the owned-agent toast ("Your agent") both ask it before askerOf.
+export function saysWhoAsks(data) {
+  return Boolean(String((data && data.agent_asker) || '').trim()
+    || String((data && data.agent_name) || '').trim());
+}
+
 // The card's title.  A phone's name is what the phone said about itself,
 // so it is quoted as a claim, never stated.
 export function askTitle(consentType, requesterName) {
@@ -304,9 +312,9 @@ export function declineNote(consentType, label) {
 // ask's own agent_asker; askerOf picks between it and the name.
 export function declineLabel(consentType, agentId, name, asker) {
   if (isPerRequester(consentType) || !agentId) return "Don't allow";
-  const named = String(asker || '').trim() || String(name || '').trim();
-  return named
-    ? `Don't allow ${askerOf({agent_name: name, agent_asker: asker})}`
+  const said = {agent_name: name, agent_asker: asker};
+  return saysWhoAsks(said)
+    ? `Don't allow ${askerOf(said)}`
     : "Don't allow this agent";
 }
 

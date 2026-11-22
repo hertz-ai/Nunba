@@ -1,4 +1,4 @@
-import {askerOf} from '../../constants/consentAsks';
+import {askerOf, saysWhoAsks} from '../../constants/consentAsks';
 import realtimeService from '../../services/realtimeService';
 import {useToast} from '../shared/ToastProvider';
 
@@ -15,7 +15,9 @@ import {useEffect} from 'react';
  *
  * The headline is who sent it: the payload's own `agent_asker` (HARTOS's wording
  * of the name, "Agent <name>"), picked by constants/consentAsks.askerOf. A
- * payload that names no agent at all keeps the headline "Your agent".
+ * payload that names no agent at all keeps the headline "Your agent". A name
+ * that is only blanks names no agent either (consentAsks.saysWhoAsks, the one
+ * check): until 2026-11-22 a blank name WAS the headline, an empty line.
  *
  * App.js received that event and wrote the payload to
  * `localStorage['agent_proactive_message']` with the comment "so Agent component
@@ -43,10 +45,8 @@ export default function AgentMessageToast() {
       // `reason` is the fallback the sender fills when it has no message body.
       const message = data.message || data.reason;
       if (!message) return;
-      const named = String(data.agent_asker || '').trim()
-        || String(data.agent_name || '').trim();
       showToast('mention', {
-        title: named ? askerOf(data) : 'Your agent',
+        title: saysWhoAsks(data) ? askerOf(data) : 'Your agent',
         message,
       });
     });
