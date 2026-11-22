@@ -2107,6 +2107,22 @@ class TTSEngine:
         'cudnn_status_not_initialized',
     )
 
+    @staticmethod
+    def _refused_key_signatures() -> tuple[str, ...]:
+        """HARTOS's mark for a stored key that the repo refuses, as a
+        signature.  The same token is refused on the next start, so one
+        failed start is enough: the raw 401 it replaced was structural by
+        'worker startup failed' (review rv_66ba of HARTOS 585586a04).
+
+        The mark is HARTOS's (ai_key_vault.GATED_REFUSED_MARK), next to the
+        answer it words; no sentence of that answer is kept here.  Without
+        HARTOS there is no such answer and no signature."""
+        try:
+            from hartos.ai_key_vault import GATED_REFUSED_MARK
+        except ImportError:
+            return ()
+        return (GATED_REFUSED_MARK.lower(),)
+
     @classmethod
     def _is_structural_error(cls, error: Exception | None) -> bool:
         """Classify a synth failure as structural or transient.
@@ -2119,12 +2135,14 @@ class TTSEngine:
         """
         if error is None:
             return False
+        signatures = (cls._STRUCTURAL_FAILURE_SIGNATURES
+                      + cls._refused_key_signatures())
         seen: set[int] = set()
         cur: BaseException | None = error
         while cur is not None and id(cur) not in seen:
             seen.add(id(cur))
             blob = f"{type(cur).__name__.lower()} {(str(cur) or '').lower()}"
-            for sig in cls._STRUCTURAL_FAILURE_SIGNATURES:
+            for sig in signatures:
                 if sig in blob:
                     return True
             cur = (getattr(cur, '__cause__', None)
