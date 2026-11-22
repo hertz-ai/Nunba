@@ -52,15 +52,22 @@ const COMPONENTS = [
 const IMPORT_SPEC = /(?:from|import|require)\s*\(?\s*(?:\/\*[\s\S]*?\*\/\s*)*['"`][^'"`]*\/([^'"`/]+)['"`]/g;
 const importedNames = (source) => [...source.matchAll(IMPORT_SPEC)].map((found) => found[1]);
 // A stylesheet's own imports: `@import 'x';`, `@import url("x");`, `@use "x"`,
-// `@forward 'x'`.  Last part of the path, as importedNames gives it.
-const STYLE_IMPORT_SPEC = /@(?:import|use|forward)\s+(?:url\(\s*)?['"]([^'"]+)['"]/g;
+// `@forward 'x'`, and every path of a list, `@import 'a', url("b");`.  Last
+// part of each path, as importedNames gives it.  The check before 63b6582d
+// read every path of a list; 63b6582d's and 918a2dc9's read only the first
+// (review rv_fu2).
+const STYLE_IMPORT_SPEC = /@(?:import|use|forward)\s+((?:url\(\s*)?['"][^'"]+['"]\s*\)?(?:\s*,\s*(?:url\(\s*)?['"][^'"]+['"]\s*\)?)*)/g;
 const styleImports = (source) => [...source.matchAll(STYLE_IMPORT_SPEC)]
-  .map((found) => found[1].split('/').pop());
-// The two ways a file is reached by path without an import statement:
-// `require.resolve('./x')` and `new URL('./x', import.meta.url)`.  The check
-// before 63b6582d caught both (it read any quoted path on a line with
-// `require` or `import` in it); 63b6582d's did not (review rv_n7).
-const PATH_USE_SPEC = /(?:require\s*\.\s*resolve|new\s+URL)\s*\(\s*(?:\/\*[\s\S]*?\*\/\s*)*['"`]([^'"`]+)['"`]/g;
+  .flatMap((found) => [...found[1].matchAll(/['"]([^'"]+)['"]/g)])
+  .map((quoted) => quoted[1].split('/').pop());
+// The ways a file is reached by path without an import statement: any
+// require call (`require.resolve('./x')`, `jest.requireActual('./x')`,
+// `jest.requireMock('./x')`), any import.meta call
+// (`import.meta.resolve('./x')`) and `new URL('./x', import.meta.url)`.  The
+// check before 63b6582d caught them all (it read any quoted path on a line
+// with `require` or `import` in it); 63b6582d's caught none (review rv_n7),
+// 918a2dc9's only require.resolve and new URL (review rv_fu2).
+const PATH_USE_SPEC = /(?:require\w*(?:\s*\.\s*\w+)*|import\s*\.\s*meta(?:\s*\.\s*\w+)+|new\s+URL)\s*\(\s*(?:\/\*[\s\S]*?\*\/\s*)*['"`]([^'"`]+)['"`]/g;
 const pathUses = (source) => [...source.matchAll(PATH_USE_SPEC)]
   .map((found) => found[1].split('/').pop());
 // Every way a source names another file.
@@ -150,8 +157,13 @@ describe('how an import of a deleted style file is recognised', () => {
     ['@import url("./progressStyles.css");', ['progressStyles.css']],
     ["@use '../components/_parallax';", ['_parallax']],
     ["@forward 'parallax';", ['parallax']],
+    ["@import 'variables', 'parallax';", ['variables', 'parallax']],
+    ['@import url("base.css"), url("../components/progressStyles.css");', ['base.css', 'progressStyles.css']],
+    ["@import\n  'variables',\n  'components/_parallax';", ['variables', '_parallax']],
+    ["@import 'variables', url('./progressStyles.css') screen;", ['variables', 'progressStyles.css']],
   ])('%s', (source, names) => {
     expect(styleImports(source)).toEqual(names);
+    expect(namedFiles(source)).toEqual(expect.arrayContaining(names));
   });
 });
 
@@ -162,6 +174,10 @@ describe('how a deleted style file reached by path is recognised', () => {
     ["const u = new URL(\n  /* the old sheet */\n  '../components/progressStyles.css',\n  import.meta.url,\n);",
       ['progressStyles.css']],
     ["require . resolve(`./parallax.scss`)", ['parallax.scss']],
+    ["const actual = jest.requireActual('../components/progressStyles.css');", ['progressStyles.css']],
+    ["jest.requireMock(\n  /* the old sheet */\n  './parallax.scss',\n)", ['parallax.scss']],
+    ["const p = import.meta.resolve('./parallax.scss');", ['parallax.scss']],
+    ["const sheets = import . meta . glob('../components/parallax.scss');", ['parallax.scss']],
   ])('%s', (source, names) => {
     expect(pathUses(source)).toEqual(names);
     expect(namedFiles(source)).toEqual(expect.arrayContaining(names));
