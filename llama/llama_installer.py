@@ -398,6 +398,30 @@ MODEL_PRESETS = [
 ]
 
 
+def _home_dir() -> Path:
+    """The home folder Nunba's own llama files hang off: ~/.nunba (config,
+    binary, models), the ~/.trueflow status files and the llama-server log
+    under ~/Documents/Nunba.
+
+    It is Path.home(), except in a test run.  tests/conftest.py names a
+    private folder in NUNBA_TEST_HOME as
+    "<the person's home><os.pathsep><private folder>", and that folder stands
+    in only while Path.home() is still the person's own home, so a test that
+    moves home itself keeps the home it chose.  Unset, as in every run that is
+    not a test, this is Path.home() and nothing else.
+
+    On 21 Nov 2026 two test runs wrote the owner's ~/.nunba/llama_config.json
+    and started a real llama-server from ~/.nunba/llama.cpp each;
+    tests/test_a_test_run_starts_no_model_server.py pins this.
+    """
+    home = Path.home()
+    person, _, private = os.environ.get('NUNBA_TEST_HOME', '').partition(os.pathsep)
+    if person and private and (os.path.normcase(os.path.abspath(person))
+                               == os.path.normcase(os.path.abspath(str(home)))):
+        return Path(private)
+    return home
+
+
 # Sibling project model directories to search before re-downloading.
 # If a model already exists in a sibling project, Nunba reuses it.
 SIBLING_MODEL_DIRS = [
@@ -431,7 +455,7 @@ class LlamaInstaller:
             install_dir: Directory to install llama.cpp (defaults to ~/.nunba/llama.cpp)
             models_dir: Directory to store models (defaults to ~/.nunba/models)
         """
-        home = Path.home()
+        home = _home_dir()
         self.install_dir = Path(install_dir) if install_dir else home / ".nunba" / "llama.cpp"
         self.default_models_dir = home / ".nunba" / "models"
         self.models_dir = self.resolve_models_dir(models_dir, config_dir=config_dir)
@@ -448,7 +472,7 @@ class LlamaInstaller:
         selected = models_dir or os.environ.get('NUNBA_MODELS_DIR', '').strip()
         if not selected:
             config_file = (Path(config_dir) if config_dir else
-                           Path.home() / '.nunba') / 'llama_config.json'
+                           _home_dir() / '.nunba') / 'llama_config.json'
             try:
                 saved = json.loads(config_file.read_text(encoding='utf-8'))
                 selected = saved.get('models_dir') or None
@@ -457,7 +481,7 @@ class LlamaInstaller:
             except (OSError, ValueError, AttributeError):
                 logger.warning('Could not read saved LLM storage location', exc_info=True)
         if not selected:
-            return Path.home() / '.nunba' / 'models'
+            return _home_dir() / '.nunba' / 'models'
         return Path(selected).expanduser().resolve()
 
     @staticmethod

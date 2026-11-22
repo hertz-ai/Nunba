@@ -26,7 +26,14 @@ from pathlib import Path
 
 import requests
 
-from llama.llama_installer import MODEL_PRESETS, QWEN35_RUNTIME_FAMILY, LlamaInstaller, ModelPreset, model_size_gib
+from llama.llama_installer import (
+    MODEL_PRESETS,
+    QWEN35_RUNTIME_FAMILY,
+    LlamaInstaller,
+    ModelPreset,
+    _home_dir,
+    model_size_gib,
+)
 
 logger = logging.getLogger('NunbaLlamaConfig')
 
@@ -456,7 +463,7 @@ class LlamaConfig:
         Args:
             config_dir: Directory for config files (defaults to ~/.nunba)
         """
-        home = Path.home()
+        home = _home_dir()
         self.config_dir = Path(config_dir) if config_dir else home / ".nunba"
         self.config_file = self.config_dir / "llama_config.json"
         self.server_status_file = self.config_dir / "server_status.json"
@@ -1847,7 +1854,7 @@ class LlamaConfig:
         # Write to all known status file locations
         for status_path in [
             self.server_status_file,  # ~/.nunba/server_status.json
-            Path.home() / ".trueflow" / "server_status.json",
+            _home_dir() / ".trueflow" / "server_status.json",
         ]:
             try:
                 status_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2716,7 +2723,7 @@ class LlamaConfig:
             # See task #80 — the silent-crash investigation that
             # surfaced this gap.
             _llama_log_dir = os.path.join(
-                os.path.expanduser('~'), 'Documents', 'Nunba', 'logs'
+                str(_home_dir()), 'Documents', 'Nunba', 'logs'
             )
             try:
                 os.makedirs(_llama_log_dir, exist_ok=True)
@@ -3456,7 +3463,7 @@ class LlamaConfig:
         }
         for status_path in [
             self.config_dir / "caption_server_status.json",
-            Path.home() / ".trueflow" / "caption_server_status.json",
+            _home_dir() / ".trueflow" / "caption_server_status.json",
         ]:
             try:
                 status_path.parent.mkdir(parents=True, exist_ok=True)

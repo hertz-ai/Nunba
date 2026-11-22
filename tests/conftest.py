@@ -7,9 +7,14 @@ Provides:
 - Mock LLM server fixture
 - Auth token fixture (register + login to get JWT)
 """
+import atexit
 import json
 import os
+import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
@@ -20,6 +25,74 @@ import pytest
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
+
+# ---------------------------------------------------------------------------
+# A test run starts no model server and keeps out of the person's ~/.nunba.
+# ---------------------------------------------------------------------------
+# Both halves are set here, when this file is imported, and stay for the whole
+# process.  They cannot be fixtures: POST /chat with no model up answers at
+# once and hands the start to a background thread
+# (routes/chatbot_routes.py -> ModelOrchestrator.ensure_loaded_async ->
+# models/orchestrator.py LlamaLoader.load), and that thread reaches the config
+# write and the spawn seconds after the test that caused it has ended and its
+# fixtures are undone.  On 21 Nov 2026 two runs of
+# tests/test_chatbot_routes.py each left a real llama-server holding 4 GB of
+# video memory and rewrote the owner's ~/.nunba/llama_config.json.
+# tests/test_a_test_run_starts_no_model_server.py pins both halves.
+
+class ModelServerStartRefused(OSError):
+    """A test tried to start a real model server.  An OSError, as a start
+    that fails is anywhere else, so code that copes with a binary that will
+    not run copes with this the same way."""
+
+
+def _starts_a_model_server(args) -> bool:
+    """Is this command line a llama-server start?  Only the program being
+    run counts: `taskkill /IM llama-server.exe` names one and starts none."""
+    if isinstance(args, (bytes, bytearray)):
+        args = bytes(args).decode(errors='replace')
+    if isinstance(args, os.PathLike):
+        args = os.fspath(args)
+    if isinstance(args, str):
+        first = re.match(r'\s*(?:"([^"]*)"|(\S+))', args)
+        program = (first.group(1) or first.group(2)) if first else ''
+    else:
+        try:
+            program = next(iter(args), '')
+        except TypeError:
+            return False
+    if isinstance(program, (bytes, bytearray)):
+        program = bytes(program).decode(errors='replace')
+    name = re.split(r'[\\/]', str(program))[-1].lower()
+    return name == 'llama-server' or name.startswith('llama-server.')
+
+
+if not getattr(subprocess.Popen, 'refuses_model_servers', False):
+    class _NoModelServerPopen(subprocess.Popen):
+        """subprocess.Popen for a test process: every program starts as it
+        always did, except llama-server.  A test that checks a start swaps
+        subprocess.Popen for its own double, as before, and never gets here."""
+
+        refuses_model_servers = True
+
+        def __init__(self, args, *rest, **kwargs):
+            if _starts_a_model_server(args):
+                raise ModelServerStartRefused(
+                    f'a test run does not start a real model server ({args!r}). '
+                    'To check a start, replace subprocess.Popen in the test '
+                    'with a double (unittest.mock.patch) and read its calls.')
+            super().__init__(args, *rest, **kwargs)
+
+    subprocess.Popen = _NoModelServerPopen
+
+if not os.environ.get('NUNBA_TEST_HOME'):
+    # Read by llama.llama_installer._home_dir: the person's home, then the
+    # folder that stands in for it.
+    _private_home = tempfile.mkdtemp(prefix='nunba_test_home_')
+    atexit.register(shutil.rmtree, _private_home, ignore_errors=True)
+    os.environ['NUNBA_TEST_HOME'] = os.pathsep.join(
+        [os.path.expanduser('~'), _private_home])
+
 
 # ── Layer 1: synthetic CUDA fixtures for GPU-path coverage on CPU runners ──
 # Re-export synthetic_cuda / synthetic_cuda_* fixtures from conftest_cuda_mock
