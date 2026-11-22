@@ -387,9 +387,12 @@ export const consentApi = {
 
   // GET /api/social/consent — list (newest-first by granted_at).  `config`
   // passes request options through (useCameraConsent: silentError [404]).
-  list: ({consent_type, active_only} = {}, config = {}) => {
+  // agent_id: the agent a page asks about; each row's agent_state then says
+  // where that agent stands (Admin, one agent, Permissions).
+  list: ({consent_type, active_only, agent_id} = {}, config = {}) => {
     const params = {};
     if (consent_type !== undefined) params.consent_type = consent_type;
+    if (agent_id !== undefined) params.agent_id = agent_id;
     if (active_only !== undefined) {
       params.active_only = active_only ? 'true' : 'false';
     }

@@ -6,27 +6,32 @@
  * off in nunba admin for that agent".  Admin's agent drawer shows that
  * switch (AgentOperationsDrawer, Permissions).
  *
- * The rows come from GET /api/social/consent, which says which agent each
- * row is for (agent_id; null means every agent).  The rule here is HARTOS
- * ConsentService.check_consent's, for scope '*':
- *   - "Allow ALL agents" (a granted row with no agent) covers this agent,
- *     unless the owner said no to this agent at or after that grant (on a
- *     tie the no wins) and the no still stands (not taken back with "Allow
- *     asking again");
- *   - or the agent holds a grant of its own.
- * HARTOS decides; this only says what the switch should show.
+ * The rows come from GET /api/social/consent?agent_id=<this agent>, which
+ * says which agent each row is for (agent_id; null means every agent) and
+ * where the agent stands (agent_state: 'allowed' or 'turned_off', worked
+ * out by HARTOS consent_service.agent_state, the reading its own tools
+ * enforce).  This file shows that state and keeps no rule for it: it used
+ * to work it out again here, and for a no and an "Allow ALL agents" given
+ * in the same millisecond it showed "Off" while HARTOS allowed the agent.
+ *   - the agent's own row says the agent's state;
+ *   - with no row of its own, the every-agent row says it, for the agent
+ *     the request named.
  *
  * Off = POST /consent/decline with agent_id (that agent's own no; the
- * others keep theirs).  On = POST /consent/reopen (takes the no back).
+ * others keep theirs).  On = POST /consent/reopen, which takes back every
+ * agent's no for that permission (owner 2026-11-22: the switch says so
+ * before it is pressed: BACK_ON_LABEL and REOPEN_NOTE).
  */
 import {consentAskText} from './consentAsks';
 
-// The kinds an agent holds for itself, so one agent can be switched.  The
-// camera and the screen are shared: a no for one agent stops them for that
-// agent only, and the others keep them (HARTOS announce_revocation,
-// feed_said_no).
+// The kinds an agent holds for itself and HARTOS checks for that agent, so
+// one agent can be switched.  The camera and the screen are shared: a no
+// for one agent stops them for that agent only, and the others keep them
+// (HARTOS announce_revocation, feed_said_no).  Data access is not here:
+// what reads it in HARTOS (the microphone and chat learning) hears a
+// person, not an agent, so a switch for one agent would change nothing.
 export const AGENT_SWITCHABLE = Object.freeze(
-  ['computer_control', 'camera_capture', 'screen_capture', 'data_access']);
+  ['computer_control', 'camera_capture', 'screen_capture']);
 
 // One switch for the whole computer: a no for one agent would switch the
 // copilot off for every agent, so it is shown, not switched; the Privacy
@@ -35,16 +40,21 @@ export const COMPUTER_WIDE = Object.freeze(['copilot_access']);
 
 export const COMPUTER_WIDE_NOTE =
   'One switch for the whole computer. Change it in Privacy settings.';
+export const OFF_LABEL = 'Turn off for this agent';
+// On is for the whole permission, and the button says so before it is
+// pressed.
+export const BACK_ON_LABEL = 'Turn back on for every agent';
 export const REOPEN_NOTE =
-  'Turning it back on also takes back a no you gave any other agent for this.';
+  'Turning it back on is for every agent: it also turns it back on for any '
+  + 'other agent you turned it off for.';
+export const ALLOWED = 'allowed';
+export const TURNED_OFF = 'turned_off';
 export const OWN_GRANT_NOTE =
   'Given to this agent only. Once ended it has to be asked for again.';
 
-const time = (iso) => (iso ? Date.parse(iso) : NaN);
+// A grant that was not ended: what the row itself says (the server's
+// active_only filter reads the same two fields).
 const isActive = (r) => Boolean(r.granted) && !r.revoked_at;
-// A no taken back keeps its revoked_at; it stands only if given after.
-const noStands = (r) => Boolean(r.revoked_at)
-  && !(r.reopened_at && time(r.reopened_at) >= time(r.revoked_at));
 const sameAgent = (r, id) => r.agent_id != null && String(r.agent_id) === id;
 
 function label(consentType, scope) {
@@ -56,26 +66,36 @@ function label(consentType, scope) {
   return `May ${text}`;
 }
 
+// True when every row says where its agent stands.  A list from a HARTOS
+// that does not send agent_state cannot be shown as on or off.
+export function statesAreSaid(rows) {
+  return (rows || []).every((r) => !r || !r.consent_type
+    || Object.prototype.hasOwnProperty.call(r, 'agent_state'));
+}
+
 // One entry per permission this agent holds or was turned off for:
 //   {consentType, scope, label, on, canSwitch, own, note}
 // own: the agent's own grant (ending it cannot be undone from here).
+// rows: GET /consent?agent_id=<agentId>.
 export function agentPermissions(rows, agentId) {
   const id = agentId == null ? '' : String(agentId).trim();
   if (!id) return [];
   const list = (rows || []).filter((r) => r && r.consent_type);
   const out = [];
   for (const consentType of [...AGENT_SWITCHABLE, ...COMPUTER_WIDE]) {
-    const allowAll = list
-      .filter((r) => r.consent_type === consentType && r.agent_id == null
-        && (r.scope || '*') === '*' && isActive(r))
-      .sort((a, b) => time(b.granted_at) - time(a.granted_at))[0];
+    const every = list.filter((r) => r.consent_type === consentType
+      && r.agent_id == null && (r.scope || '*') === '*');
     const mine = list.filter((r) => r.consent_type === consentType
       && sameAgent(r, id) && (r.scope || '*') === '*');
     const ownGrant = mine.some(isActive);
-    if (!allowAll && !ownGrant) continue;
+    // Listed while something on file was given: "Allow ALL agents" that
+    // was not ended, or a grant of the agent's own.
+    if (!every.some(isActive) && !ownGrant) continue;
+    // Where the agent stands is HARTOS's word, never worked out here.
+    const said = (mine[0] || every[0]).agent_state;
+    if (said !== ALLOWED && said !== TURNED_OFF) continue;
     const wide = COMPUTER_WIDE.includes(consentType);
-    const off = !ownGrant && mine.some((r) => noStands(r)
-      && time(r.revoked_at) >= time(allowAll.granted_at));
+    const off = said === TURNED_OFF;
     out.push({
       consentType,
       scope: '*',

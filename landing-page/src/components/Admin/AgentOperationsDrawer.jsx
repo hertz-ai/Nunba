@@ -19,10 +19,15 @@
  * admin for that agent"): what this agent is allowed, read from the same
  * consent rows the Privacy page reads (consentApi.list), with Off = the
  * existing POST /consent/decline for this agent and On = POST
- * /consent/reopen.  constants/agentPermissions says what each row shows.
+ * /consent/reopen.  On or off is what HARTOS says on each row
+ * (agent_state); constants/agentPermissions lays the rows out.
  */
-import { agentPermissions } from '../../constants/agentPermissions';
+import {
+  agentPermissions, statesAreSaid, BACK_ON_LABEL, OFF_LABEL,
+} from '../../constants/agentPermissions';
+import { CONSENT_CHANGE_TYPES } from '../../constants/consentAsks';
 import { steerError } from '../../constants/steerOutcome';
+import realtimeService from '../../services/realtimeService';
 import { consentApi, dashboardApi } from '../../services/socialApi';
 
 import AccountTreeIcon from '@mui/icons-material/AccountTree';
@@ -471,16 +476,29 @@ export function AgentPermissionsPanel({ agentId }) {
 
   const load = useCallback(async () => {
     try {
-      const res = await consentApi.list();
-      setRows((res && (res.consents || (res.data && res.data.consents))) || []);
+      const res = await consentApi.list({ agent_id: String(agentId) });
+      const listed = (res && (res.consents || (res.data && res.data.consents))) || [];
+      // On or off is HARTOS's word.  A list that does not say it is not
+      // shown as if it did.
+      if (!statesAreSaid(listed)) throw new Error('the list says no agent_state');
+      setRows(listed);
       setProblem(null);
     } catch (_) {
       setProblem('Could not read the permissions.');
     }
-  }, []);
+  }, [agentId]);
 
   useEffect(() => {
     if (agentId) load();
+  }, [agentId, load]);
+
+  // A permission turned off or back on somewhere else (the person told the
+  // agent in chat, or used the Privacy page): read again, as the Privacy
+  // page does.
+  useEffect(() => {
+    if (!agentId) return undefined;
+    const offs = CONSENT_CHANGE_TYPES.map((t) => realtimeService.on(t, () => load()));
+    return () => offs.forEach((off) => off && off());
   }, [agentId, load]);
 
   if (!agentId) {
@@ -550,7 +568,7 @@ export function AgentPermissionsPanel({ agentId }) {
                     color: p.on ? '#ff9800' : '#6C63FF',
                     borderColor: p.on ? '#ff9800' : '#6C63FF',
                   }}>
-                  {p.on ? 'Turn off for this agent' : 'Turn back on'}
+                  {p.on ? OFF_LABEL : BACK_ON_LABEL}
                 </Button>
               )}
             </Stack>
