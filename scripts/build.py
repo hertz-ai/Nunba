@@ -870,6 +870,11 @@ def _ship_hartos_license(site_packages_dir):
         sys.exit(1)
 
 
+# How long `node --version` may take before the build says node does not
+# answer.  A working install answers at once.
+NODE_CHECK_SECONDS = 60
+
+
 def build_react_landing_page(install_deps=True):
     """Build the React landing-page bundle; False when it cannot be built
     (no Node.js, no npm, npm install or the build failed), never a pass
@@ -899,7 +904,7 @@ def build_react_landing_page(install_deps=True):
 
     # Check if Node.js is available.  The answer comes at once from a
     # working install; a node that hangs must not hang the build with it.
-    node_check_seconds = 60
+    node_check_seconds = NODE_CHECK_SECONDS
     try:
         result = subprocess.run(
             ['node', '--version'], capture_output=True, text=True,

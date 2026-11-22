@@ -392,6 +392,43 @@ class TestTheBundleStep:
         assert ran == [['node', '--version']]
         assert _old_bundle_is_untouched(tmp_path)
 
+    def test_a_node_that_really_hangs_is_cut_off_at_the_limit(
+            self, build, monkeypatch, tmp_path):
+        """Not a pretend timeout: `node --version` is a real child process
+        that sleeps for a minute, started by the real subprocess.run with the
+        arguments the build gave it.  The build must come back at its limit,
+        having ended the child."""
+        import time
+        real_run = build.subprocess.run      # before _npm puts its stand-in there
+        _npm(build, monkeypatch, tmp_path, old_bundle=True)
+        fake_run = build.subprocess.run
+        children = []
+
+        def run(cmd, *args, **kwargs):
+            if cmd[:2] != ['node', '--version']:
+                return fake_run(cmd, *args, **kwargs)
+            marker = tmp_path / 'the_child_is_running'
+            hang = [sys.executable, '-c',
+                    'import pathlib, sys, time; pathlib.Path(sys.argv[1]).write_text("up"); time.sleep(60)',
+                    str(marker)]
+            children.append(marker)
+            return real_run(hang, *args, **kwargs)
+
+        monkeypatch.setattr(build.subprocess, 'run', run)
+        monkeypatch.setattr(build, 'NODE_CHECK_SECONDS', 4, raising=False)
+        said = _said(build, monkeypatch)
+        began = time.monotonic()
+
+        assert _bundle_step(build) is False
+
+        took = time.monotonic() - began
+        assert 3 <= took < 30, took
+        assert children and children[0].read_text() == 'up', 'the child never started'
+        errors = [text for kind, text in said if kind == 'error']
+        assert len(errors) == 1 and 'no answer in 4 seconds' in errors[0]
+        assert 'not found' not in errors[0]
+        assert _old_bundle_is_untouched(tmp_path)
+
     def test_a_failed_refresh_install_warns_and_the_build_step_decides(
             self, build, monkeypatch, tmp_path):
         ran = _npm(build, monkeypatch, tmp_path, install_rc=1)
