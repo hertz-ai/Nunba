@@ -2453,6 +2453,7 @@ if getattr(args, 'validate', False):
         'hartos.gather_agentdetails', 'hartos.lifecycle_hooks',
         # 5. Integrations
         'integrations', 'integrations.social',
+        'integrations.social.sync_engine',
         'integrations.channels', 'integrations.service_tools',
         'integrations.distributed_agent',
         # 6. Distributed agent deps
@@ -2629,6 +2630,15 @@ if getattr(args, 'validate', False):
              'Tier-1 LangChain pipeline failed to load — chat will fall back to raw llama.cpp'),
             ('_active_tier', lambda v: 'Tier-1' in str(v),
              'Backend adapter not on Tier-1 — check hart_intelligence import chain'),
+        ],
+        # The rule routes/chatbot_routes.py's CLOUD AGENT block imports by
+        # name, unguarded (first-party HARTOS is never try/except-degraded):
+        # a bundled HARTOS without it would fail every signed-in cloud-agent
+        # turn, so it fails the build instead.
+        'integrations.social.sync_engine': [
+            ('is_central_origin', callable,
+             'bundled HARTOS has no is_central_origin: every signed-in '
+             'cloud-agent turn would fail'),
         ],
     }
 

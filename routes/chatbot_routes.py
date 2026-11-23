@@ -3118,31 +3118,33 @@ def _run_chat_turn(data):
     # it (offline, not signed in, an error), local_assistant answers it here:
     # no turn is refused.
     #
-    # Its bearer is a person's credential, so it goes only to a central:
-    # the page's own login (the inbound Authorization), else this node's
-    # HEVOLVE_LLM_API_KEY, and either only when the ORIGIN of the endpoint
+    # Its bearer is the page's own login (the inbound Authorization), a
+    # person's credential, so it goes only when the ORIGIN of the endpoint
     # actually called is a known central (HARTOS's one rule, sync_engine.
-    # is_central_origin), whichever config named that endpoint.  A phone the
-    # owner allowed carries its device token, which only this desktop
-    # proves: that token is never sent off the node (central refuses it,
-    # 401, measured 2026-11-23 on the Cafe agent 344), and no other
-    # credential stands in for the phone yet, so its turn is a miss.  No
-    # bearer is ever logged, only the reason.
+    # is_central_origin), whichever config named that endpoint.  No other
+    # credential stands in: HEVOLVE_LLM_API_KEY is the person's own key for
+    # their LLM provider (desktop/ai_key_vault.py), which central cannot take,
+    # so it is never sent here.  A phone the owner allowed carries its device
+    # token, which only this desktop proves: that token is never sent off
+    # the node (central refuses it, 401, measured 2026-11-23 on the Cafe
+    # agent 344), so its turn is a miss.  The cheap misses come before
+    # HARTOS's rule is imported, so a turn that needs no bearer never
+    # depends on it (app.py --validate holds a bundle to having it).  No
+    # bearer is ever logged, only the reason and the endpoint's host.
     if agent_type == 'cloud':
         logger.info(f'Chat with CLOUD agent: {agent_id}')
-        from integrations.social.sync_engine import is_central_origin
-        cloud_endpoint = CLOUD_API_CONFIG['chat_endpoint']
-        if agent_config and agent_config.get('cloud_endpoint'):
-            cloud_endpoint = agent_config['cloud_endpoint']
         auth_header = request.headers.get('Authorization')
-        api_key = os.environ.get('HEVOLVE_LLM_API_KEY')
         if not check_internet_connection():
             _cloud_miss = 'no internet'
         elif is_admitted_device():
             _cloud_miss = 'this desktop cannot act for this phone on central yet'
-        elif not auth_header and not api_key:
+        elif not auth_header:
             _cloud_miss = 'not signed in'
         else:
+            from integrations.social.sync_engine import is_central_origin
+            cloud_endpoint = CLOUD_API_CONFIG['chat_endpoint']
+            if agent_config and agent_config.get('cloud_endpoint'):
+                cloud_endpoint = agent_config['cloud_endpoint']
             payload = {
                 'text': text,
                 'user_id': user_id,
@@ -3155,14 +3157,18 @@ def _run_chat_turn(data):
             if prompt_id:
                 payload['prompt_id'] = prompt_id
             cloud_headers = {'Content-Type': 'application/json'}
-            if not is_central_origin(cloud_endpoint):
-                logger.warning(
-                    'Cloud agent %s: its endpoint is not a known central; '
-                    'the turn goes with no Authorization', agent_id)
-            elif auth_header:
+            if is_central_origin(cloud_endpoint):
                 cloud_headers['Authorization'] = auth_header
-            elif api_key:
-                cloud_headers['Authorization'] = f'Bearer {api_key}'
+            else:
+                from urllib.parse import urlsplit
+                try:
+                    _host = urlsplit(cloud_endpoint).hostname
+                except ValueError:      # a malformed URL names no host
+                    _host = None
+                logger.warning(
+                    'Cloud agent %s: its endpoint host %r is not a known '
+                    'central; the turn goes with no Authorization',
+                    agent_id, _host)
             try:
                 response = requests.post(
                     cloud_endpoint,

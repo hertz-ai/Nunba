@@ -135,3 +135,45 @@ class TestDeepCheckTriggersTier1Init:
             f"attribute-check loop at line {attr_loop_lineno}; otherwise "
             "_hartos_backend_available is read before the lazy init runs."
         )
+
+
+class TestTheCloudAgentRuleIsABuildGate:
+    """routes/chatbot_routes.py's CLOUD AGENT block imports HARTOS's
+    central-origin rule by name, unguarded (first-party HARTOS imports are
+    never try/except-degraded).  A bundled HARTOS without it would fail
+    every signed-in cloud-agent turn, so --validate must fail that bundle:
+    every name the route imports from sync_engine is a deep-check attribute
+    (a missing attribute is a [FAIL]), and the module is in the chain."""
+
+    MODULE = 'integrations.social.sync_engine'
+
+    @staticmethod
+    def _assigned(tree, name):
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Assign)
+                    and any(isinstance(t, ast.Name) and t.id == name
+                            for t in node.targets)):
+                return node.value
+        pytest.fail(f'{name} not found in app.py')
+
+    def test_every_name_the_chat_route_imports_is_validated(self, app_ast):
+        with open(os.path.join(PROJECT_ROOT, 'routes', 'chatbot_routes.py'),
+                  encoding='utf-8') as f:
+            routes = ast.parse(f.read())
+        imported = {alias.name for node in ast.walk(routes)
+                    if isinstance(node, ast.ImportFrom)
+                    and node.module == self.MODULE for alias in node.names}
+        assert 'is_central_origin' in imported
+        checks = self._assigned(app_ast, '_deep_checks')
+        validated = set()
+        for key, value in zip(checks.keys, checks.values):
+            if isinstance(key, ast.Constant) and key.value == self.MODULE:
+                validated |= {entry.elts[0].value for entry in value.elts}
+        assert imported <= validated, (
+            f'--validate does not check {sorted(imported - validated)} of '
+            f'{self.MODULE}: a bundle without them would ship')
+
+    def test_the_module_is_in_the_import_chain(self, app_ast):
+        chain = self._assigned(app_ast, '_chain')
+        assert self.MODULE in {e.value for e in chain.elts
+                               if isinstance(e, ast.Constant)}

@@ -526,14 +526,16 @@ class TestAgentRouting:
             f'Bearer {self.PAGE_LOGIN}'
         self._no_bearer_logged(caplog)
 
-    def test_an_api_key_only_node_still_sends_its_key_to_central(
+    def test_the_nodes_llm_key_is_never_sent_to_central(
             self, client, node, caplog, monkeypatch):
+        """HEVOLVE_LLM_API_KEY is the person's own key for their LLM
+        provider (desktop/ai_key_vault.py exports it); central cannot take
+        it, and sending it there discloses it.  A node with only that key is
+        not signed in to central."""
         monkeypatch.setenv('HEVOLVE_LLM_API_KEY', self.NODE_KEY)
         body = self._turn(client, caplog)
-        assert body['text'] == 'cloud says hi'
-        assert [s['url'] for s in node['sent']] == [self.CENTRAL]
-        assert node['sent'][0]['headers']['Authorization'] == \
-            f'Bearer {self.NODE_KEY}'
+        assert node['sent'] == [] and body['text'] == 'local says hi'
+        assert '(not signed in)' in self._miss(caplog)
         self._no_bearer_logged(caplog)
 
     @staticmethod
@@ -543,30 +545,56 @@ class TestAgentRouting:
             'id': 'cloud_radha', 'name': 'Radha', 'type': 'cloud',
             'cloud_endpoint': endpoint}])
 
-    @pytest.mark.parametrize('source', ['page login', 'node key'])
-    @pytest.mark.parametrize('endpoint', [
-        'https://cloud.example.com/chat/custom_gpt',
-        'https://azurekong.hertzai.com.evil/chat/custom_gpt',
-        'https://azurekong.hertzai.com@evil.com/chat/custom_gpt',
-        'https://evil.com/azurekong.hertzai.com/chat/custom_gpt',
-        'http://azurekong.hertzai.com/chat/custom_gpt',
-        'https://azurekong.hertzai.com:8443/chat/custom_gpt',
+    @pytest.mark.parametrize('endpoint, host', [
+        ('https://cloud.example.com/chat/custom_gpt', 'cloud.example.com'),
+        ('https://azurekong.hertzai.com.evil/chat/custom_gpt',
+         'azurekong.hertzai.com.evil'),
+        ('https://azurekong.hertzai.com@evil.com/chat/custom_gpt', 'evil.com'),
+        ('https://evil.com/azurekong.hertzai.com/chat/custom_gpt', 'evil.com'),
+        ('http://azurekong.hertzai.com/chat/custom_gpt', 'azurekong.hertzai.com'),
+        ('https://azurekong.hertzai.com:8443/chat/custom_gpt',
+         'azurekong.hertzai.com'),
+        # cleaned to the central by urlsplit, so refused: the URL approved
+        # must be the URL called
+        ('https://azure\tkong.hertzai.com/chat/custom_gpt',
+         'azurekong.hertzai.com'),
     ])
     def test_an_agent_endpoint_that_is_no_central_gets_no_authorization(
-            self, client, node, caplog, monkeypatch, source, endpoint):
-        authorization = None
-        if source == 'page login':
-            authorization = f'Bearer {self.PAGE_LOGIN}'
-        else:
-            monkeypatch.setenv('HEVOLVE_LLM_API_KEY', self.NODE_KEY)
+            self, client, node, caplog, monkeypatch, endpoint, host):
+        monkeypatch.setenv('HEVOLVE_LLM_API_KEY', self.NODE_KEY)
         with self._agent_with_endpoint(endpoint):
-            self._turn(client, caplog, authorization, prompt_id=None,
-                       agent_id='cloud_radha')
+            self._turn(client, caplog, f'Bearer {self.PAGE_LOGIN}',
+                       prompt_id=None, agent_id='cloud_radha')
         assert [s['url'] for s in node['sent']] == [endpoint]
         assert 'Authorization' not in node['sent'][0]['headers']
-        assert any('is not a known central' in r.getMessage()
-                   for r in caplog.records)
+        warning = next(r.getMessage() for r in caplog.records
+                       if 'is not a known central' in r.getMessage())
+        assert f'endpoint host {host!r}' in warning
         self._no_bearer_logged(caplog)
+
+    @pytest.mark.parametrize('caller', ['offline', 'no authorization', 'phone'])
+    def test_a_turn_that_needs_no_bearer_never_needs_hartos_rule(
+            self, flask_app, client, node, caplog, monkeypatch, caller):
+        """The cheap misses come before HARTOS's rule is imported: with a
+        bundled HARTOS that lacks it, these turns are still answered here
+        (app.py --validate fails such a bundle; a turn must not)."""
+        # The module object the route's import will find (sys.modules), not
+        # a package attribute an earlier test's patch.dict(sys.modules) may
+        # have left pointing at a stale copy.
+        import importlib
+        sync_engine = importlib.import_module('integrations.social.sync_engine')
+        monkeypatch.delattr(sync_engine, 'is_central_origin')
+        authorization = f'Bearer {self.PAGE_LOGIN}'
+        if caller == 'offline':
+            node['online'] = False
+        elif caller == 'no authorization':
+            authorization = None
+        else:
+            self._as_phone(flask_app)
+            authorization = f'Bearer {self.DEVICE_TOKEN}'
+        body = self._turn(client, caplog, authorization)
+        assert body['text'] == 'local says hi'
+        assert node['sent'] == []
 
     def test_the_default_endpoint_is_held_to_the_same_rule(
             self, client, node, caplog):
