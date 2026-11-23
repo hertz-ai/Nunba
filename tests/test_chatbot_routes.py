@@ -581,6 +581,43 @@ class TestAgentRouting:
         assert node['cloud'][0]['user_id'] == '10202'
         self._no_bearer_logged(caplog)
 
+    @pytest.mark.parametrize('held, spends', [
+        ({'20303': 'b'}, 'b'),
+        ({'10202': 'a'}, None),
+        ({'10202': 'a', '20303': 'b'}, 'b'),
+    ], ids=['its own login', 'only another accounts login', 'both held'])
+    def test_a_phone_spends_only_its_own_accounts_credits(
+            self, flask_app, client, node, caplog, stored_logins, held,
+            spends):
+        """Owner 11-23: "central credits are against client id and if client
+        id is same then allow".  Phone B (its token names account 20303)
+        goes to central only on B's own stored login.  With only A's login
+        held it is refused: nothing is sent, /prompts lists the agent as not
+        available, and the miss says why (review rv_6546: a mutant that used
+        any cloud-id login the desktop holds for any phone survived)."""
+        logins = {'a': self.STORED_LOGIN, 'b': self.OTHER_LOGIN}
+        for account, which in held.items():
+            stored_logins(account, logins[which])
+        self._as_phone(flask_app, '20303')
+        with self._agent_with_endpoint(self.CENTRAL):
+            listed = self._listed(client, f'Bearer {self.DEVICE_TOKEN}')
+            body = self._turn(client, caplog, f'Bearer {self.DEVICE_TOKEN}',
+                              prompt_id=None, agent_id='cloud_radha',
+                              user_id='20303')
+        available = [a['available'] for a in listed if a['id'] == 'cloud_radha']
+        if spends:
+            assert available == [True]
+            assert [s['headers']['Authorization'] for s in node['sent']] == \
+                [f'Bearer {logins[spends]}']
+            assert node['cloud'][0]['user_id'] == '20303'
+        else:
+            assert available == [False], 'listed on another account\'s login'
+            assert node['sent'] == [], 'sent on another account\'s login'
+            assert body['agent_id'] == 'local_assistant'
+            assert '(not signed in on this desktop)' in self._miss(caplog)
+        assert self.STORED_LOGIN not in json.dumps(node['sent'])
+        self._no_bearer_logged(caplog)
+
     def test_a_caller_with_no_authorization_never_gets_a_stored_login(
             self, client, node, caplog, stored_logins):
         """Desktop /chat is reachable on the LAN (#52): a body naming the

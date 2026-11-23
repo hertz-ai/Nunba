@@ -89,6 +89,48 @@ def clean_owner_env(monkeypatch):
     monkeypatch.delenv(SOURCE_ENV, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def users_table(tmp_path, monkeypatch):
+    """HARTOS's users table, this test's own.  set_storage writes it at
+    sign-in and, since rv_6546, drops the stored login from it at sign-out:
+    no test here may reach the person's real one.  The module is the one
+    sys.modules holds, which set_storage's own import finds.  Returns
+    (store(user_id, login), login_of(user_id))."""
+    import contextlib
+    import importlib
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    models = importlib.import_module('integrations.social.models')
+    engine = create_engine(f"sqlite:///{tmp_path / 'users.db'}")
+    models.User.__table__.create(engine)
+    session = sessionmaker(bind=engine)
+
+    @contextlib.contextmanager
+    def db_session(commit=True):
+        s = session()
+        try:
+            yield s
+            if commit:
+                s.commit()
+        finally:
+            s.close()
+
+    monkeypatch.setattr(models, 'db_session', db_session)
+
+    def store(user_id, login):
+        with db_session() as s:
+            s.add(models.User(id=user_id, username=f'u{user_id[:12]}',
+                              display_name='Desk', user_type='human',
+                              email=f'{user_id}@example.com', api_token=login))
+
+    def login_of(user_id):
+        with db_session(commit=False) as s:
+            row = s.query(models.User).filter(models.User.id == user_id).first()
+            return row.api_token if row else 'NO ROW'
+    return store, login_of
+
+
 def test_sync_exports_the_guest_before_anyone_signs_in(fake_home, gi, clean_owner_env):
     assert gi.sync_owner_identity_env() == GUEST
     assert os.environ[OWNER_ENV] == GUEST
@@ -367,3 +409,81 @@ def test_main_does_not_derive_its_own_record_path():
     assert own == [], (
         f'main.py names user_data.json itself at lines {own}; the path must '
         'come from desktop.guest_identity.get_user_data_file_path()')
+
+
+# ── sign-out drops the stored Hevolve login (review rv_6546) ──────────────
+# Sign-out cleared user_data.json but never the users row's api_token, so a
+# signed-out account's login kept being used: HARTOS's central_login_for
+# reads that row for a phone's cloud-agent turn (Nunba 65462fb4) and for
+# recipe sync.  Fake values only.
+
+LOGIN_A, LOGIN_B = 'fake-hevolve-login-a', 'fake-hevolve-login-b'
+CENTRAL_CHAT = 'https://azurekong.hertzai.com/chat/custom_gpt'
+
+
+def _signed_in(home, user_id, login):
+    _write(home, json.dumps({'user_id': user_id, 'access_token': login,
+                             'email': 'x', 'hart_name': 'h'}))
+
+
+def test_sign_out_drops_the_accounts_stored_login(
+        fake_home, gi, clean_owner_env, users_table, monkeypatch):
+    store, login_of = users_table
+    store('20303', LOGIN_B)
+    _signed_in(fake_home, '20303', LOGIN_B)
+    _post_to_set_storage({'user_id': '', 'access_token': '', 'email': ''})
+    assert login_of('20303') is None
+    # So its turns no longer go to central on its login: the one rule the
+    # phone's cloud-agent turn asks gives nothing for it now.
+    import importlib
+    sync_engine = importlib.import_module('integrations.social.sync_engine')
+    monkeypatch.setattr(importlib.import_module('security.key_delegation'),
+                        'get_node_tier', lambda: 'flat')
+    assert sync_engine.central_login_for('20303', CENTRAL_CHAT) == ''
+
+
+def test_sign_out_leaves_every_other_accounts_login(
+        fake_home, gi, clean_owner_env, users_table):
+    store, login_of = users_table
+    store('10202', LOGIN_A)
+    store('20303', LOGIN_B)
+    _signed_in(fake_home, '20303', LOGIN_B)
+    _post_to_set_storage({'user_id': '', 'access_token': '', 'email': ''})
+    assert login_of('20303') is None and login_of('10202') == LOGIN_A
+
+
+def test_the_row_the_sign_in_wrote_by_email_is_dropped_too(
+        fake_home, gi, clean_owner_env, users_table):
+    """The sign-in writes the login into a row found by email when no row
+    has the cloud id (set_storage's upsert): that row holds it too."""
+    store, login_of = users_table
+    local = '6c2dc0fc-7c93-4fe0-973e-f7466ff63f29'
+    store(local, LOGIN_B)
+    _signed_in(fake_home, '20303', LOGIN_B)
+    _post_to_set_storage({'user_id': '', 'access_token': '', 'email': ''})
+    assert login_of(local) is None
+
+
+@pytest.mark.parametrize('posted', [
+    {'hart_name': ''},                          # a HART reset, no sign-out
+    {'email': ''},
+    {'user_id': 'guest', 'access_token': None},
+])
+def test_a_post_that_is_no_sign_out_keeps_the_login(
+        fake_home, gi, clean_owner_env, users_table, posted):
+    store, login_of = users_table
+    store('20303', LOGIN_B)
+    _signed_in(fake_home, '20303', LOGIN_B)
+    _post_to_set_storage(posted)
+    assert login_of('20303') == LOGIN_B
+
+
+def test_the_sign_out_log_names_rows_never_the_login(
+        fake_home, gi, clean_owner_env, users_table, caplog):
+    import logging
+    caplog.set_level(logging.DEBUG)
+    store, _login_of = users_table
+    store('20303', LOGIN_B)
+    _signed_in(fake_home, '20303', LOGIN_B)
+    _post_to_set_storage({'user_id': '', 'access_token': '', 'email': ''})
+    assert '20303' in caplog.text and LOGIN_B not in caplog.text

@@ -6081,6 +6081,10 @@ def start_flask():
                         user_data.pop('user_id')
                         set_keys.remove('user_id')
 
+                    # Who signs out, and the login they leave, read before the
+                    # clear below removes them (sign-out clears access_token).
+                    _signed_out = ((stored.get('user_id'), stored.get('access_token'))
+                                   if 'access_token' in clear_keys else (None, None))
                     _cleared = []
                     for key in clear_keys:
                         if stored.pop(key, None) is not None:
@@ -6102,6 +6106,40 @@ def start_flask():
                         sync_owner_identity_env()
                     except Exception as _own_err:
                         logger.warning(f"desktop owner re-export failed: {_own_err}")
+
+                # Sign-out also drops the Hevolve login this desktop stored for
+                # the account, in the users row the sign-in wrote (the upsert
+                # below): HARTOS's central_login_for reads that api_token for a
+                # phone's cloud-agent turn and for recipe sync, so a signed-out
+                # account's login kept being used (review rv_6546).  The row is
+                # the one holding the login the record had, or the account's
+                # own cloud-id row; another account's row is never touched.
+                # Ids only in the log, never a token.
+                _out_id, _out_token = _signed_out
+                _out_id = str(_out_id or '')
+                if _out_token or (_out_id.isascii() and _out_id.isdigit()):
+                    try:
+                        from integrations.social.models import User, db_session
+                        with db_session() as _db:
+                            _rows = []
+                            if _out_token:
+                                _rows += _db.query(User).filter(
+                                    User.api_token == _out_token).all()
+                            if _out_id.isascii() and _out_id.isdigit():
+                                _rows += _db.query(User).filter(
+                                    User.id == _out_id).all()
+                            _dropped = sorted({r.id for r in _rows if r.api_token})
+                            for _row in _rows:
+                                _row.api_token = None
+                            if _dropped:
+                                _db.commit()
+                                logger.info("Signed-out account's stored login "
+                                            f"dropped from users row(s) {_dropped}")
+                    except Exception as _out_err:
+                        logger.warning(
+                            "Signed-out account's stored login NOT dropped "
+                            f"(account {_out_id or 'unknown'}): "
+                            f"{type(_out_err).__name__}")
 
                 # Check if we have all required keys to update the URL
                 required_keys = ['agentname', 'user_id', 'access_token', 'email']
