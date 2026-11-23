@@ -371,10 +371,16 @@ export function useTTS(options = {}) {
   const _speakServer = useCallback(
     async (text, opts) => {
       setIsLoading(true);
+      // What the browser voice says if the server cannot: the server's own
+      // cut of the text (no markup, no emoji) when its error answer has one.
+      let spokenText = text;
+      // Send preferred language so server routes to correct GPU engine
+      // (Tamil→Indic Parler, Japanese→CosyVoice3, English→Chatterbox Turbo).
+      // Declared outside the try: the catch below reads it, and inside the
+      // try it was out of the catch's scope, so the browser-voice fallback
+      // threw "lang is not defined" before it could speak.
+      const lang = opts.language || localStorage.getItem('hart_language') || 'en';
       try {
-        // Send preferred language so server routes to correct GPU engine
-        // (Tamil→Indic Parler, Japanese→CosyVoice3, English→Chatterbox Turbo)
-        const lang = opts.language || localStorage.getItem('hart_language') || 'en';
         const resp = await fetch(`${TTS_API_BASE}/synthesize`, {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
@@ -385,7 +391,15 @@ export function useTTS(options = {}) {
             language: lang,
           }),
         });
-        if (!resp.ok) throw new Error('Server TTS failed');
+        if (!resp.ok) {
+          try {
+            const body = await resp.json();
+            if (body && typeof body.spoken_text === 'string') {
+              spokenText = body.spoken_text;
+            }
+          } catch (_e) { /* no JSON body: the text as sent */ }
+          throw new Error('Server TTS failed');
+        }
         const blob = await resp.blob();
         const url = URL.createObjectURL(blob);
         if (audioRef.current) {
@@ -415,6 +429,13 @@ export function useTTS(options = {}) {
         }
         return url;
       } catch (err) {
+        // The server found no words in the text (only markup or emoji: its
+        // answer names "" as what would be spoken).  There is nothing for
+        // the browser voice to say either: an empty utterance was handed
+        // to it and the page showed "speaking" over silence.
+        if (!spokenText.trim()) {
+          return null;
+        }
         // Server TTS failed — fall back to browser Web Speech API.
         // Auto-detect utterance language from the actual text content
         // rather than trusting the caller's `lang` (often stale — tied
@@ -434,7 +455,7 @@ export function useTTS(options = {}) {
           // Cancel any queued utterances; some WebKit versions refuse to
           // start a new one while an old utterance is pending.
           try { window.speechSynthesis.cancel(); } catch (_e) { /* noop */ }
-          const utter = new SpeechSynthesisUtterance(text);
+          const utter = new SpeechSynthesisUtterance(spokenText);
           utter.lang = utterLang;
           utter.rate = 0.9;
           utter.onstart = () => console.log('[TTS] web speech utterance STARTED (lang=' + utterLang + ')');

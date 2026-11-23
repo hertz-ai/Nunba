@@ -1,7 +1,13 @@
 /**
  * The one checkout for a plan: create the subscription row, THEN pay.
  *
- * Port of Hevolve web's src/services/planCheckout.js (commits ab8555c, cae609f).
+ * It began as a port of Hevolve web's src/services/planCheckout.js (commits
+ * ab8555c, cae609f) and keeps that file's contract with the account store:
+ * the same two routes, bodies, order and outcomes.  It is no longer a copy.
+ * The web's file calls axios itself and reads a refusal from
+ * error.response.data.detail; this one goes through axiosFactory's client and
+ * reads the keepStatus rejection (error.detail, error.status).  A change to
+ * one is not a change to the other: each has its own callers and tests.
  *
  * Contract (account store commits 11b2401f and c1eeb2131, #286 and #202):
  *   POST /addsubscription_by_phone  needs 'Authorization: Bearer <access_token>'
@@ -16,23 +22,36 @@
  *
  * Every page that sells a plan (Plan, trial plan, speech therapy) calls
  * startCheckout, so the order, the header and the refusals live here once.
- * axios is used directly, not mailerApi, because axiosFactory discards the HTTP
- * status on failure and the checkout has to tell a 401 (go and sign in) from a
- * 400 (show the server's hint).  The token is the one axiosFactory would attach
- * (localStorage access_token), read through utils/checkoutSession.
+ * Both writes go through axiosFactory's client, like every other call of the
+ * page.  What the checkout needs from it, each asked for by name:
+ *   keepStatus   a refusal keeps its HTTP status, so a 401 (go and sign in) is
+ *                told from a 400 (show the server's hint);
+ *   handle401 off  a 401 here sends the person to sign in with the plan kept;
+ *                it must not also clear the session under the page;
+ *   silentError  the checkout words every failure itself, so no banner;
+ *   sendToken false on /makepayment, which asks for no token;
+ *   cache off    nothing here is a cached read.
+ * The token the client attaches (localStorage access_token) is the one
+ * utils/checkoutSession reads to decide there is a payer at all.
  */
+import {createApiClient} from './axiosFactory';
 import {mailerApi} from './socialApi';
 
 import {ADD_SUBSCRIPTION_URL, PAYMENT_URL} from '../config/apiBase';
 import {readPayer} from '../utils/checkoutSession';
 
-import axios from 'axios';
 import {v4 as uuidv4} from 'uuid';
 
 // A stalled server must end in a message, not in plan buttons that stay
-// disabled until the page is reloaded.  axios has no timeout unless one is set;
-// the mailer client this checkout used to go through had 15 s.
+// disabled until the page is reloaded.  The checkout's client carries it.
 export const REQUEST_TIMEOUT_MS = 15000;
+
+// The two URLs are absolute (config/apiBase), so the client has no base.
+const checkoutClient = createApiClient(undefined, {
+  timeout: REQUEST_TIMEOUT_MS,
+  handle401: false,
+  cache: false,
+});
 
 // The field /makepayment multiplies the plan price by (crud.makepayment: plan
 // amount x this, for ANY plan, 1..1000).  The server documents `quantity` as the
@@ -132,28 +151,29 @@ const isTimeout = (error) =>
     error.code === 'ETIMEDOUT' ||
     /timeout/i.test(error.message || ''));
 
+// A refusal arrives as axiosFactory's keepStatus rejection: the server's JSON
+// with the HTTP status beside it ({detail, status}), or {status} alone when the
+// body was not JSON.  A call that got no answer (timeout, no network) arrives
+// as the axios error itself, which has no status.
+const statusOf = (error) =>
+  error && typeof error.status === 'number' ? error.status : null;
+
 /** Why a call failed, in words the person can act on. */
 function reasonOf(error) {
-  const detail =
-    error &&
-    error.response &&
-    error.response.data &&
-    error.response.data.detail;
+  const status = statusOf(error);
+  const detail = status === null ? null : error.detail;
   if (typeof detail === 'string' && detail.trim()) {
     const plain = PLAIN_REFUSALS.find(([pattern]) => pattern.test(detail));
     return plain ? plain[1] : detail;
   }
-  if (error && error.response) {
-    return `The server could not process this (${error.response.status}). Please try again, or contact support.`;
+  if (status !== null) {
+    return `The server could not process this (${status}). Please try again, or contact support.`;
   }
   if (isTimeout(error)) {
     return 'The server took too long to answer. Nothing was charged. Please try again.';
   }
   return 'Could not reach the server. Check your connection and try again.';
 }
-
-const statusOf = (error) =>
-  error && error.response ? error.response.status : null;
 
 /** Tell the Android app which transaction is about to be paid (it stores the id). */
 function tellAppAboutTransaction(transactionId) {
@@ -199,20 +219,14 @@ export async function startCheckout({
   const transactionId = newTransactionId();
 
   try {
-    await axios.post(
+    await checkoutClient.post(
       ADD_SUBSCRIPTION_URL,
       {
         phone_number: payer.phone,
         plan_id: plan.plan_id,
         transaction_id: transactionId,
       },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${payer.accessToken}`,
-        },
-        timeout: REQUEST_TIMEOUT_MS,
-      }
+      {keepStatus: true, silentError: true}
     );
   } catch (error) {
     // No row, so nothing may be paid.
@@ -229,17 +243,17 @@ export async function startCheckout({
   };
   if (numStudents !== null) payload[QUANTITY_FIELD] = numStudents;
 
-  let response;
+  let url;
   try {
-    response = await axios.post(PAYMENT_URL, payload, {
-      headers: {'Content-Type': 'application/json'},
-      timeout: REQUEST_TIMEOUT_MS,
+    url = await checkoutClient.post(PAYMENT_URL, payload, {
+      keepStatus: true,
+      silentError: true,
+      sendToken: false,
     });
   } catch (error) {
     return {status: 'error', message: reasonOf(error)};
   }
 
-  const url = response && response.data;
   if (typeof url !== 'string' || !/^https:\/\//i.test(url)) {
     return {
       status: 'error',

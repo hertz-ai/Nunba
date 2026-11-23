@@ -47,7 +47,8 @@ answering /chat, reached through the same test_client() transport
 routes.hartos_backend_adapter.chat uses), the model gate
 (models.orchestrator), LlamaConfig, server TTS, the local llama probes and
 the cloud HTTP leg.  custom_gpt, teachme2, chat_route, _run_turn,
-_chat_turn, _agent_reply and the adapter's chat() are the real code, and
+_chat_turn, core.phone_chat's agent_reply_body and the adapter's chat() are
+the real code, and
 the contract validators are HARTOS's own.
 
     python -m pytest tests/test_reel_attachments_passthrough.py -q

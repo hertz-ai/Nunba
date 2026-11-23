@@ -5699,9 +5699,13 @@ def admin_mcp_token_get():
         # Use the PUBLIC HARTOS API — was reaching into the private
         # underscore-prefix `_ensure_mcp_token` which coupled Nunba's
         # release cadence to HARTOS internal naming.
-        from integrations.coding_agent.claude_code_backend import copilot_enabled
+        from integrations.coding_agent.claude_code_backend import (
+            copilot_enabled, reconcile_copilot_switch)
         from integrations.mcp import get_mcp_token
         token = get_mcp_token()
+        # The switch is shown as it is in force: an off marker that went
+        # missing is put back from the owner's last answer before it is read.
+        reconcile_copilot_switch()
         return jsonify({
             'token': token,
             'url': _MCP_CONFIG_URL,
@@ -5720,11 +5724,17 @@ def admin_mcp_enable():
     as the provider switch.  Off gates claude_code_available(), so the expert
     tier stops routing to Claude and /api/mcp/local answers 503; the token is
     untouched, so on again costs no client reconfiguration (rotate does).
-    Returns the state IN FORCE (HARTOS_COPILOT_ENABLED can pin it)."""
+    Returns the state IN FORCE (HARTOS_COPILOT_ENABLED can pin it).
+
+    The answer is recorded as the owner's copilot_access consent
+    (switch_copilot), as the camera and screen switches record theirs; the
+    off marker follows it.  This used to flip the marker alone: an OFF of
+    2026-09-16 was ON again two months later because that one file was gone
+    and nothing else said OFF."""
     try:
-        from integrations.coding_agent.claude_code_backend import set_copilot_enabled
+        from integrations.coding_agent.claude_code_backend import switch_copilot
         wanted = bool((request.get_json(force=True, silent=True) or {}).get('enabled', True))
-        in_force = set_copilot_enabled(wanted)
+        in_force = switch_copilot(wanted)
         return jsonify({'success': True, 'enabled': in_force,
                         'pinned_by_env': in_force != wanted})
     except Exception as e:
