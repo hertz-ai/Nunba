@@ -16,7 +16,7 @@ import {
   RADIUS,
   socialTokens,
 } from '../../theme/socialTokens';
-import {useRoleAccess} from '../RoleGuard';
+import {ROLE_LEVELS, levelOf, useRoleAccess} from '../RoleGuard';
 import ErrorBoundary from '../shared/ErrorBoundary';
 
 import AccountBalanceWalletIcon from '@mui/icons-material/AccountBalanceWallet';
@@ -345,8 +345,6 @@ const navGroups = [
   },
 ];
 
-const ROLE_LEVELS = {anonymous: 0, guest: 1, flat: 2, regional: 3, central: 4};
-
 const ROLE_BADGE = {
   central: {label: 'CENTRAL', color: '#FF6B6B'},
   regional: {label: 'REGIONAL', color: '#6C63FF'},
@@ -366,7 +364,8 @@ export default function SocialLayout({children}) {
   const navigate = useNavigate();
   const location = useLocation();
   const theme = useTheme();
-  const {currentUser, unreadCount, accessTier, resonance} = useSocial();
+  const {currentUser, unreadCount, accessTier, resonance, isAuthenticated} =
+    useSocial();
   const {canWrite} = useRoleAccess();
   const {isVisitorTheme, visitorUser, clearVisitorTheme} = useNunbaTheme();
   usePageObserver(); // Track page dwell time for agent self-critique
@@ -397,7 +396,7 @@ export default function SocialLayout({children}) {
     return () => clearInterval(interval);
   }, []);
 
-  const userLevel = ROLE_LEVELS[accessTier] || 0;
+  const userLevel = levelOf(accessTier, isAuthenticated);
   const badge = ROLE_BADGE[accessTier];
 
   const getBottomNavValue = () => {
