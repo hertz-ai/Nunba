@@ -278,31 +278,71 @@ def test_only_the_placeholder_is_refused(gi, posted, placeholder):
     assert gi.is_placeholder_user_id(posted) is placeholder
 
 
-def _set_storage_handler(json_module=json):
-    """app.py's own set_storage body, as a function of one post.
+PHONE_KEY = 'fake-device-public-key'
+
+
+def _as_caller(phone=None):
+    """One request's context: the desktop's own page (phone None), or a
+    phone the owner allowed as account ``phone``, marked the way HARTOS's
+    API gate marks it (security.middleware: g.auth_source 'device',
+    g.device_public_key, the token's claims in g.jwt_payload).  The route
+    reads the mark through routes.auth.is_admitted_device, the real one."""
+    import contextlib
+
+    from flask import Flask, g
+
+    @contextlib.contextmanager
+    def context():
+        with Flask(__name__).test_request_context():
+            if phone is not None:
+                g.auth_source = 'device'
+                g.device_public_key = PHONE_KEY
+                g.jwt_payload = {'user_id': phone}
+            yield
+    return context()
+
+
+def _route_body(name, json_module=json):
+    """app.py's own route function ``name``, compiled on its own.
 
     It is nested inside the serving-app builder, and importing app.py drags
-    in the boot path, so its source is compiled on its own with the route
-    decorator dropped and the request and jsonify it reads stood in for.
+    in the boot path, so its source is compiled with the route decorator
+    dropped and the request and jsonify it reads stood in for.
     """
     import logging
-    from types import SimpleNamespace
     tree = ast.parse((REPO / 'app.py').read_text(encoding='utf-8'))
     fn = next(n for n in ast.walk(tree)
-              if isinstance(n, ast.FunctionDef) and n.name == 'set_storage')
+              if isinstance(n, ast.FunctionDef) and n.name == name)
     fn.decorator_list = []
     ns = {'jsonify': lambda body: body, 'os': os, 'json': json_module,
-          'logger': logging.getLogger('test_set_storage')}
+          'logger': logging.getLogger(f'test_{name}')}
     exec(compile(ast.Module(body=[fn], type_ignores=[]), 'app.py', 'exec'), ns)
+    return ns
+
+
+def _set_storage_handler(json_module=json, phone=None):
+    """app.py's own set_storage body, as a function of one post."""
+    from types import SimpleNamespace
+    ns = _route_body('set_storage', json_module)
 
     def post(posted):
-        ns['request'] = SimpleNamespace(method='POST', json=posted)
-        return ns['set_storage']()
+        with _as_caller(phone):
+            ns['request'] = SimpleNamespace(method='POST', json=posted)
+            return ns['set_storage']()
     return post
 
 
-def _post_to_set_storage(posted):
-    return _set_storage_handler()(posted)
+def _post_to_set_storage(posted, phone=None):
+    return _set_storage_handler(phone=phone)(posted)
+
+
+def _get_storage(key, phone=None):
+    """app.py's own get_storage body, for one read of ``key``."""
+    from types import SimpleNamespace
+    ns = _route_body('get_storage')
+    with _as_caller(phone):
+        ns['request'] = SimpleNamespace(method='GET')
+        return ns['get_storage'](key)
 
 
 def test_a_post_of_the_placeholder_keeps_the_owner(fake_home, gi, clean_owner_env):
@@ -487,3 +527,124 @@ def test_the_sign_out_log_names_rows_never_the_login(
     _signed_in(fake_home, '20303', LOGIN_B)
     _post_to_set_storage({'user_id': '', 'access_token': '', 'email': ''})
     assert '20303' in caplog.text and LOGIN_B not in caplog.text
+
+
+# ── a phone the owner allowed never reaches this desktop's sign-in ────────
+# Review rv_6546, measured through HARTOS's real gate: a phone allowed as
+# account B (20303) posted /api/storage/set {user_id: '20303',
+# access_token: ''} from the LAN and got 200.  The gate holds a phone to its
+# own account by the body's user_id, and that body names it, so the post
+# went on: the record then named 20303 beside owner A's email, and the
+# sign-out drop took A's stored login off A's row (10202).  The read half
+# was older: the same phone could GET /api/storage/get/access_token and be
+# answered with A's login.  user_data.json is the desktop's own sign-in.
+# Only the desktop's own page calls these routes (useAuthSession,
+# useStorageSync, SettingsPage, Demopage); the phone app calls neither
+# (Hevolve_React_Native, source and history), and HARTOS's mobile_paths
+# route neither to a desktop.  Fake values only.
+
+LOGIN_C = 'fake-hevolve-login-c'
+
+
+def _owner_a_signed_in(home, users_table):
+    store, _login_of = users_table
+    store('10202', LOGIN_A)
+    _write(home, json.dumps({'user_id': '10202', 'access_token': LOGIN_A,
+                             'email': 'a@example.com', 'agentname': 'Nunba'}))
+
+
+def _refused_as_desktop_only(reply):
+    assert isinstance(reply, tuple) and reply[1] == 403, \
+        'the phone was answered, not refused'
+    body = reply[0]
+    assert body['success'] is False
+    assert "This desktop's sign-in is managed on the desktop" in body['error']
+    return body
+
+
+@pytest.mark.parametrize('posted', [
+    {'user_id': '20303', 'access_token': ''},           # the measured post
+    {'user_id': '20303', 'access_token': LOGIN_B,       # a sign-in as itself
+     'email': 'b@example.com', 'agentname': 'Nunba'},
+])
+def test_a_phone_cannot_write_this_desktops_sign_in(
+        fake_home, gi, clean_owner_env, users_table, posted):
+    _owner_a_signed_in(fake_home, users_table)
+    gi.sync_owner_identity_env()
+    before = _record(fake_home).read_text(encoding='utf-8')
+    _refused_as_desktop_only(_post_to_set_storage(posted, phone='20303'))
+    assert _record(fake_home).read_text(encoding='utf-8') == before
+    _store, login_of = users_table
+    assert login_of('10202') == LOGIN_A, "the owner's stored login was dropped"
+    assert login_of('20303') == 'NO ROW'
+    assert os.environ[OWNER_ENV] == '10202'
+
+
+@pytest.mark.parametrize('key', ['access_token', 'user_id', 'email'])
+def test_a_phone_cannot_read_this_desktops_sign_in(
+        fake_home, gi, clean_owner_env, users_table, key):
+    _owner_a_signed_in(fake_home, users_table)
+    body = _refused_as_desktop_only(_get_storage(key, phone='20303'))
+    assert 'data' not in body and LOGIN_A not in json.dumps(body)
+
+
+def test_the_desktops_own_page_still_signs_in_reads_and_signs_out(
+        fake_home, gi, clean_owner_env, users_table):
+    """What the page itself needs from these routes, from this machine
+    (git history: d700eaa7 reads each key back on mount, 0f9151da merges,
+    f2e8fe71 signs out with the '' sentinel)."""
+    _store, login_of = users_table
+    reply = _post_to_set_storage({'user_id': '10202', 'access_token': LOGIN_A,
+                                  'email': 'a@example.com', 'agentname': 'Nunba'})
+    assert reply['success'] is True and login_of('10202') == LOGIN_A
+    assert _get_storage('access_token') == {'success': True, 'data': LOGIN_A}
+    assert _get_storage('user_id') == {'success': True, 'data': '10202'}
+    _post_to_set_storage({'user_id': '', 'access_token': '', 'email': ''})
+    assert _get_storage('access_token') == {'success': False,
+                                            'error': 'Key not found'}
+    assert login_of('10202') is None
+
+
+# ── a sign-in that replaces the account drops the replaced one's login ────
+# Signing in as C while A was signed in, with no sign-out between, left A's
+# row holding A's Hevolve login, so a phone allowed as A kept spending on it
+# (review rv_6546, minor).  The switch drops it as sign-out does.
+
+def test_signing_in_as_another_account_drops_the_replaced_accounts_login(
+        fake_home, gi, clean_owner_env, users_table):
+    _owner_a_signed_in(fake_home, users_table)
+    _store, login_of = users_table
+    _post_to_set_storage({'user_id': '30404', 'access_token': LOGIN_C,
+                          'email': 'c@example.com', 'agentname': 'Nunba'})
+    assert login_of('10202') is None, "the replaced account kept its login"
+    assert login_of('30404') == LOGIN_C
+    record = json.loads(_record(fake_home).read_text(encoding='utf-8'))
+    assert record['user_id'] == '30404'
+
+
+@pytest.mark.parametrize('posted_id', ['10202', 10202])
+def test_the_same_account_signing_in_again_keeps_its_new_login(
+        fake_home, gi, clean_owner_env, users_table, posted_id):
+    """A refreshed login, or the page's mirror naming the account again (as
+    a number or a string), is no switch."""
+    _owner_a_signed_in(fake_home, users_table)
+    _store, login_of = users_table
+    _post_to_set_storage({'user_id': posted_id,
+                          'access_token': 'fake-hevolve-login-a2',
+                          'email': 'a@example.com', 'agentname': 'Nunba'})
+    assert login_of('10202') == 'fake-hevolve-login-a2'
+
+
+def test_a_switch_from_an_account_that_is_no_cloud_id_leaves_its_row(
+        fake_home, gi, clean_owner_env, users_table):
+    """An account this node numbers itself (a uuid, not a cloud id) holds no
+    Hevolve login (central_login_for reads cloud ids only): its row's
+    api_token is this node's own token, and it stays."""
+    store, login_of = users_table
+    store(USER_ID, 'fake-node-own-token')
+    _write(fake_home, json.dumps({'user_id': USER_ID,
+                                  'access_token': 'fake-node-own-token'}))
+    _post_to_set_storage({'user_id': '30404', 'access_token': LOGIN_C,
+                          'email': 'c@example.com', 'agentname': 'Nunba'})
+    assert login_of(USER_ID) == 'fake-node-own-token'
+    assert login_of('30404') == LOGIN_C

@@ -6001,6 +6001,24 @@ def start_flask():
             if request.method == 'OPTIONS':
                 return jsonify({"status": "ok"})
 
+            # user_data.json is this desktop's own sign-in: the desktop owner,
+            # the consent gates and the stored login a phone's cloud turn
+            # spends all follow it, and only the page on this machine signs in
+            # or out here.  A phone the owner allowed is refused (review
+            # rv_6546, measured): HARTOS's gate holds a phone to its own
+            # account by the body's user_id, so a phone allowed as B posted
+            # {user_id: B, access_token: ''} and signed owner A out, A's
+            # stored login dropped and the record naming B.  A phone keeps
+            # its own sign-in on the phone.
+            from routes.auth import is_admitted_device
+            if is_admitted_device():
+                return jsonify({
+                    'success': False,
+                    'error': ("This desktop's sign-in is managed on the "
+                              "desktop: sign in or out in Nunba there. This "
+                              "phone keeps its own sign-in."),
+                }), 403
+
             try:
                 global _window
                 data = request.json
@@ -6091,10 +6109,18 @@ def start_flask():
                         user_data.pop('user_id')
                         set_keys.remove('user_id')
 
-                    # Who signs out, and the login they leave, read before the
-                    # clear below removes them (sign-out clears access_token).
+                    # Who leaves this desktop's sign-in, and the login they
+                    # leave, read before the clear and the update below
+                    # replace them: a sign-out (it clears access_token), or a
+                    # sign-in as another account over a cloud account with
+                    # no sign-out between (A replaced by C).
+                    _on_file = str(stored.get('user_id') or '')
+                    _replaced = ('user_id' in user_data
+                                 and _on_file.isascii() and _on_file.isdigit()
+                                 and str(user_data['user_id']) != _on_file)
                     _signed_out = ((stored.get('user_id'), stored.get('access_token'))
-                                   if 'access_token' in clear_keys else (None, None))
+                                   if 'access_token' in clear_keys or _replaced
+                                   else (None, None))
                     _cleared = []
                     for key in clear_keys:
                         if stored.pop(key, None) is not None:
@@ -6117,14 +6143,15 @@ def start_flask():
                     except Exception as _own_err:
                         logger.warning(f"desktop owner re-export failed: {_own_err}")
 
-                # Sign-out also drops the Hevolve login this desktop stored for
-                # the account, in the users row the sign-in wrote (the upsert
-                # below): HARTOS's central_login_for reads that api_token for a
-                # phone's cloud-agent turn and for recipe sync, so a signed-out
-                # account's login kept being used (review rv_6546).  The row is
-                # the one holding the login the record had, or the account's
-                # own cloud-id row; another account's row is never touched.
-                # Ids only in the log, never a token.
+                # Sign-out, and a sign-in that replaces the account, also drop
+                # the Hevolve login this desktop stored for the account that
+                # left, in the users row the sign-in wrote (the upsert below):
+                # HARTOS's central_login_for reads that api_token for a phone's
+                # cloud-agent turn and for recipe sync, so a signed-out or
+                # replaced account's login kept being used (review rv_6546).
+                # The row is the one holding the login the record had, or the
+                # account's own cloud-id row; another account's row is never
+                # touched.  Ids only in the log, never a token.
                 _out_id, _out_token = _signed_out
                 _out_id = str(_out_id or '')
                 if _out_token or (_out_id.isascii() and _out_id.isdigit()):
@@ -6143,11 +6170,13 @@ def start_flask():
                                 _row.api_token = None
                             if _dropped:
                                 _db.commit()
-                                logger.info("Signed-out account's stored login "
-                                            f"dropped from users row(s) {_dropped}")
+                                logger.info("The stored login of the account that "
+                                            "left this desktop's sign-in dropped "
+                                            f"from users row(s) {_dropped}")
                     except Exception as _out_err:
                         logger.warning(
-                            "Signed-out account's stored login NOT dropped "
+                            "The stored login of the account that left this "
+                            "desktop's sign-in NOT dropped "
                             f"(account {_out_id or 'unknown'}): "
                             f"{type(_out_err).__name__}")
 
@@ -6259,6 +6288,19 @@ def start_flask():
         def get_storage(key):
             if request.method == 'OPTIONS':
                 return jsonify({"status": "ok"})
+
+            # The read half of set_storage's refusal: the record holds this
+            # desktop's Hevolve login (access_token), and a phone the owner
+            # allowed was answered with it (review rv_6546).  The page on
+            # this machine reads it back on mount (useStorageSync).
+            from routes.auth import is_admitted_device
+            if is_admitted_device():
+                return jsonify({
+                    'success': False,
+                    'error': ("This desktop's sign-in is managed on the "
+                              "desktop: sign in or out in Nunba there. This "
+                              "phone keeps its own sign-in."),
+                }), 403
 
             try:
                 from desktop.guest_identity import get_user_data_file_path

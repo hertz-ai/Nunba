@@ -747,6 +747,31 @@ class TestAgentRouting:
         assert self.DEVICE_TOKEN not in json.dumps(node['pulls'])
         self._no_bearer_logged(caplog)
 
+    def test_a_phone_pulls_as_its_own_account_not_the_desktop_owners(
+            self, flask_app, client, node, caplog, stored_logins, monkeypatch):
+        """The desktop owner is 10202 (signed in here: the record and its
+        HEVOLVE_OWNER_USER_ID export); the phone was allowed as 20303.  Its
+        pull goes as 20303 on 20303's own login (review rv_e619: a pull as
+        the owner survived every test, the phone and the owner were one
+        account in all of them)."""
+        from desktop import guest_identity
+        stored_logins('10202', self.STORED_LOGIN)
+        stored_logins('20303', self.OTHER_LOGIN)
+        monkeypatch.setenv('HEVOLVE_OWNER_USER_ID', '10202')
+        monkeypatch.setattr(guest_identity, 'get_desktop_owner_id',
+                            lambda: '10202')
+        self._central_holds_it(node)
+        self._as_phone(flask_app, '20303')
+        body = self._turn(client, caplog, f'Bearer {self.DEVICE_TOKEN}',
+                          user_id='20303')
+        assert body['text'] == 'local says hi' and node['sent'] == []
+        assert [p['user_id'] for p in node['pulls']] == ['20303'], \
+            'the pull did not go as the phone\'s account'
+        assert node['pulls'][0]['headers'].get('Authorization') == \
+            f'Bearer {self.OTHER_LOGIN}'
+        assert self.STORED_LOGIN not in json.dumps(node['pulls'])
+        self._no_bearer_logged(caplog)
+
     def test_a_phone_this_desktop_holds_no_login_for_keeps_its_miss(
             self, flask_app, client, node, caplog, stored_logins):
         self._central_holds_it(node)
