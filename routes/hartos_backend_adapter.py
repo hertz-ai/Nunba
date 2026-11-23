@@ -1653,7 +1653,9 @@ _INPROCESS_DISPATCH_ROUTES = (
     ('/api/vlm/stop', ('POST',)),        # Stop AI Control (call_stop_api)
     ('/time_agent', ('POST',)),          # scheduled recipe actions
     ('/visual_agent', ('POST',)),        # scheduled visual (VLM) actions
-    ('/api/agent/approval', ('POST',)),  # consent card Approve / Deny
+    # consent card Approve / Deny; GET ?ask_id= is a phone's read of the one
+    # ask its tapped Firebase banner names (Android PersonAsk.read)
+    ('/api/agent/approval', ('GET', 'POST')),
     ('/api/voice/transcribe', ('POST',)),  # phone call STT + watch relay (multipart WAV)
 )
 # /api/voice/transcribe measured 2026-10-02 on 731864e3: 404, so the phone's
@@ -1728,7 +1730,10 @@ def create_inprocess_dispatch_blueprint():
                     'status': 'backend_unavailable',
                 }), 503
             with _hevolve_app.test_client() as client:
+                # the query too: a read names what it reads there
+                # (GET /api/agent/approval?ask_id=)
                 resp = client.open(path, method=flask_request.method,
+                                   query_string=flask_request.query_string.decode('latin-1'),
                                    **_forward_kwargs())
                 return Response(resp.get_data(), status=resp.status_code,
                                 content_type=resp.content_type)
