@@ -2,7 +2,7 @@
 import TypeWriterForSubtitle from './TypeWriterSubtitle';
 
 import hourglassAnimation from '../../assets/hourglass-lottie.json';
-import {OverlayContent} from '../../components/AgentOverlay/AgentOverlay';
+import {OverlayContent, askClosedText} from '../../components/AgentOverlay/AgentOverlay';
 import RelativeTime from '../../components/Common/RelativeTime';
 import {isReplyMessage} from '../../utils/chatRetry';
 import {timeOf} from '../../utils/mergeRestoredMessages';
@@ -236,6 +236,9 @@ const ChatMessageList = ({
   // entirely (the spinner row's CyclingVerb is the sole status surface).
   // Default true preserves today's UX.
   showThinkingTraces = true,
+  // The open agent's asks shown in this chat: ask_id -> {state, card}
+  // (Demopage, from AgentOverlay onChatAsk).
+  askStates = null,
 }) => {
   const isIdleVideo = (url) => url === idleVideoUrl;
   // Replies so far.  The hourglass row compares it across a request to tell
@@ -583,6 +586,34 @@ const ChatMessageList = ({
                   Modify
                 </button>
               </div>
+            </div>
+          );
+        }
+
+        if (message.type === 'agent_ask') {
+          // The open agent's own question, as its message in this chat
+          // (AgentOverlay chatAsks).  Answered through the card's own door;
+          // its open state is HARTOS's, never this history's: while it is
+          // open here the live card is shown, else how it closed.
+          const live = askStates && askStates[message.askId];
+          const open = live && live.state === 'open' && live.card;
+          const question = (open ? live.card : message.component) || {};
+          return (
+            <div
+              key={`agent-ask-${message.askId || index}`}
+              data-testid="chat-ask"
+              data-ask-state={open ? 'open' : (message.closed || (live && live.state) || 'checking')}
+              className="rounded-lg p-6 shadow-sm animate-slide-in-left"
+              style={{maxWidth: '100%', backgroundColor: '#212A31', color: '#FFFFFF'}}
+            >
+              {open ? (
+                <OverlayContent data={live.card} onDismiss={() => {}} onLater={() => {}} />
+              ) : (
+                <>
+                  {question.title && <div style={{fontWeight: 600, marginBottom: 4}}>{question.title}</div>}
+                  <div style={{opacity: 0.75}}>{askClosedText(message.closed || (live && live.state))}</div>
+                </>
+              )}
             </div>
           );
         }

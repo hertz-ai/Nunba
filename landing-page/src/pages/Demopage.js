@@ -11,7 +11,7 @@ import connectedGif from '../assets/images/connected.gif';
 // the companion, the icon was always self-referential noise.
 import Lottie from 'lottie-react';
 import creationModeAnimation from '../assets/images/Animation.json';
-import AgentOverlay from '../components/AgentOverlay/AgentOverlay';
+import AgentOverlay, { ASK_CLOSED_STATES, askChatMessage } from '../components/AgentOverlay/AgentOverlay';
 import {Link as RouterLink, useNavigate, useParams, useLocation} from 'react-router-dom';
 import {
   ChevronDown,
@@ -669,6 +669,29 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   // LLM had no visual context.  Defaulting here means every consumer of
   // effectiveUserId sees the same non-empty value.  Cross-platform.
   const effectiveUserId = (isGuestMode ? guestUserId : decryptedUserId) || 'guest';
+  // The open agent's questions shown in this chat (AgentOverlay chatAsks):
+  // ask_id -> {state, card}, the card only while it is open here.  What the
+  // chat's history keeps of an ask is its question and, once known, how it
+  // closed (askChatMessage); never an answer.
+  const [askStates, setAskStates] = useState({});
+  const handleChatAsk = useCallback(({askId, state, card}) => {
+    if (!askId) return;
+    setAskStates((prev) => ({...prev, [askId]: {state, card: state === 'open' ? card : undefined}}));
+    if (state === 'open') {
+      setMessages((prev) => (prev.some((m) => m.type === 'agent_ask' && m.askId === askId)
+        ? prev : [...prev, askChatMessage(card)]));
+      setShouldScroll(true);
+    } else if (ASK_CLOSED_STATES.has(state)) {
+      setMessages((prev) => (prev.some((m) => m.type === 'agent_ask' && m.askId === askId && m.closed !== state)
+        ? prev.map((m) => (m.type === 'agent_ask' && m.askId === askId ? {...m, closed: state} : m))
+        : prev));
+    }
+  }, []);
+  // Asks the chat's history shows whose state this page does not know (a
+  // reload): AgentOverlay reads them from HARTOS.
+  const askIdsToCheck = messages
+    .filter((m) => m && m.type === 'agent_ask' && !m.closed && !askStates[m.askId])
+    .map((m) => m.askId);
   const [uploadedPdf, setUploadedPdf] = useState(null);
   const [pdfurl, setPdfurl] = useState(null);
   const [worker, setWorker] = useState(null);
@@ -5805,6 +5828,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                   onConfigureLlm={handleConfigureLlm}
                   latestThinkingText={latestThinkingText}
                   showThinkingTraces={showThinkingTraces}
+                  askStates={askStates}
                 />
               )}
             </div>
@@ -6034,9 +6058,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         );
       })()}
 
-      {/* Agent UI Overlay — floating glass cards for agent-pushed components */}
+      {/* Agent UI Overlay — floating glass cards for agent-pushed components.
+          The open agent's own questions are this chat's messages instead
+          (chatAsks; owner 2026-11-23: "the question shd be part of chat"). */}
       <AgentOverlay
         navigate={navigate}
+        chatAsks={currentAgent?.prompt_id != null && currentAgent?.prompt_id !== ''
+          ? {promptId: String(currentAgent.prompt_id), userId: String(effectiveUserId || '')}
+          : null}
+        onChatAsk={handleChatAsk}
+        askIdsToCheck={askIdsToCheck}
         onInlineChatCard={(card) => {
           setMessages((prev) => [...prev, {
             type: 'agent_ui',
