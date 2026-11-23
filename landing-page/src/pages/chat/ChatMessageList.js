@@ -2,7 +2,7 @@
 import TypeWriterForSubtitle from './TypeWriterSubtitle';
 
 import hourglassAnimation from '../../assets/hourglass-lottie.json';
-import {OverlayContent, askClosedText} from '../../components/AgentOverlay/AgentOverlay';
+import {OverlayContent, askClosedText, dismissAskEverywhere} from '../../components/AgentOverlay/AgentOverlay';
 import RelativeTime from '../../components/Common/RelativeTime';
 import {isReplyMessage} from '../../utils/chatRetry';
 import {timeOf} from '../../utils/mergeRestoredMessages';
@@ -607,11 +607,26 @@ const ChatMessageList = ({
               style={{maxWidth: '100%', backgroundColor: '#212A31', color: '#FFFFFF'}}
             >
               {open ? (
-                <OverlayContent data={live.card} onDismiss={() => {}} onLater={() => {}} />
+                <div style={{position: 'relative'}}>
+                  {/* The card's own X: dismisses the ask everywhere, as her. */}
+                  <button
+                    type="button"
+                    aria-label="Dismiss"
+                    onClick={() => dismissAskEverywhere(message.askId)}
+                    style={{position: 'absolute', top: -12, right: -12, background: 'none', border: 'none',
+                            color: 'rgba(255,255,255,0.5)', cursor: 'pointer', fontSize: 16, lineHeight: 1}}
+                  >
+                    ×
+                  </button>
+                  {/* Answered through the card's own door; no Later in the chat. */}
+                  <OverlayContent data={live.card} onDismiss={() => {}} inChat />
+                </div>
               ) : (
                 <>
                   {question.title && <div style={{fontWeight: 600, marginBottom: 4}}>{question.title}</div>}
-                  <div style={{opacity: 0.75}}>{askClosedText(message.closed || (live && live.state))}</div>
+                  <div style={{opacity: 0.75}}>
+                    {askClosedText(message.closed || (live && live.state), message.closedReason)}
+                  </div>
                 </>
               )}
             </div>

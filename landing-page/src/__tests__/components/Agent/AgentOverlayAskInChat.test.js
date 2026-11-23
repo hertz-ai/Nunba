@@ -72,17 +72,30 @@ function posts() {
 function Page({chat, initialMessages = []}) {
   const [messages, setMessages] = React.useState(initialMessages);
   const [askStates, setAskStates] = React.useState({});
+  const [front, setFront] = React.useState(chat);
+  React.useEffect(() => { setFront(chat); }, [chat]);
+  const askStatesRef = React.useRef(askStates);
+  askStatesRef.current = askStates;
   Page.messages = messages;
-  const onChatAsk = React.useCallback(({askId, state, card}) => {
+  const onChatAsk = React.useCallback(({askId, state, card, reason}) => {
     setAskStates((prev) => ({...prev, [askId]: {state, card: state === 'open' ? card : undefined}}));
     if (state === 'open') {
       setMessages((prev) => (prev.some((m) => m.type === 'agent_ask' && m.askId === askId)
         ? prev : [...prev, askChatMessage(card)]));
     } else if (overlayModule.ASK_CLOSED_STATES.has(state)) {
       setMessages((prev) => prev.map((m) => (m.type === 'agent_ask' && m.askId === askId
-        ? {...m, closed: state} : m)));
+        ? {...m, closed: state, ...(reason ? {closedReason: reason} : {})} : m)));
     }
   }, []);
+  // Demopage's agent switch, as written there (handleButtonClick and the
+  // route switch): the chat is cleared to its carried cards, the agent
+  // changes, and 100 ms later the agent's stored history replaces the chat,
+  // with every ask still open in it put back (withOpenChatAsks).
+  Page.switchTo = (next, saved) => {
+    setMessages([]);
+    setFront(next);
+    setTimeout(() => setMessages(overlayModule.withOpenChatAsks(saved, askStatesRef.current)), 100);
+  };
   const askIdsToCheck = messages
     .filter((m) => m.type === 'agent_ask' && !m.closed && !askStates[m.askId])
     .map((m) => m.askId);
@@ -98,7 +111,7 @@ function Page({chat, initialMessages = []}) {
           askStates={askStates} />
       </div>
       <div data-testid="overlay">
-        <AgentOverlay navigate={jest.fn()} chatAsks={chat} onChatAsk={onChatAsk}
+        <AgentOverlay navigate={jest.fn()} chatAsks={front} onChatAsk={onChatAsk}
                       askIdsToCheck={askIdsToCheck} />
       </div>
     </>
@@ -177,6 +190,38 @@ describe('the open agent\'s question is its chat\'s message', () => {
   });
 });
 
+// Review of a038f23a: the chat's message passed no-op callbacks, so a form or
+// file ask could not be closed while its chat was in front.  It has the
+// card's own Dismiss (dismissed everywhere, as the card's X does), and no
+// Later: the question is part of the chat.
+describe('closing an ask from the chat', () => {
+  test('a form ask in the chat has Dismiss: it dismisses everywhere, as her, and says so', async () => {
+    const {send} = mount();
+    const q = ask({type: 'form', title: 'Your child\'s age?',
+                   fields: [{name: 'age', label: 'Age', type: 'text'}]});
+    send(q);
+    fireEvent.click(screen.getByLabelText('Dismiss'));
+    await waitFor(() => expect(posts()).toHaveLength(1));
+    expect(posts()[0][1].headers.Authorization).toBe('Bearer tok-owner');
+    expect(JSON.parse(posts()[0][1].body)).toEqual({ask_id: q.ask_id, dismiss: true});
+    expect(screen.getByTestId('chat-ask').getAttribute('data-ask-state')).toBe('here');
+    expect(inOverlay(q.title)).toBe(false);
+  });
+
+  test('an approval ask in the chat offers no Later', () => {
+    const {send} = mount();
+    send(ask());
+    expect(screen.getByText('Approve')).toBeTruthy();
+    expect(screen.queryByText('Later')).toBeNull();
+  });
+
+  test('on its card (no chat in front) the approval ask keeps Later', () => {
+    const {send} = mount(null);
+    send(ask());
+    expect(screen.getByText('Later')).toBeTruthy();
+  });
+});
+
 describe('a secret never enters the chat', () => {
   test('an ask with a secret-looking field keeps its card', () => {
     const {send} = mount();
@@ -206,15 +251,28 @@ describe('a secret never enters the chat', () => {
 });
 
 describe('whether it is open is HARTOS\'s word, not the history\'s', () => {
-  test('answered on another device: the bubble says so and offers no answer', () => {
+  test('closed by HARTOS, not from this window: the bubble says it is closed, neutrally, and offers no answer', () => {
+    // The same drop comes for an answer on another device, an expiry and a
+    // finished CREATE run, so this window does not claim which (review of
+    // a038f23a: it said "Answered on another device" for all three).
     const {send} = mount();
     const q = ask();
     send(q);
     act(() => { handlers['ask.answered']({type: 'ask.answered', ask_id: q.ask_id}); });
     expect(screen.getByTestId('chat-ask').getAttribute('data-ask-state')).toBe('elsewhere');
-    expect(inChat('Answered on another device.')).toBe(true);
+    expect(inChat('This question is closed.')).toBe(true);
+    expect(inChat('Answered on another device')).toBe(false);
     expect(inChat(q.title)).toBe(true);                     // never silently gone
     expect(screen.queryByText('Approve')).toBeNull();
+  });
+
+  test('a drop that says why is shown with its reason', () => {
+    const {send} = mount();
+    const q = ask();
+    send(q);
+    act(() => { handlers['ask.answered']({type: 'ask.answered', ask_id: q.ask_id,
+                                          reason: 'Answered on your phone.'}); });
+    expect(inChat('Answered on your phone.')).toBe(true);
   });
 
   test('after a reload, an ask still open is read back as open, and one that is not as gone', async () => {
@@ -271,6 +329,62 @@ describe('hand-off: the ask follows its chat, never shown both ways', () => {
     expect(screen.getByTestId('chat-ask').getAttribute('data-ask-state')).toBe('open');
   });
 
+  // Review of a038f23a, critical: the overlay moved the card into the chat,
+  // then Demopage's agent switch replaced the chat with the agent's stored
+  // history 100 ms later, which wiped the message, and HARTOS does not send
+  // the same ask again: she opened the asking agent's chat and saw nothing.
+  test('opening the asking agent\'s chat (the real switch, its history load 100 ms later) keeps the ask', async () => {
+    jest.useFakeTimers();
+    try {
+      const {send} = mount(OTHER_CHAT);
+      const q = ask();
+      send(q);
+      expect(inOverlay(q.title)).toBe(true);
+      const saved = [{type: 'assistant', content: 'an earlier reply of agent 342',
+                      timestamp: new Date(Date.now() - 60000).toISOString()}];
+      act(() => { Page.switchTo(CHAT, saved); });
+      act(() => { jest.advanceTimersByTime(150); });
+      expect(screen.getAllByText('Approve')).toHaveLength(1);
+      expect(inOverlay(q.title)).toBe(false);
+      expect(screen.getByTestId('chat-ask').getAttribute('data-ask-state')).toBe('open');
+      expect(inChat('an earlier reply of agent 342')).toBe(true);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('switching away and back, with a history that lacks the ask, keeps it once', async () => {
+    jest.useFakeTimers();
+    try {
+      const {send} = mount(CHAT);
+      const q = ask();
+      send(q);
+      act(() => { Page.switchTo(OTHER_CHAT, []); });
+      act(() => { jest.advanceTimersByTime(150); });
+      expect(inOverlay(q.title)).toBe(true);
+      act(() => { Page.switchTo(CHAT, []); });
+      act(() => { jest.advanceTimersByTime(150); });
+      expect(screen.getAllByTestId('chat-ask')).toHaveLength(1);
+      expect(screen.getAllByText('Approve')).toHaveLength(1);
+      expect(inOverlay(q.title)).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('withOpenChatAsks: every ask open in the chat that the history lacks, once, nothing else', () => {
+    const {withOpenChatAsks} = overlayModule;
+    const q1 = ask();
+    const q2 = ask();
+    const history = [{type: 'assistant', content: 'hi'}, askChatMessage(q1)];
+    const states = {[q1.ask_id]: {state: 'open', card: q1}, [q2.ask_id]: {state: 'open', card: q2},
+                    gone1: {state: 'gone'}, moved1: {state: 'moved'}};
+    const out = withOpenChatAsks(history, states);
+    expect(out.filter((m) => m.type === 'agent_ask').map((m) => m.askId)).toEqual([q1.ask_id, q2.ask_id]);
+    expect(withOpenChatAsks(out, states)).toBe(out);         // nothing missing: the same list
+    expect(withOpenChatAsks(null, {})).toEqual([]);
+  });
+
   test('with no agent chat in front every ask is a card, as before', () => {
     const {send} = mount(null);
     const q = ask();
@@ -300,5 +414,18 @@ describe('Demopage hands the open agent\'s asks to its chat', () => {
   test('the chat keeps an ask as its question only, and draws it from askStates', () => {
     expect(SRC).toMatch(/\[\.\.\.prev, askChatMessage\(card\)\]/);
     expect(SRC).toMatch(/askStates=\{askStates\}/);
+  });
+});
+
+describe('Demopage puts the open asks back after each agent-switch history load', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const SRC = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'pages', 'Demopage.js'), 'utf8');
+
+  test('both switch sites load the history through withOpenChatAsks, from the live ask states', () => {
+    const loads = SRC.match(/setMessages\(withOpenChatAsks\(\s*mergeCarriedSetupCards\(savedMessages, carriedSetup\),\s*askStatesRef\.current\)\)/g) || [];
+    expect(loads).toHaveLength(2);
+    expect(SRC).not.toMatch(/setMessages\(mergeCarriedSetupCards\(savedMessages, carriedSetup\)\)/);
+    expect(SRC).toMatch(/askStatesRef\.current = askStates;/);
   });
 });

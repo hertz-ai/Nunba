@@ -532,11 +532,39 @@ export function askChatMessage(card) {
   };
 }
 
-/** What a closed ask's bubble says, by how it closed. */
-export function askClosedText(state) {
+/**
+ * `messages` with a message put back for every ask open in the chat
+ * (`askStates` entries in state 'open', from onChatAsk) that it lacks, in
+ * the order of askStates; `messages` itself when none is missing.  What
+ * Demopage's agent switch loads its stored history through: the history
+ * replaced the chat 100 ms after the overlay had moved the ask into it, and
+ * HARTOS does not send an ask again (review of a038f23a).
+ */
+export function withOpenChatAsks(messages, askStates) {
+  const list = Array.isArray(messages) ? messages : [];
+  const have = new Set(list.filter((m) => m && m.type === 'agent_ask').map((m) => m.askId));
+  const missing = Object.entries(askStates || {})
+    .filter(([askId, s]) => s && s.state === 'open' && s.card && !have.has(askId))
+    .map(([, s]) => askChatMessage(s.card));
+  return missing.length ? [...list, ...missing] : list;
+}
+
+/** Dismiss ask `askId` everywhere, as her: the card's X, also in the chat. */
+export function dismissAskEverywhere(askId) {
+  return dismissAsk(askId);
+}
+
+/**
+ * What a closed ask's bubble says, by how it closed.  `reason`: the drop's
+ * own word on why, when it says one.  A drop this window did not make is
+ * neutral: the same drop comes for an answer on another device, an expiry
+ * and a finished CREATE run (review of a038f23a).
+ */
+export function askClosedText(state, reason) {
+  if (reason && typeof reason === 'string' && state !== 'here') return reason;
   switch (state) {
     case 'here': return 'Answered here.';
-    case 'elsewhere': return 'Answered on another device.';
+    case 'elsewhere': return 'This question is closed.';
     case 'gone': return 'No longer open: it was answered, dismissed or has expired.';
     case 'unknown': return 'Could not check whether this question is still open.';
     case 'moved': return 'Waiting for your answer on its card.';
@@ -664,7 +692,7 @@ function FileRequestOverlay({ data, onDismiss, onAction }) {
   );
 }
 
-function ApprovalOverlay({ data, onDismiss, onAction, onLater }) {
+function ApprovalOverlay({ data, onDismiss, onAction, onLater, inChat }) {
   const [act, run] = useActionRunner(onAction);
   // Which decision is on its way, and why the last one did not go through.
   // The card closes only once HARTOS has the answer: its .catch(() => {})
@@ -753,7 +781,10 @@ function ApprovalOverlay({ data, onDismiss, onAction, onLater }) {
       <Box sx={{ display: 'flex', gap: 1, flexWrap: onAction ? 'wrap' : undefined }}>
         <Button variant="contained" size="small" disabled={Boolean(busy) || act.phase === 'busy'} aria-busy={busy === 'approve'} sx={{ background: SUCCESS, flex: 1, minHeight: onAction ? 44 : undefined, '&:hover': { background: '#27AE60' } }} onClick={() => postDecision('approve')}>{act.phase === 'busy' ? 'Working…' : label(0, 'Approve')}</Button>
         <Button variant="outlined" size="small" disabled={Boolean(busy) || act.phase === 'busy'} aria-busy={busy === 'deny'} sx={{ color: ERROR_RED, borderColor: ERROR_RED, flex: 1, minHeight: onAction ? 44 : undefined }} onClick={() => postDecision('deny')}>{label(1, 'Deny')}</Button>
-        <Button variant="outlined" size="small" disabled={Boolean(busy) || act.phase === 'busy'} sx={{ color: onAction ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.5)', borderColor: 'rgba(255,255,255,0.2)', minHeight: onAction ? 44 : undefined }} onClick={onAction ? () => postDecision('later') : later}>{label(2, 'Later')}</Button>
+        {/* In the chat the question is part of the chat: no Later there. */}
+        {!inChat && (
+          <Button variant="outlined" size="small" disabled={Boolean(busy) || act.phase === 'busy'} sx={{ color: onAction ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.5)', borderColor: 'rgba(255,255,255,0.2)', minHeight: onAction ? 44 : undefined }} onClick={onAction ? () => postDecision('later') : later}>{label(2, 'Later')}</Button>
+        )}
       </Box>
       <ActionError state={act} />
     </Box>
@@ -1327,7 +1358,7 @@ function ChannelConnectedOverlay({ data, onDismiss }) {
 // always has in the app.  The <hart-agent> embed passes it so card buttons
 // go through the host bridge (cart.add, checkout.start, payment.authorize…)
 // instead of opening or POSTing agent-supplied URLs.
-export function OverlayContent({ data, onDismiss, navigate, onAction, onLater }) {
+export function OverlayContent({ data, onDismiss, navigate, onAction, onLater, inChat }) {
   const type = data.type || data.component_type || 'notification';
   switch (type) {
     case 'notification': return <NotificationCard data={data} navigate={navigate} onDismiss={onDismiss} />;
@@ -1366,7 +1397,7 @@ export function OverlayContent({ data, onDismiss, navigate, onAction, onLater })
     case 'comparison': return <ComparisonOverlay data={data} />;
     case 'progress': return <ProgressOverlay data={data} />;
     case 'agent_action': return <AgentActionOverlay data={data} />;
-    case 'approval': return <ApprovalOverlay data={data} onDismiss={onDismiss} onAction={onAction} onLater={onLater} />;
+    case 'approval': return <ApprovalOverlay data={data} onDismiss={onDismiss} onAction={onAction} onLater={onLater} inChat={inChat} />;
     case 'file_request': return <FileRequestOverlay data={data} onDismiss={onDismiss} onAction={onAction} />;
     case 'chart': return <ChartOverlay data={data} />;
     case 'code': return <CodeOverlay data={data} />;
@@ -1784,9 +1815,11 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
       clearTimeout(putOff.timer);
       laterRef.current.delete(askId);
     }
-    // The chat's bubble of the ask (if any) says where it was answered.
+    // The chat's bubble of the ask (if any) says how it closed: here, or
+    // closed (with the drop's own reason when it gives one).
     inChatRef.current.delete(askId);
-    tellChat({ askId, state: answeredHere.has(askId) ? 'here' : 'elsewhere' });
+    const reason = typeof answered.reason === 'string' ? answered.reason : undefined;
+    tellChat({ askId, state: answeredHere.has(askId) ? 'here' : 'elsewhere', ...(reason ? { reason } : {}) });
     setOverlays((prev) => {
       const gone = prev.filter((o) => o.ask_id === askId);
       if (gone.length === 0) return prev;

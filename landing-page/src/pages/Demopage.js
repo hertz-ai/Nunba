@@ -11,7 +11,7 @@ import connectedGif from '../assets/images/connected.gif';
 // the companion, the icon was always self-referential noise.
 import Lottie from 'lottie-react';
 import creationModeAnimation from '../assets/images/Animation.json';
-import AgentOverlay, { ASK_CLOSED_STATES, askChatMessage } from '../components/AgentOverlay/AgentOverlay';
+import AgentOverlay, { ASK_CLOSED_STATES, askChatMessage, withOpenChatAsks } from '../components/AgentOverlay/AgentOverlay';
 import {Link as RouterLink, useNavigate, useParams, useLocation} from 'react-router-dom';
 import {
   ChevronDown,
@@ -674,7 +674,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   // chat's history keeps of an ask is its question and, once known, how it
   // closed (askChatMessage); never an answer.
   const [askStates, setAskStates] = useState({});
-  const handleChatAsk = useCallback(({askId, state, card}) => {
+  // Read by the agent switch's delayed history load (withOpenChatAsks), which
+  // runs after the overlay has moved the new chat's open asks into it.
+  const askStatesRef = useRef(askStates);
+  askStatesRef.current = askStates;
+  const handleChatAsk = useCallback(({askId, state, card, reason}) => {
     if (!askId) return;
     setAskStates((prev) => ({...prev, [askId]: {state, card: state === 'open' ? card : undefined}}));
     if (state === 'open') {
@@ -683,7 +687,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       setShouldScroll(true);
     } else if (ASK_CLOSED_STATES.has(state)) {
       setMessages((prev) => (prev.some((m) => m.type === 'agent_ask' && m.askId === askId && m.closed !== state)
-        ? prev.map((m) => (m.type === 'agent_ask' && m.askId === askId ? {...m, closed: state} : m))
+        ? prev.map((m) => (m.type === 'agent_ask' && m.askId === askId
+          ? {...m, closed: state, ...(reason ? {closedReason: reason} : {})} : m))
         : prev));
     }
   }, []);
@@ -1204,8 +1209,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             );
             // Re-merge the carried system setup cards on top of the new
             // agent's history, deduped by jobType: a same-id card collapses
-            // to one (idempotent), distinct cards all stay visible.
-            setMessages(mergeCarriedSetupCards(savedMessages, carriedSetup));
+            // to one (idempotent), distinct cards all stay visible.  The
+            // agent's questions still open in its chat go back in too: the
+            // overlay moved them into the chat before this load replaced it.
+            setMessages(withOpenChatAsks(
+              mergeCarriedSetupCards(savedMessages, carriedSetup), askStatesRef.current));
           }, 100);
 
           if (matchedAgent.fillers) {
@@ -3224,7 +3232,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         logger.log(
           `📥 Loading ${savedMessages.length} messages for agent: ${chat.name}`
         );
-        setMessages(mergeCarriedSetupCards(savedMessages, carriedSetup));
+        // The agent's questions still open in its chat go back in
+        // (withOpenChatAsks): the overlay moved them in before this load.
+        setMessages(withOpenChatAsks(
+          mergeCarriedSetupCards(savedMessages, carriedSetup), askStatesRef.current));
       }, 100);
 
       setIsOpen(false);
