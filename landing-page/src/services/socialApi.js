@@ -354,14 +354,17 @@ export const bleEncounterApi = {
 export const consentApi = {
   // POST /api/social/consent — APPEND a new row (grant)
   // request_id: the ask the answer is for (a phone's card, HARTOS #306), so
-  // the yes binds the account that card showed.
-  grant: ({consent_type, scope, agent_id, metadata, request_id}) =>
+  // the yes binds the account that card showed.  values: every value a
+  // channel's one card for several values names, {name: typed} (HARTOS
+  // consent_api grant_consent), which start that channel.
+  grant: ({consent_type, scope, agent_id, metadata, request_id, values}) =>
     socialApi.post('/consent', {
       consent_type,
       scope,
       agent_id,
       metadata,
       request_id,
+      values,
     }),
 
   // POST /api/social/consent/revoke — set revoked_at on the active row

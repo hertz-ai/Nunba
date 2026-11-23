@@ -1496,17 +1496,26 @@ function consentCardFor(data) {
         declineLabel: canDecline(type) ? declineLabel(type, data.agent_id) : null,
       };
     }
+    // A channel's one ask for all the values it needs (HARTOS
+    // post_to_channel, scope 'secret:<CHANNEL>_SETUP'): its note names them
+    // (fields), each is typed here, and the answer is every value with the
+    // ask's request_id, which starts the channel there and then.  Nothing
+    // goes into this computer's vault (the channel's binding keeps them),
+    // so such a card has no single secret input.
+    const fields = askFields(data.fields);
     return {
       consentType: type,
       scope: data.scope || '*',
       agentId: data.agent_id || null,
+      fields,
+      requestId: fields ? data.request_id || null : null,
       // A credential ask: the value is typed here and stored in this
       // computer's vault under this name before the grant.
-      secretKey: asksForSecret(type) ? secretName(data.scope) : null,
+      secretKey: asksForSecret(type) && !fields ? secretName(data.scope) : null,
       title: askTitle(type),
       text: data.reason ||
         `${askerOf(data)} asks to ${consentAskText(type)}.`,
-      grantLabel: grantLabel(type),
+      grantLabel: fields ? SEVERAL_VALUES_GRANT : grantLabel(type),
       // A type with a card on the privacy page (the way back after a no),
       // or a credential ask, whose no ends that one ask (declineNote).
       declineLabel: canDecline(type)
@@ -1528,12 +1537,47 @@ function consentCardFor(data) {
   };
 }
 
+// The values a channel's one ask names (HARTOS consent_service._emit puts
+// them on the note as the phone's push carries them: a JSON string,
+// [{name, label, secret}]; a list is read the same), in its order, or null
+// when it names none and the card asks for one value as before.  An entry
+// without a name, or a name already seen, is left out; a value is secret
+// unless the ask says it is not, as the phone's card reads them
+// (Hevolve_React_Native ConsentAnswer.fields).
+function askFields(raw) {
+  let list = raw;
+  if (typeof raw === 'string') {
+    try {
+      list = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!Array.isArray(list)) return null;
+  const fields = [];
+  for (const f of list) {
+    const name = String((f && f.name) || '').trim();
+    if (!name || fields.some((g) => g.name === name)) continue;
+    fields.push({name, label: String(f.label || '').trim() || name, secret: f.secret !== false});
+  }
+  return fields.length ? fields : null;
+}
+
+// What Accept says on a channel's card for several values: what was typed
+// sets the channel up, it is not kept for agents to use.
+const SEVERAL_VALUES_GRANT = 'Save and connect';
+
 // Exported: the desktop companion window (VoiceOrb/VoiceOrbPage) shows the
 // same card for a HARTOS consent.request, so an ask reaches the owner while
 // the main window is behind other windows.  One card, one consent API.
 export function ConsentPromptOverlay({ data, onDismiss }) {
   const card = consentCardFor(data || {});
   const [secret, setSecret] = useState('');
+  // A channel's card for several values: what is typed in each, by name.
+  const [typed, setTyped] = useState({});
+  // Every field holds something (spaces alone are nothing).
+  const filled = !card.fields
+    || card.fields.every((f) => String(typed[f.name] || '').trim());
   // Why the last answer did not go through.  The card stays up with it: an
   // answer that silently closed the card looked written when it was not.
   const [error, setError] = useState(null);
@@ -1557,6 +1601,23 @@ export function ConsentPromptOverlay({ data, onDismiss }) {
   const grant = async () => {
     if (busy) return;
     setBusy('grant');
+    if (card.fields) {
+      // Every value at once, with the ask it answers (HARTOS consent_api
+      // grant_consent ``values``, in the shape of Android's 3-field body):
+      // the channel is started from them before the grant and keeps them on
+      // its binding.  A secret goes as typed, any other value trimmed, as
+      // the phone's card sends them (ConsentAnswer.bodyForFields).  The
+      // fields keep what was typed until the card closes, so a refused
+      // answer can be corrected and sent again.
+      const values = {};
+      for (const f of card.fields) {
+        const v = String(typed[f.name] || '');
+        values[f.name] = f.secret ? v : v.trim();
+      }
+      await answer('grant', () => consentApi.grant(
+        {consent_type: card.consentType, request_id: card.requestId, values}), true);
+      return;
+    }
     // A credential goes into the vault first; if it cannot be stored the ask
     // stays open, since a grant with nothing stored gives the agent nothing.
     if (card.secretKey) {
@@ -1636,6 +1697,26 @@ export function ConsentPromptOverlay({ data, onDismiss }) {
             sx={{'& .MuiInputBase-root': {color: '#fff', background: 'rgba(255,255,255,0.05)'}}} />
         </Box>
       )}
+      {card.fields && (
+        // One input per value the ask names, labelled as it says, masked
+        // only when it is secret: the whole setup is answered here.
+        <Box sx={{mb: 1.5, display: 'flex', flexDirection: 'column', gap: 1.25}}>
+          {card.fields.map((f) => (
+            <TextField key={f.name} id={`consent-${card.requestId || 'ask'}-${f.name}`}
+              label={f.label} type={f.secret ? 'password' : 'text'}
+              size="small" fullWidth autoComplete="off"
+              value={typed[f.name] || ''}
+              onChange={(e) => {
+                const v = e.target.value;
+                setTyped((t) => ({...t, [f.name]: v}));
+                setError(null);
+              }}
+              inputProps={{'data-testid': `liquid-consent-field-${f.name}`}}
+              InputLabelProps={{sx: {color: 'rgba(255,255,255,0.7)'}}}
+              sx={{'& .MuiInputBase-root': {color: '#fff', background: 'rgba(255,255,255,0.05)'}}} />
+          ))}
+        </Box>
+      )}
       {error && <AnswerError text={error} />}
       {card.declineLabel && (
         <Typography variant="caption" sx={{display: 'block', opacity: 0.6, mb: 1}}>
@@ -1655,7 +1736,7 @@ export function ConsentPromptOverlay({ data, onDismiss }) {
           </button>
         )}
         <button className="btn-feedback" data-testid="liquid-consent-grant" onClick={grant}
-          disabled={Boolean(busy) || (Boolean(card.secretKey) && !secret)}
+          disabled={Boolean(busy) || (Boolean(card.secretKey) && !secret) || !filled}
           aria-busy={busy === 'grant'}
           style={{padding: '6px 14px', borderRadius: 8, border: 'none', background: '#10b981', color: '#fff', fontWeight: 600, cursor: 'pointer'}}>
           {card.grantLabel}
