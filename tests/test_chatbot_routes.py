@@ -302,9 +302,38 @@ class TestAgentRouting:
             state['hartos'].append(kwargs)
             return {'text': 'local says hi'}
 
+        # Central's recipe store, for the pull a central agent's turn makes
+        # first (_pull_central_agent_here): no parent unless a test names
+        # one; every pull recorded, answered with pull_status.
+        import importlib
+        recipe_sync = importlib.import_module('core.recipe_sync')
+        sync_engine = importlib.import_module('integrations.social.sync_engine')
+        state.update(parent='', pull_status=404, pulls=[])
+
+        class CentralStore:
+            def get(self, url, params=None, headers=None, **_kw):
+                pid = url.rstrip('/').rsplit('/', 1)[-1]
+                state['pulls'].append({'url': url,
+                                       'user_id': (params or {}).get('user_id'),
+                                       'headers': dict(headers or {})})
+                files = {f'{pid}.json': json.dumps({'name': 'Cafe', 'flows': []})}
+                resp = MagicMock(status_code=state['pull_status'])
+                resp.json.return_value = {
+                    'schema_version': recipe_sync.SCHEMA_VERSION,
+                    'prompt_id': pid, 'files': files,
+                    'checksum': recipe_sync.envelope_checksum(files)}
+                return resp
+
         import routes.chatbot_routes as cr
         with patch('core.platform_paths.get_prompts_dir',
                    return_value=str(tmp_path)), \
+                patch('core.platform_paths.get_recipe_prompts_dir',
+                      return_value=str(tmp_path)), \
+                patch.object(sync_engine.SyncEngine, 'parent_tier_url',
+                             staticmethod(lambda: state['parent'])), \
+                patch('core.http_pool.get_http_session',
+                      return_value=CentralStore()), \
+                patch.object(recipe_sync, '_refused_pulls', {}, create=True), \
                 patch('llama.llama_config.LlamaConfig'), \
                 patch.object(cr, 'check_internet_connection',
                              side_effect=lambda: state['online']), \
@@ -648,8 +677,101 @@ class TestAgentRouting:
                        prompt_id=None, agent_id='cloud_radha')
         assert node['sent'] == []
         assert ("(endpoint is not a known central: its userinfo "
-                "(host 'evil.com'))") in self._miss(caplog)
+                "(address 'evil.com'))") in self._miss(caplog)
         self._no_bearer_logged(caplog)
+
+    # ── a central agent runs HERE first (owner 11-23: local first) ───────
+    # Measured 11-23: the tablet's Cafe (344) and Luna (345) turns had no
+    # file here, were labelled cloud, and local_assistant answered after
+    # central's 401; HARTOS's own pull never ran.  Now step 4 pulls the
+    # recipe with HARTOS's pair (recipe_sync_route + pull_recipe, real here;
+    # only central's store is a stand-in) and runs the agent locally.
+
+    CENTRAL_ROOT = 'https://azurekong.hertzai.com'
+
+    def _central_holds_it(self, node, status=200):
+        node['parent'] = self.CENTRAL_ROOT
+        node['pull_status'] = status
+
+    def test_a_central_agent_with_no_file_here_is_pulled_and_runs_here(
+            self, client, node, caplog, stored_logins, tmp_path):
+        stored_logins('10202', self.STORED_LOGIN)
+        self._central_holds_it(node)
+        body = self._turn(client, caplog, f'Bearer {self.PAGE_LOGIN}')
+        assert body['text'] == 'local says hi' and node['sent'] == [], \
+            'the turn went to central though its recipe could be pulled'
+        assert node['hartos'][0]['agent_id'] == 344
+        assert [p['url'] for p in node['pulls']] == [
+            f'{self.CENTRAL_ROOT}/prompts/sync/344']
+        assert node['pulls'][0]['user_id'] == '10202'
+        assert node['pulls'][0]['headers'].get('Authorization') == \
+            f'Bearer {self.STORED_LOGIN}'
+        assert (tmp_path / '344.json').is_file()
+        self._turn(client, caplog, f'Bearer {self.PAGE_LOGIN}')
+        assert len(node['pulls']) == 1, 'the next turn found the file here'
+        self._no_bearer_logged(caplog)
+
+    def test_a_refused_pull_falls_back_to_the_forward(
+            self, client, node, caplog, stored_logins):
+        stored_logins('10202', self.STORED_LOGIN)
+        self._central_holds_it(node, status=404)
+        body = self._turn(client, caplog, f'Bearer {self.PAGE_LOGIN}')
+        assert body['text'] == 'cloud says hi' and node['hartos'] == []
+        assert len(node['pulls']) == 1
+        assert [s['url'] for s in node['sent']] == [self.CENTRAL]
+
+    @pytest.mark.parametrize('status', [403, 404, 410])
+    def test_two_turns_on_a_refused_id_make_one_pull(
+            self, client, node, caplog, stored_logins, status):
+        """Latency aware for real-time conversations: central's refusal is
+        remembered (ten minutes, per account and id), not asked each turn."""
+        stored_logins('10202', self.STORED_LOGIN)
+        self._central_holds_it(node, status=status)
+        self._turn(client, caplog, f'Bearer {self.PAGE_LOGIN}')
+        self._turn(client, caplog, f'Bearer {self.PAGE_LOGIN}')
+        assert len(node['pulls']) == 1
+        assert len(node['sent']) == 2, 'both turns still went to central'
+
+    def test_a_phone_pulls_as_its_tokens_account(
+            self, flask_app, client, node, caplog, stored_logins):
+        stored_logins('10202', self.STORED_LOGIN)
+        stored_logins('20303', self.OTHER_LOGIN)
+        self._central_holds_it(node)
+        self._as_phone(flask_app, '10202')
+        body = self._turn(client, caplog, f'Bearer {self.DEVICE_TOKEN}',
+                          user_id='20303')
+        assert body['text'] == 'local says hi' and node['sent'] == []
+        assert node['pulls'][0]['user_id'] == '10202'
+        assert node['pulls'][0]['headers'].get('Authorization') == \
+            f'Bearer {self.STORED_LOGIN}'
+        assert self.DEVICE_TOKEN not in json.dumps(node['pulls'])
+        self._no_bearer_logged(caplog)
+
+    def test_a_phone_this_desktop_holds_no_login_for_keeps_its_miss(
+            self, flask_app, client, node, caplog, stored_logins):
+        self._central_holds_it(node)
+        self._as_phone(flask_app, '10202')
+        body = self._turn(client, caplog, f'Bearer {self.DEVICE_TOKEN}')
+        assert node['pulls'] == [] and node['sent'] == []
+        assert body['agent_id'] == 'local_assistant'
+        assert '(not signed in on this desktop)' in self._miss(caplog)
+
+    @pytest.mark.parametrize('caller', ['no authorization', 'offline'])
+    def test_a_caller_that_cannot_pull_never_pulls(
+            self, client, node, caplog, stored_logins, caller):
+        """Desktop /chat is reachable on the LAN (#52): a body naming the
+        owner's id with no Authorization is not the owner, so no stored
+        login pulls for it; offline asks nothing."""
+        stored_logins('10202', self.STORED_LOGIN)
+        self._central_holds_it(node)
+        authorization = f'Bearer {self.PAGE_LOGIN}'
+        if caller == 'offline':
+            node['online'] = False
+        else:
+            authorization = None
+        body = self._turn(client, caplog, authorization, user_id='10202')
+        assert node['pulls'] == [] and node['sent'] == []
+        assert body['agent_id'] == 'local_assistant'
 
     def test_a_caller_with_no_authorization_is_not_signed_in(
             self, client, node, caplog):
@@ -699,11 +821,11 @@ class TestAgentRouting:
         ('http://azurekong.hertzai.com/chat/custom_gpt', 'scheme',
          'azurekong.hertzai.com'),
         ('https://azurekong.hertzai.com:8443/chat/custom_gpt', 'port',
-         'azurekong.hertzai.com'),
+         'azurekong.hertzai.com:8443'),
         # cleaned to the central by urlsplit, so refused: the URL approved
-        # must be the URL called
+        # must be the URL called; the reason shows it as written, tab and all
         ('https://azure\tkong.hertzai.com/chat/custom_gpt', 'characters',
-         'azurekong.hertzai.com'),
+         'azure\tkong.hertzai.com'),
     ]
 
     @pytest.mark.parametrize('endpoint, mismatch, host', NOT_CENTRAL)
@@ -718,7 +840,7 @@ class TestAgentRouting:
                               prompt_id=None, agent_id='cloud_radha')
         assert node['sent'] == [] and body['text'] == 'local says hi'
         assert (f'(endpoint is not a known central: its {mismatch} '
-                f'(host {host!r}))') in self._miss(caplog)
+                f'(address {host!r}))') in self._miss(caplog)
         self._no_bearer_logged(caplog)
 
     @pytest.mark.parametrize('caller', ['offline', 'no authorization',
@@ -736,6 +858,9 @@ class TestAgentRouting:
         sync_engine = importlib.import_module('integrations.social.sync_engine')
         monkeypatch.delattr(sync_engine, 'central_origin_mismatch')
         monkeypatch.delattr(sync_engine, 'central_login_for')
+        monkeypatch.delattr(sync_engine, 'recipe_sync_route')
+        monkeypatch.delattr(importlib.import_module('core.recipe_sync'),
+                            'pull_recipe')
         authorization = f'Bearer {self.PAGE_LOGIN}'
         if caller == 'offline':
             node['online'] = False
@@ -757,8 +882,17 @@ class TestAgentRouting:
             self._turn(client, caplog, f'Bearer {self.PAGE_LOGIN}')
         assert node['sent'] == []
         assert ("(endpoint is not a known central: its host "
-                "(host 'chat.example.net'))") in self._miss(caplog)
+                "(address 'chat.example.net'))") in self._miss(caplog)
         self._no_bearer_logged(caplog)
+
+    def test_an_empty_endpoint_says_it_has_no_address(self, client, node,
+                                                      caplog):
+        import routes.chatbot_routes as cr
+        with patch.dict(cr.CLOUD_API_CONFIG, {'chat_endpoint': ''}):
+            self._turn(client, caplog, f'Bearer {self.PAGE_LOGIN}')
+        assert node['sent'] == []
+        assert ('(endpoint is not a known central: its host (no address))'
+                in self._miss(caplog))
 
     def test_a_central_agent_endpoint_written_differently_keeps_its_bearer(
             self, client, node, caplog):

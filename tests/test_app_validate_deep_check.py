@@ -140,6 +140,9 @@ class TestDeepCheckTriggersTier1Init:
 
 
 SYNC_ENGINE = 'integrations.social.sync_engine'
+RECIPE_SYNC = 'core.recipe_sync'
+#: The HARTOS modules the cloud-agent path imports names from, unguarded.
+CLOUD_PATH_MODULES = (SYNC_ENGINE, RECIPE_SYNC)
 
 
 def _names_the_chat_route_imports_from(module):
@@ -163,8 +166,10 @@ class TestTheCloudAgentRuleIsABuildGate:
     and _deep_checks assignments and the loop over _deep_checks, taken from
     app.py by AST, run as --validate runs them; review rv_e619's probe)
     against the HARTOS this process imports.  With every name the route
-    imports from sync_engine it records no failure for sync_engine; with
-    any one of them missing it records one, and --validate exits 1 on any."""
+    imports from sync_engine and recipe_sync (the cloud-agent rule and the
+    pull that runs a central agent here first) it records no failure for
+    them; with any one of them missing it records one, and --validate exits
+    1 on any."""
 
     @pytest.fixture
     def deep_check(self, app_ast, monkeypatch):
@@ -202,23 +207,25 @@ class TestTheCloudAgentRuleIsABuildGate:
             ns = {'sys': sys, 'importlib': importlib, '_fail': [], '_warn': [],
                   '_vprint': lambda _line: None}
             exec(code, ns)
-            return [why for mod, why in ns['_fail'] if mod == SYNC_ENGINE]
+            return [(mod, why) for mod, why in ns['_fail']
+                    if mod in CLOUD_PATH_MODULES]
         return run
 
-    def test_the_route_imports_the_rule(self):
+    def test_the_route_imports_the_rules(self):
         assert 'central_origin_mismatch' in \
             _names_the_chat_route_imports_from(SYNC_ENGINE)
+        assert 'pull_recipe' in _names_the_chat_route_imports_from(RECIPE_SYNC)
 
-    def test_a_hartos_with_the_rule_passes_validate(self, deep_check):
+    def test_a_hartos_with_the_rules_passes_validate(self, deep_check):
         assert deep_check() == []
 
-    @pytest.mark.parametrize('name',
-                             _names_the_chat_route_imports_from(SYNC_ENGINE))
+    @pytest.mark.parametrize('module, name', [
+        (module, name) for module in CLOUD_PATH_MODULES
+        for name in _names_the_chat_route_imports_from(module)])
     def test_a_hartos_without_a_name_the_route_imports_fails_validate(
-            self, deep_check, monkeypatch, name):
+            self, deep_check, monkeypatch, module, name):
         import importlib
-        sync_engine = importlib.import_module(SYNC_ENGINE)
-        monkeypatch.delattr(sync_engine, name)
+        monkeypatch.delattr(importlib.import_module(module), name)
         failures = deep_check()
-        assert failures and name in failures[0], \
-            f'--validate passed a HARTOS without {name}'
+        assert any(mod == module and name in why for mod, why in failures), \
+            f'--validate passed a HARTOS without {module}.{name}'

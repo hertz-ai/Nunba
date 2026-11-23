@@ -2643,6 +2643,16 @@ if getattr(args, 'validate', False):
             ('central_login_for', callable,
              'bundled HARTOS has no central_login_for: every phone turn '
              'for a cloud agent would fail'),
+            ('recipe_sync_route', callable,
+             'bundled HARTOS has no recipe_sync_route: every turn for a '
+             'central agent with no recipe here would fail'),
+        ],
+        # The pull _pull_central_agent_here runs before a central agent's
+        # turn, imported the same way.
+        'core.recipe_sync': [
+            ('pull_recipe', callable,
+             'bundled HARTOS has no pull_recipe: every turn for a central '
+             'agent with no recipe here would fail'),
         ],
     }
 

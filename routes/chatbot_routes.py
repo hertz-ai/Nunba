@@ -2380,7 +2380,13 @@ def _cloud_turn_can_reach_central(agent_config, online):
     depends on them (app.py --validate holds a bundle to having them).  The
     reason names what about the endpoint is not a central's (HARTOS's
     sync_engine.central_origin_mismatch: its host, scheme, port, userinfo
-    or characters) and the endpoint's host, never a bearer.
+    or characters) and its address as written, without userinfo, never a
+    bearer: a tab in it shows as \\t, not as the host urlsplit would clean
+    it to.
+
+    Design limit, named: an endpoint on a regional host is a miss today.
+    Only a central takes these logins; a regional relay of cloud turns does
+    not exist yet.
     """
     endpoint = ((agent_config or {}).get('cloud_endpoint')
                 or CLOUD_API_CONFIG['chat_endpoint'])
@@ -2396,14 +2402,14 @@ def _cloud_turn_can_reach_central(agent_config, online):
     )
     mismatch = central_origin_mismatch(endpoint)
     if mismatch:
-        from urllib.parse import urlsplit
-        try:
-            host = urlsplit(endpoint).hostname
-        except ValueError:      # a malformed URL names no host
-            host = None
+        # The authority as written (no urlsplit cleaning), userinfo cut off.
+        address = endpoint.split('://', 1)[-1]
+        for cut in '/?#':
+            address = address.split(cut, 1)[0]
+        address = address.rsplit('@', 1)[-1]
         return (endpoint, None,
                 f'endpoint is not a known central: its {mismatch} '
-                f'(host {host!r})')
+                f'({f"address {address!r}" if address else "no address"})')
     if phone:
         account = admitted_device_user()
         login = central_login_for(account, endpoint) if account else ''
@@ -2411,6 +2417,47 @@ def _cloud_turn_can_reach_central(agent_config, online):
             return endpoint, None, 'not signed in on this desktop'
         authorization = f'Bearer {login}'
     return endpoint, authorization, ''
+
+
+def _pull_central_agent_here(prompt_id, body_user_id):
+    """Pull a central agent's recipe to this node so its turn runs here, on
+    the free local model; True when ``<prompt_id>.json`` landed.
+
+    Owner rule 11-23: anything in central syncs to local and works locally
+    if possible; central costs credits.  Measured 11-23: the tablet's Cafe
+    (344) and Luna (345) turns were labelled cloud because no file was
+    here, so HARTOS's own pull-on-demand never ran, and local_assistant
+    answered after central's 401.
+
+    The pull is HARTOS's own pair (core.recipe_sync.pull_recipe with
+    sync_engine.recipe_sync_route, as its /chat pull-on-demand), as the
+    caller's account: a phone's token account (#306 holds it to the account
+    it was paired as), else the body's user_id under the page's own
+    Authorization.  A caller with no Authorization pulls nothing (desktop
+    /chat is reachable on the LAN, #52), nor does one offline or one whose
+    account this desktop holds no login for: recipe_sync_route sends the
+    login only to a central, for a cloud id.  A pull the parent refused
+    (404/403/410) is not asked again for ten minutes (pull_recipe), so a
+    real-time conversation does not pay that round trip every turn.
+    """
+    if is_admitted_device():
+        account = admitted_device_user()
+    elif request.headers.get('Authorization'):
+        account = body_user_id
+    else:
+        return False
+    if not account or not check_internet_connection():
+        return False
+    from core.platform_paths import get_recipe_prompts_dir
+    from core.recipe_sync import pull_recipe
+    from integrations.social.sync_engine import recipe_sync_route
+    parent, login = recipe_sync_route(account)
+    if not (parent and login):
+        return False
+    prompts_dir = get_recipe_prompts_dir()
+    return (pull_recipe(prompts_dir, prompt_id, str(account),
+                        central_url=parent, bearer=login)
+            and os.path.isfile(os.path.join(prompts_dir, f'{prompt_id}.json')))
 
 
 _internet_cache = {'online': False, 'checked_at': 0}
@@ -3033,8 +3080,10 @@ def _run_chat_turn(data):
                its questions, so without this the setup deadlocked:
                forwarded to the cloud, 401, answered by the generic
                assistant (HARTOS task #136, measured live 2026-10-18);
-             - otherwise the agent exists only in the cloud -> type
-               'cloud', and the CLOUD branch forwards the turn there.
+             - otherwise the agent is central's: its recipe is pulled here
+               when it can be (_pull_central_agent_here; owner 11-23,
+               local first) and the turn runs here, type 'local'; else
+               type 'cloud', and the CLOUD branch forwards the turn there.
                Owner rule 2026-10-04: an agent with an id on this node
                runs here, a cloud-only agent runs in the cloud.  This
                used to force create-mode for every unknown id too, which
@@ -3115,9 +3164,18 @@ def _run_chat_turn(data):
                     else "HARTOS's stored record of the agent")
                 return ({'id': _pid_int, 'type': 'local'}, _pid_int,
                         'local', _pid_int, False)
+            # Central's agent runs HERE when its recipe can be pulled (owner
+            # 11-23: local first; the local model is free, central costs
+            # credits); only an agent that cannot be pulled goes to central.
+            if _pull_central_agent_here(_pid_int, user_id):
+                logger.info(
+                    'prompt_id=%s had no recipe on this node; pulled it from '
+                    'central and the turn runs here', _pid_int)
+                return ({'id': _pid_int, 'type': 'local'}, _pid_int,
+                        'local', _pid_int, False)
             logger.info(
-                'prompt_id=%s has no recipe on this node - cloud-only '
-                'agent, forwarding the turn to the cloud', _pid_int)
+                'prompt_id=%s has no recipe on this node and none was '
+                'pulled - forwarding the turn to the cloud', _pid_int)
             return ({'id': _pid_int, 'type': 'cloud'}, _pid_int,
                     'cloud', _pid_int, False)
         # 5. No usable prompt_id and either no agent_id_legacy OR a
