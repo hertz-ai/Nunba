@@ -437,6 +437,8 @@ function postApproval(body) {
 // moment HARTOS takes the answer.  Marked before the POST (the drop can
 // arrive first) and unmarked if it is refused.
 const answeredHere = new Set();
+// Of those, the ones dismissed (the X), not answered: their bubble says so.
+const dismissedHere = new Set();
 const settledListeners = new Set();
 
 function settledHere(askId) {
@@ -513,7 +515,7 @@ export function askHasSecret(card) {
 }
 
 /** How an in-chat ask's bubble ends: these states are final. */
-export const ASK_CLOSED_STATES = new Set(['here', 'elsewhere', 'gone']);
+export const ASK_CLOSED_STATES = new Set(['here', 'dismissed', 'elsewhere', 'gone']);
 
 /**
  * The chat message of an ask: its question (the card as the agent sent it,
@@ -561,13 +563,16 @@ export function dismissAskEverywhere(askId) {
  * and a finished CREATE run (review of a038f23a).
  */
 export function askClosedText(state, reason) {
-  if (reason && typeof reason === 'string' && state !== 'here') return reason;
+  if (reason && typeof reason === 'string' && state !== 'here' && state !== 'dismissed') return reason;
   switch (state) {
     case 'here': return 'Answered here.';
+    case 'dismissed': return 'Dismissed here.';
     case 'elsewhere': return 'This question is closed.';
     case 'gone': return 'No longer open: it was answered, dismissed or has expired.';
     case 'unknown': return 'Could not check whether this question is still open.';
     case 'moved': return 'Waiting for your answer on its card.';
+    // Put off with the card's Later: no card shows until the period ends.
+    case 'later': return 'Put off for now: it comes back in a few minutes.';
     default: return 'Checking whether this question is still open...';
   }
 }
@@ -594,6 +599,7 @@ export function askBelongsInChat(card, chat) {
 // only (ASK_LATER_MS).
 function dismissAsk(askId) {
   answeredHere.add(askId);
+  dismissedHere.add(askId);
   settledHere(askId);
   return postApproval({ ask_id: askId, dismiss: true }).then((res) => {
     if (!res.ok) console.warn(`ask ${askId}: the dismissal was refused (HTTP ${res.status})`);
@@ -1819,7 +1825,8 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
     // closed (with the drop's own reason when it gives one).
     inChatRef.current.delete(askId);
     const reason = typeof answered.reason === 'string' ? answered.reason : undefined;
-    tellChat({ askId, state: answeredHere.has(askId) ? 'here' : 'elsewhere', ...(reason ? { reason } : {}) });
+    const how = dismissedHere.has(askId) ? 'dismissed' : answeredHere.has(askId) ? 'here' : 'elsewhere';
+    tellChat({ askId, state: how, ...(reason ? { reason } : {}) });
     setOverlays((prev) => {
       const gone = prev.filter((o) => o.ask_id === askId);
       if (gone.length === 0) return prev;
@@ -1951,9 +1958,13 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
       if (laterRef.current.get(askId) !== held) return;
       laterRef.current.delete(askId);
       handleEvent(held.card);
+      // Back as a card (its chat is not in front): its bubble says so again.
+      if (!inChatRef.current.has(askId)) tellChat({ askId, state: 'moved' });
     }, ASK_LATER_MS);
     laterRef.current.set(askId, held);
-  }, [dismiss, handleEvent]);
+    // Its chat's bubble (if any) says it is put off: no card shows meanwhile.
+    tellChat({ askId, state: 'later' });
+  }, [dismiss, handleEvent, tellChat]);
 
   // A slot freed (a card answered, closed, timed out or replaced): the oldest
   // parked asks come back into it.

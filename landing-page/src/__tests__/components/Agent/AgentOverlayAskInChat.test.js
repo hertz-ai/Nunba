@@ -195,7 +195,7 @@ describe('the open agent\'s question is its chat\'s message', () => {
 // card's own Dismiss (dismissed everywhere, as the card's X does), and no
 // Later: the question is part of the chat.
 describe('closing an ask from the chat', () => {
-  test('a form ask in the chat has Dismiss: it dismisses everywhere, as her, and says so', async () => {
+  test('a form ask in the chat has Dismiss: it dismisses everywhere, as her, and says it was dismissed', async () => {
     const {send} = mount();
     const q = ask({type: 'form', title: 'Your child\'s age?',
                    fields: [{name: 'age', label: 'Age', type: 'text'}]});
@@ -204,8 +204,38 @@ describe('closing an ask from the chat', () => {
     await waitFor(() => expect(posts()).toHaveLength(1));
     expect(posts()[0][1].headers.Authorization).toBe('Bearer tok-owner');
     expect(JSON.parse(posts()[0][1].body)).toEqual({ask_id: q.ask_id, dismiss: true});
-    expect(screen.getByTestId('chat-ask').getAttribute('data-ask-state')).toBe('here');
+    // Review of e8a527f3: a dismissal said "Answered here.".
+    expect(screen.getByTestId('chat-ask').getAttribute('data-ask-state')).toBe('dismissed');
+    expect(inChat('Dismissed here.')).toBe(true);
+    expect(inChat('Answered here.')).toBe(false);
     expect(inOverlay(q.title)).toBe(false);
+  });
+
+  test('put off with the card\'s Later while its chat was away: back in the chat it says so, and it returns after the period', () => {
+    // Review of e8a527f3: the bubble said "Waiting for your answer on its
+    // card." while the put-off card was hidden.
+    jest.useFakeTimers();
+    try {
+      const {send, rerender} = mount();
+      const q = ask();
+      send(q);
+      rerender(OTHER_CHAT);
+      expect(inOverlay(q.title)).toBe(true);
+      fireEvent.click(screen.getByText('Later'));
+      expect(inOverlay(q.title)).toBe(false);
+      rerender(CHAT);
+      const bubble = screen.getByTestId('chat-ask');
+      expect(bubble.getAttribute('data-ask-state')).toBe('later');
+      expect(inChat('Waiting for your answer on its card.')).toBe(false);
+      expect(inChat('Put off for now')).toBe(true);
+      expect(screen.queryByText('Approve')).toBeNull();
+      act(() => { jest.advanceTimersByTime(5 * 60 * 1000); });
+      expect(screen.getByTestId('chat-ask').getAttribute('data-ask-state')).toBe('open');
+      expect(screen.getAllByText('Approve')).toHaveLength(1);
+      expect(inOverlay(q.title)).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test('an approval ask in the chat offers no Later', () => {
