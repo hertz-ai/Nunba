@@ -209,6 +209,57 @@ describe('AgentOverlay consent.request', () => {
     expect(screen.queryByText('79211163351')).not.toBeInTheDocument();
   });
 
+  test('an ask that says who asks is shown in its own words: text, button and badge', async () => {
+    // HARTOS sends agent_asker beside agent_name (consent_service._named).
+    // The wording here is one the page's own rule would never produce, so
+    // the card can only have taken it from the ask.
+    const send = mountOverlay();
+    send({
+      type: 'consent.request',
+      msg_id: 'consent.request:row-asker',
+      consent_type: 'computer_control',
+      scope: '*',
+      agent_id: '79211163351',
+      agent_name: 'Vijai',
+      agent_asker: 'The agent Vijai',
+      reason: '',
+    });
+
+    expect(
+      await screen.findByText('The agent Vijai asks to control this computer.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', {name: "Don't allow The agent Vijai"}),
+    ).toBeInTheDocument();
+    expect(screen.getByText('The agent Vijai')).toBeInTheDocument();
+    expect(screen.queryByText('Agent Vijai')).not.toBeInTheDocument();
+    expect(screen.queryByText('Vijai')).not.toBeInTheDocument();
+  });
+
+  test('a no to an ask that says who asks is written for the same agent and scope', async () => {
+    const send = mountOverlay();
+    send({
+      type: 'consent.request',
+      msg_id: 'consent.request:row-asker-no',
+      consent_type: 'computer_control',
+      scope: '*',
+      agent_id: '79211163351',
+      agent_name: 'Vijai',
+      agent_asker: 'Agent Vijai',
+      reason: '',
+    });
+    fireEvent.click(
+      await screen.findByRole('button', {name: "Don't allow Agent Vijai"}),
+    );
+    await waitFor(() => {
+      expect(consentApi.decline).toHaveBeenCalledWith({
+        consent_type: 'computer_control',
+        scope: '*',
+        agent_id: '79211163351',
+      });
+    });
+  });
+
   test("the camera tool's ask names its agent as an agent at the top", async () => {
     // HARTOS's real camera ask (hartos/helper.py: ask_owner('camera_capture',
     // 'Camera access needed: ...')) carries a reason, which the card shows in
@@ -710,5 +761,59 @@ describe('AgentOverlay consent_prompt (browser research)', () => {
       });
     });
     expect(screen.queryByRole('button', {name: /Don't allow/})).toBeNull();
+  });
+});
+
+describe("AgentOverlay: an agent's contact request and message are not its cards", () => {
+  // routes/chatbot_routes.py agent_contact_request sends these two; each
+  // names an agent, so realtimeService also puts it on agent.ui.update.
+  // App.js shows them (AgentContactRequest, AgentMessageToast).  The overlay
+  // has no card for either and drew the payload as raw JSON.
+  const CONTACT = {
+    type: 'agent_contact_request',
+    agent_id: '1a2b3c4d9999',
+    agent_name: 'Agent 1a2b3c4d',
+    agent_asker: 'Agent 1a2b3c4d',
+    reason: 'wants to share something with you',
+    request_id: 'r4',
+    requires_consent: true,
+  };
+  const MESSAGE = {
+    type: 'agent_message',
+    agent_id: '61',
+    agent_name: 'Vijai',
+    agent_asker: 'Agent Vijai',
+    message: 'hello from your agent',
+    reason: 'x',
+    request_id: 'r5',
+    requires_consent: false,
+  };
+
+  test.each([
+    ['a contact request', CONTACT],
+    ["an owned agent's message", MESSAGE],
+  ])('%s draws no card here', (_label, payload) => {
+    const send = mountOverlay();
+    send(payload);
+    expect(document.body.textContent).not.toMatch(/request_id|requires_consent|\{"type"/);
+    expect(screen.queryByText(payload.type)).not.toBeInTheDocument();
+    expect(screen.queryByText(payload.agent_asker)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Dismiss')).not.toBeInTheDocument();
+  });
+
+  test('a card the overlay does own still shows after one of them', async () => {
+    const send = mountOverlay();
+    send(CONTACT);
+    send({...ASK, msg_id: 'consent.request:row-after-contact', reason: ''});
+    expect(
+      await screen.findByText('An agent asks to control this computer.'),
+    ).toBeInTheDocument();
+  });
+
+  test('an unknown card type still falls to the default card', () => {
+    const send = mountOverlay();
+    send({type: 'something_new', agent_id: '61', title: 'A new kind', message: 'still shown'});
+    expect(screen.getByText('A new kind')).toBeInTheDocument();
+    expect(screen.getByText('still shown')).toBeInTheDocument();
   });
 });

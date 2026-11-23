@@ -1,7 +1,7 @@
 import { API_BASE_URL } from '../../config/apiBase';
 import {
   CAMERA_CONSENT_TYPE, CONSENT_ANSWER_TYPES, FINGERPRINT_CAPTION, answerCoversAsk,
-  askTitle, askerName, asksForSecret, canDecline, consentAskText, declineLabel,
+  askTitle, askerOf, asksForSecret, canDecline, consentAskText, declineLabel,
   declineNote, deviceFingerprint, grantLabel, isPerRequester, secretName,
 } from '../../constants/consentAsks';
 import { NUNBA_CAMERA_CONSENT } from '../../constants/events';
@@ -1299,12 +1299,13 @@ function consentCardFor(data) {
       secretKey: asksForSecret(type) ? secretName(data.scope) : null,
       title: askTitle(type),
       text: data.reason ||
-        `${askerName(data.agent_name)} asks to ${consentAskText(type)}.`,
+        `${askerOf(data)} asks to ${consentAskText(type)}.`,
       grantLabel: grantLabel(type),
       // A type with a card on the privacy page (the way back after a no),
       // or a credential ask, whose no ends that one ask (declineNote).
       declineLabel: canDecline(type)
-        ? declineLabel(type, data.agent_id, data.agent_name) : null,
+        ? declineLabel(type, data.agent_id, data.agent_name, data.agent_asker)
+        : null,
     };
   }
   const platform = data.platform || data.scope || 'platform';
@@ -1625,6 +1626,13 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
     // raw JSON; the answer listener below is what acts on it.
     if (CONSENT_ANSWER_TYPES.includes(type)) return;
 
+    // An agent's contact request and an owned agent's message have their
+    // own cards (App.js: AgentContactRequest with its Accept and Deny, and
+    // AgentMessageToast).  They name an agent, so they travel here too, and
+    // this overlay has no card for them: the default branch drew a second
+    // one under the type's name with the payload as raw JSON.
+    if (type === 'agent_contact_request' || type === 'agent_message') return;
+
     // Navigate type: orchestrate page navigation, don't render overlay
     if (type === 'navigate' && navigate && payload.target) {
       navigate(payload.target);
@@ -1733,14 +1741,14 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
             '@keyframes agentSlideUp': { from: { opacity: 0, transform: 'translateY(20px)' }, to: { opacity: 1, transform: 'translateY(0)' } },
             ...cardSx,
           }}>
-            {/* Agent badge: the agent's name, said as an agent's (askerName),
+            {/* Agent badge: the agent's name, said as an agent's (askerOf),
                 because it is the first word on the card: a bare "Vijai" read
                 as a person asking (owner 2026-11-11), and a camera ask's body
                 is HARTOS's reason, which names no one.  A bare id (a prompt
                 id) means nothing to a person, so an overlay with only an id
                 gets no badge. */}
             {overlay.agent_name && (
-              <Chip label={askerName(overlay.agent_name)} size="small"
+              <Chip label={askerOf(overlay)} size="small"
                 sx={{ position: 'absolute', top: 8, left: 12, fontSize: '0.65rem', height: 20,
                   background: 'rgba(108,99,255,0.2)', color: ACCENT, border: '1px solid rgba(108,99,255,0.3)' }} />
             )}

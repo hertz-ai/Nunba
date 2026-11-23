@@ -14,9 +14,21 @@
  * Reuses StatusChip + STATUS_CONFIG from AgentDashboardPage.js to keep
  * one canonical chip across the dashboard surface — no parallel chip
  * component, no risk of color drift.
+ *
+ * Permissions tab (owner 2026-11-21: a kept consent is turned off "in nunba
+ * admin for that agent"): what this agent is allowed, read from the same
+ * consent rows the Privacy page reads (consentApi.list), with Off = the
+ * existing POST /consent/decline for this agent and On = POST
+ * /consent/reopen.  On or off is what HARTOS says on each row
+ * (agent_state); constants/agentPermissions lays the rows out.
  */
+import {
+  agentPermissions, statesAreSaid, BACK_ON_LABEL, OFF_LABEL,
+} from '../../constants/agentPermissions';
+import { CONSENT_CHANGE_TYPES } from '../../constants/consentAsks';
 import { steerError } from '../../constants/steerOutcome';
-import { dashboardApi } from '../../services/socialApi';
+import realtimeService from '../../services/realtimeService';
+import { consentApi, dashboardApi } from '../../services/socialApi';
 
 import AccountTreeIcon from '@mui/icons-material/AccountTree';
 import ChatIcon from '@mui/icons-material/Chat';
@@ -25,6 +37,7 @@ import HubIcon from '@mui/icons-material/Hub';
 import MemoryIcon from '@mui/icons-material/Memory';
 import PauseIcon from '@mui/icons-material/Pause';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
+import SecurityIcon from '@mui/icons-material/Security';
 import SendIcon from '@mui/icons-material/Send';
 import StopIcon from '@mui/icons-material/Stop';
 import {
@@ -454,6 +467,125 @@ function ModelStatePanel({ lastDispatch, eta }) {
   );
 }
 
+// What this agent is allowed, and the switch for each (the agent is the
+// goal's prompt id: the id consent rows carry).
+export function AgentPermissionsPanel({ agentId }) {
+  const [rows, setRows] = useState(null);
+  const [busy, setBusy] = useState(null);
+  const [problem, setProblem] = useState(null);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await consentApi.list({ agent_id: String(agentId) });
+      const listed = (res && (res.consents || (res.data && res.data.consents))) || [];
+      // On or off is HARTOS's word.  A list that does not say it is not
+      // shown as if it did.
+      if (!statesAreSaid(listed)) throw new Error('the list says no agent_state');
+      setRows(listed);
+      setProblem(null);
+    } catch (_) {
+      setProblem('Could not read the permissions.');
+    }
+  }, [agentId]);
+
+  useEffect(() => {
+    if (agentId) load();
+  }, [agentId, load]);
+
+  // A permission turned off or back on somewhere else (the person told the
+  // agent in chat, or used the Privacy page): read again, as the Privacy
+  // page does.
+  useEffect(() => {
+    if (!agentId) return undefined;
+    const offs = CONSENT_CHANGE_TYPES.map((t) => realtimeService.on(t, () => load()));
+    return () => offs.forEach((off) => off && off());
+  }, [agentId, load]);
+
+  if (!agentId) {
+    return (
+      <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.5)', mt: 2 }}>
+        This run has no agent of its own, so it holds no permissions.
+      </Typography>
+    );
+  }
+
+  const change = async (p) => {
+    const turnOn = !p.on;
+    setBusy(`${p.consentType}|${p.scope}`);
+    try {
+      if (turnOn) {
+        await consentApi.reopen({ consent_type: p.consentType, scope: p.scope });
+      } else {
+        await consentApi.decline({
+          consent_type: p.consentType, scope: p.scope, agent_id: String(agentId),
+        });
+      }
+      await load();
+    } catch (_) {
+      // Said after the reload attempt, so a failed read does not hide it.
+      setProblem(`Could not turn it ${turnOn ? 'back on' : 'off'}. Nothing was changed.`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const permissions = agentPermissions(rows, agentId);
+  return (
+    <Stack spacing={1.5} data-testid="agent-permissions">
+      {problem && (
+        <Typography variant="caption" role="alert" sx={{ color: '#ff9800' }}>
+          {problem}
+        </Typography>
+      )}
+      {rows === null && !problem && (
+        <CircularProgress size={20} sx={{ color: '#6C63FF' }} />
+      )}
+      {rows !== null && permissions.length === 0 && (
+        <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.5)' }}>
+          This agent holds no permissions. It asks you the first time it needs one.
+        </Typography>
+      )}
+      {permissions.map((p) => {
+        const key = `${p.consentType}|${p.scope}`;
+        return (
+          <Box key={key} data-testid={`permission-${p.consentType}`} sx={{
+            p: 1.5, borderRadius: 1, border: '1px solid rgba(255,255,255,0.08)',
+          }}>
+            <Stack direction="row" alignItems="center" spacing={1}>
+              <Typography variant="body2" sx={{ color: '#fff', flexGrow: 1 }}>
+                {p.label}
+              </Typography>
+              <Chip size="small" label={p.on ? 'On' : 'Off for this agent'} sx={{
+                bgcolor: p.on ? 'rgba(108,99,255,0.2)' : 'rgba(255,68,68,0.15)',
+                color: p.on ? '#9B94FF' : '#ff8a80', fontWeight: 600,
+              }} />
+              {p.canSwitch && (
+                <Button size="small" variant="outlined"
+                  disabled={busy !== null}
+                  onClick={() => change(p)}
+                  sx={{
+                    textTransform: 'none',
+                    color: p.on ? '#ff9800' : '#6C63FF',
+                    borderColor: p.on ? '#ff9800' : '#6C63FF',
+                  }}>
+                  {p.on ? OFF_LABEL : BACK_ON_LABEL}
+                </Button>
+              )}
+            </Stack>
+            {p.note && (
+              <Typography variant="caption" sx={{
+                display: 'block', mt: 0.5, color: 'rgba(255,255,255,0.5)',
+              }}>
+                {p.note}
+              </Typography>
+            )}
+          </Box>
+        );
+      })}
+    </Stack>
+  );
+}
+
 export default function AgentOperationsDrawer({ agentId, open, onClose }) {
   const [tab, setTab] = useState(0);
   const [snapshot, setSnapshot] = useState(null);
@@ -627,6 +759,7 @@ export default function AgentOperationsDrawer({ agentId, open, onClose }) {
         <Tab icon={<ChatIcon />} iconPosition="start" label="Conversation" />
         <Tab icon={<MemoryIcon />} iconPosition="start" label="Model" />
         <Tab icon={<HubIcon />} iconPosition="start" label="A2A" />
+        <Tab icon={<SecurityIcon />} iconPosition="start" label="Permissions" />
       </Tabs>
 
       {/* Tab content */}
@@ -655,6 +788,9 @@ export default function AgentOperationsDrawer({ agentId, open, onClose }) {
         )}
         {snapshot && tab === 3 && (
           <A2APanel graph={a2a} onNavigate={setInternalAgentId} />
+        )}
+        {snapshot && tab === 4 && (
+          <AgentPermissionsPanel agentId={snapshot.agent?.prompt_id} />
         )}
       </Box>
     </Drawer>
