@@ -433,10 +433,11 @@ function postApproval(body) {
 }
 
 // Asks this window answered or dismissed (from its card or from the chat):
-// their ask.answered drop is this window's own answer, so an in-chat ask's
-// bubble says "Answered here", and every mounted overlay lets the ask go the
-// moment HARTOS takes the answer.  Marked before the POST (the drop can
-// arrive first) and unmarked if it is refused.
+// their ask.answered drop is this window's own, so an in-chat ask's bubble
+// says "Answered here." (or "Dismissed here." for a dismissal,
+// dismissedHere), and every mounted overlay lets the ask go the moment
+// HARTOS takes the answer.  Marked before the POST (the drop can arrive
+// first) and unmarked if an answer is refused.
 const answeredHere = new Set();
 // Of those, the ones dismissed (the X), not answered: their bubble says so.
 const dismissedHere = new Set();
@@ -539,6 +540,27 @@ export function askChatMessage(card) {
 }
 
 /**
+ * The chat's messages after one onChatAsk event (Demopage's handleChatAsk
+ * applies it with setMessages): an ask now 'open' in the chat gets its
+ * message once; a closed one (ASK_CLOSED_STATES) records how it closed, and
+ * its reason when the drop gave one, once (the list is unchanged when it
+ * already says so); any other state leaves the messages as they are.
+ */
+export function chatMessagesAfterAsk(prev, { askId, state, card, reason } = {}) {
+  const list = Array.isArray(prev) ? prev : [];
+  if (!askId) return list;
+  const isIt = (m) => m && m.type === 'agent_ask' && m.askId === askId;
+  if (state === 'open') {
+    return list.some(isIt) ? list : [...list, askChatMessage(card)];
+  }
+  if (ASK_CLOSED_STATES.has(state)) {
+    if (!list.some((m) => isIt(m) && m.closed !== state)) return list;
+    return list.map((m) => (isIt(m) ? { ...m, closed: state, ...(reason ? { closedReason: reason } : {}) } : m));
+  }
+  return list;
+}
+
+/**
  * `messages` with a message put back for every ask open in the chat
  * (`askStates` entries in state 'open', from onChatAsk) that it lacks, in
  * the order of askStates; `messages` itself when none is missing.  What
@@ -576,7 +598,7 @@ export function askClosedText(state, reason) {
     case 'unknown': return 'Could not check whether this question is still open.';
     case 'moved': return 'Waiting for your answer on its card.';
     // Put off with the card's Later: no card shows until the period ends.
-    case 'later': return 'Put off for now: it comes back in a few minutes.';
+    case 'later': return `Put off for now: it comes back in ${Math.round(ASK_LATER_MS / 60000)} minutes.`;
     default: return 'Checking whether this question is still open...';
   }
 }
@@ -1709,13 +1731,20 @@ function PostPreviewOverlay({ data, onDismiss }) {
 //   chatAsks {promptId, userId}         the agent chat in front (Demopage):
 //                                       its asks are shown in the chat, not
 //                                       here (askBelongsInChat)
-//   onChatAsk({askId, state, card})     an ask of that chat: 'open' (show it
-//                                       in the chat, with its card), 'moved'
-//                                       (back to a card here), 'here' /
-//                                       'elsewhere' (answered or dismissed
-//                                       on this window / another surface),
-//                                       'gone' (no longer open, by HARTOS's
-//                                       read), 'unknown' (could not be read)
+//   onChatAsk({askId, state, card,      an ask of that chat: 'open' (show it
+//              reason})                 in the chat, with its card), 'moved'
+//                                       (back to a card here), 'later' (put
+//                                       off with the card's Later: no card
+//                                       shows until ASK_LATER_MS ends),
+//                                       'here' (answered on this window),
+//                                       'dismissed' (dismissed on this
+//                                       window), 'elsewhere' (closed by a
+//                                       drop this window did not make; with
+//                                       the drop's reason when it gives
+//                                       one), 'gone' (no longer open, by
+//                                       HARTOS's read), 'unknown' (could not
+//                                       be read).  'moved' and 'later' only
+//                                       for an ask that has a bubble.
 //   askIdsToCheck [ask_id]              asks the chat's own history shows
 //                                       whose state this window does not
 //                                       know (after a reload): read from
@@ -1727,6 +1756,9 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
   // The open asks shown in the chat in front: ask_id -> card.  Never also a
   // card here.
   const inChatRef = useRef(new Map());
+  // Asks that have a bubble in a chat (they were shown in one): only they
+  // are told about 'moved' and 'later'.
+  const bubbledRef = useRef(new Set());
   const chatRef = useRef(chatAsks);
   chatRef.current = chatAsks;
   const onChatAskRef = useRef(onChatAsk);
@@ -1848,6 +1880,7 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
   const toChat = useCallback((card) => {
     const askId = card.ask_id;
     inChatRef.current.set(askId, card);
+    bubbledRef.current.add(askId);
     parkedRef.current = parkedRef.current.filter((o) => o.ask_id !== askId);
     const shown = overlaysRef.current.filter((o) => o.ask_id === askId);
     if (shown.length) {
@@ -1963,11 +1996,14 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
       laterRef.current.delete(askId);
       handleEvent(held.card);
       // Back as a card (its chat is not in front): its bubble says so again.
-      if (!inChatRef.current.has(askId)) tellChat({ askId, state: 'moved' });
+      if (!inChatRef.current.has(askId) && bubbledRef.current.has(askId)) {
+        tellChat({ askId, state: 'moved' });
+      }
     }, ASK_LATER_MS);
     laterRef.current.set(askId, held);
-    // Its chat's bubble (if any) says it is put off: no card shows meanwhile.
-    tellChat({ askId, state: 'later' });
+    // Its chat's bubble (if it has one) says it is put off: no card shows
+    // meanwhile.
+    if (bubbledRef.current.has(askId)) tellChat({ askId, state: 'later' });
   }, [dismiss, handleEvent, tellChat]);
 
   // A slot freed (a card answered, closed, timed out or replaced): the oldest

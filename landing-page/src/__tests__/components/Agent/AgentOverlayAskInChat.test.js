@@ -77,15 +77,14 @@ function Page({chat, initialMessages = []}) {
   const askStatesRef = React.useRef(askStates);
   askStatesRef.current = askStates;
   Page.messages = messages;
-  const onChatAsk = React.useCallback(({askId, state, card, reason}) => {
+  Page.events = Page.events || [];
+  // Demopage's handleChatAsk, with the one rule it applies
+  // (AgentOverlay.chatMessagesAfterAsk), not a copy of it.
+  const onChatAsk = React.useCallback((event) => {
+    Page.events.push(event);
+    const {askId, state, card} = event;
     setAskStates((prev) => ({...prev, [askId]: {state, card: state === 'open' ? card : undefined}}));
-    if (state === 'open') {
-      setMessages((prev) => (prev.some((m) => m.type === 'agent_ask' && m.askId === askId)
-        ? prev : [...prev, askChatMessage(card)]));
-    } else if (overlayModule.ASK_CLOSED_STATES.has(state)) {
-      setMessages((prev) => prev.map((m) => (m.type === 'agent_ask' && m.askId === askId
-        ? {...m, closed: state, ...(reason ? {closedReason: reason} : {})} : m)));
-    }
+    setMessages((prev) => overlayModule.chatMessagesAfterAsk(prev, event));
   }, []);
   // Demopage's agent switch, as written there (handleButtonClick and the
   // route switch): the chat is cleared to its carried cards, the agent
@@ -120,6 +119,7 @@ function Page({chat, initialMessages = []}) {
 
 function mount(chat = CHAT, initialMessages) {
   handlers = {};
+  Page.events = [];
   const rt = require('../../../services/realtimeService').default;
   rt.on = jest.fn((topic, cb) => { handlers[topic] = cb; return () => {}; });
   const view = render(<Page chat={chat} initialMessages={initialMessages} />);
@@ -249,6 +249,69 @@ describe('closing an ask from the chat', () => {
     const {send} = mount(null);
     send(ask());
     expect(screen.getByText('Later')).toBeTruthy();
+  });
+});
+
+// Review of 179c2163 (rv_179c): the wording it added was not pinned.
+describe('what a put-off or dismissed ask\'s bubble says, pinned', () => {
+  test('P3: put off while its chat is away and the period ends with the chat still away: card back, bubble waits on its card; then into the chat when it opens', () => {
+    jest.useFakeTimers();
+    try {
+      const {send, rerender} = mount();
+      const q = ask();
+      send(q);
+      rerender(OTHER_CHAT);
+      expect(inOverlay(q.title)).toBe(true);
+      fireEvent.click(screen.getByText('Later'));
+      expect(inOverlay(q.title)).toBe(false);
+      expect(screen.getByTestId('chat-ask').getAttribute('data-ask-state')).toBe('later');
+      act(() => { jest.advanceTimersByTime(5 * 60 * 1000); });
+      expect(inOverlay(q.title)).toBe(true);
+      expect(screen.getByTestId('chat-ask').getAttribute('data-ask-state')).toBe('moved');
+      expect(inChat('Waiting for your answer on its card.')).toBe(true);
+      rerender(CHAT);
+      expect(inOverlay(q.title)).toBe(false);
+      expect(screen.getByTestId('chat-ask').getAttribute('data-ask-state')).toBe('open');
+      expect(screen.getAllByText('Approve')).toHaveLength(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('the put-off wording names the Later period', () => {
+    expect(overlayModule.askClosedText('later')).toBe(
+      `Put off for now: it comes back in ${overlayModule.ASK_LATER_MS / 60000} minutes.`);
+  });
+
+  test('a drop\'s reason never overrides "Dismissed here." (nor "Answered here.")', () => {
+    expect(overlayModule.askClosedText('dismissed', 'expired')).toBe('Dismissed here.');
+    expect(overlayModule.askClosedText('here', 'expired')).toBe('Answered here.');
+    expect(overlayModule.askClosedText('elsewhere', 'expired')).toBe('expired');
+  });
+
+  test('an ask that never had a bubble posts no later or moved notice', () => {
+    jest.useFakeTimers();
+    try {
+      const {send} = mount(OTHER_CHAT);
+      const q = ask();
+      send(q);
+      fireEvent.click(screen.getByText('Later'));
+      act(() => { jest.advanceTimersByTime(5 * 60 * 1000); });
+      expect(inOverlay(q.title)).toBe(true);
+      expect(Page.events.filter((e) => e.askId === q.ask_id)).toEqual([]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('the shared handler: a closed state is written once, a later one with the same state changes nothing', () => {
+    const q = ask();
+    const one = overlayModule.chatMessagesAfterAsk([], {askId: q.ask_id, state: 'open', card: q});
+    const closed = overlayModule.chatMessagesAfterAsk(one, {askId: q.ask_id, state: 'dismissed'});
+    expect(closed[0].closed).toBe('dismissed');
+    expect(overlayModule.chatMessagesAfterAsk(closed, {askId: q.ask_id, state: 'dismissed'})).toBe(closed);
+    expect(overlayModule.chatMessagesAfterAsk(closed, {askId: q.ask_id, state: 'later'})).toBe(closed);
+    expect(overlayModule.chatMessagesAfterAsk(one, {askId: q.ask_id, state: 'open', card: q})).toBe(one);
   });
 });
 
@@ -441,8 +504,8 @@ describe('Demopage hands the open agent\'s asks to its chat', () => {
     expect(mountTag).toMatch(/askIdsToCheck=\{askIdsToCheck\}/);
   });
 
-  test('the chat keeps an ask as its question only, and draws it from askStates', () => {
-    expect(SRC).toMatch(/\[\.\.\.prev, askChatMessage\(card\)\]/);
+  test('the chat keeps an ask through the one shared rule, and draws it from askStates', () => {
+    expect(SRC).toMatch(/setMessages\(\(prev\) => chatMessagesAfterAsk\(prev, event\)\)/);
     expect(SRC).toMatch(/askStates=\{askStates\}/);
   });
 });

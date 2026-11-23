@@ -11,7 +11,7 @@ import connectedGif from '../assets/images/connected.gif';
 // the companion, the icon was always self-referential noise.
 import Lottie from 'lottie-react';
 import creationModeAnimation from '../assets/images/Animation.json';
-import AgentOverlay, { ASK_CLOSED_STATES, askChatMessage, withOpenChatAsks } from '../components/AgentOverlay/AgentOverlay';
+import AgentOverlay, { chatMessagesAfterAsk, withOpenChatAsks } from '../components/AgentOverlay/AgentOverlay';
 import {Link as RouterLink, useNavigate, useParams, useLocation} from 'react-router-dom';
 import {
   ChevronDown,
@@ -678,19 +678,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   // runs after the overlay has moved the new chat's open asks into it.
   const askStatesRef = useRef(askStates);
   askStatesRef.current = askStates;
-  const handleChatAsk = useCallback(({askId, state, card, reason}) => {
+  const handleChatAsk = useCallback((event) => {
+    const {askId, state, card} = event || {};
     if (!askId) return;
     setAskStates((prev) => ({...prev, [askId]: {state, card: state === 'open' ? card : undefined}}));
-    if (state === 'open') {
-      setMessages((prev) => (prev.some((m) => m.type === 'agent_ask' && m.askId === askId)
-        ? prev : [...prev, askChatMessage(card)]));
-      setShouldScroll(true);
-    } else if (ASK_CLOSED_STATES.has(state)) {
-      setMessages((prev) => (prev.some((m) => m.type === 'agent_ask' && m.askId === askId && m.closed !== state)
-        ? prev.map((m) => (m.type === 'agent_ask' && m.askId === askId
-          ? {...m, closed: state, ...(reason ? {closedReason: reason} : {})} : m))
-        : prev));
-    }
+    // The one rule for what the chat keeps (AgentOverlay.chatMessagesAfterAsk).
+    setMessages((prev) => chatMessagesAfterAsk(prev, event));
+    if (state === 'open') setShouldScroll(true);
   }, []);
   // Asks the chat's history shows whose state this page does not know (a
   // reload): AgentOverlay reads them from HARTOS.
