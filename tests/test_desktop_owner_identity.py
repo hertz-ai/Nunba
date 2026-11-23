@@ -279,68 +279,105 @@ def test_only_the_placeholder_is_refused(gi, posted, placeholder):
 
 
 PHONE_KEY = 'fake-device-public-key'
+LOOPBACK = '127.0.0.1'
+LAN_DEVICE = '192.168.0.50'
+GUEST_JWT = 'fake-guest-jwt'
+# What /api/social/auth/guest-register's token carries (HARTOS
+# integrations/social/api.py: generate_jwt(id, username, 'guest')).
+GUEST_CLAIMS = {'user_id': '99999', 'username': 'guest_lan_abc123',
+                'role': 'guest', 'type': 'access', 'scope': 'local'}
 
 
-def _as_caller(phone=None):
-    """One request's context: the desktop's own page (phone None), or a
-    phone the owner allowed as account ``phone``, marked the way HARTOS's
-    API gate marks it (security.middleware: g.auth_source 'device',
-    g.device_public_key, the token's claims in g.jwt_payload).  The route
-    reads the mark through routes.auth.is_admitted_device, the real one."""
+def _as_caller(phone=None, guest=False):
+    """One request's context, marked the way HARTOS's API gate marks it
+    (security.middleware):
+
+      - the desktop's own page (the default): from this machine, 127.0.0.1,
+        the address the page's calls come from (landing-page apiBase.js:
+        http://localhost:5000);
+      - ``phone``: a phone the owner allowed as that account, from the LAN:
+        g.auth_source 'device', g.device_public_key, the token's claims in
+        g.jwt_payload;
+      - ``guest``: a LAN device with a guest JWT from the exempt
+        /api/social/auth/guest-register, which the bundled gate lets
+        through as g.auth_source 'jwt' (review rv_aedb, measured).
+
+    The routes read the marks and the address through routes.auth, the real
+    one."""
     import contextlib
 
     from flask import Flask, g
 
+    remote = LAN_DEVICE if (phone is not None or guest) else LOOPBACK
+    headers = {'Authorization': f'Bearer {GUEST_JWT}'} if guest else {}
+
     @contextlib.contextmanager
     def context():
-        with Flask(__name__).test_request_context():
+        with Flask(__name__).test_request_context(
+                environ_base={'REMOTE_ADDR': remote}, headers=headers):
             if phone is not None:
                 g.auth_source = 'device'
                 g.device_public_key = PHONE_KEY
                 g.jwt_payload = {'user_id': phone}
+            if guest:
+                g.auth_source = 'jwt'
+                g.jwt_payload = dict(GUEST_CLAIMS)
             yield
     return context()
 
 
 def _route_body(name, json_module=json):
-    """app.py's own route function ``name``, compiled on its own.
+    """app.py's own route function ``name``, compiled on its own, with the
+    guards app.py puts on it.
 
     It is nested inside the serving-app builder, and importing app.py drags
-    in the boot path, so its source is compiled with the route decorator
-    dropped and the request and jsonify it reads stood in for.
+    in the boot path, so its source is compiled with only the route
+    registration (``@_serving_app.route``) dropped and the request and
+    jsonify it reads stood in for.  Every other decorator stays: app.py
+    imports its guards from routes.auth under its own names, and those names
+    are bound here to the real routes.auth functions they import.
     """
     import logging
+
+    import routes.auth
     tree = ast.parse((REPO / 'app.py').read_text(encoding='utf-8'))
     fn = next(n for n in ast.walk(tree)
               if isinstance(n, ast.FunctionDef) and n.name == name)
-    fn.decorator_list = []
-    ns = {'jsonify': lambda body: body, 'os': os, 'json': json_module,
-          'logger': logging.getLogger(f'test_{name}')}
+    fn.decorator_list = [
+        d for d in fn.decorator_list
+        if not (isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)
+                and d.func.attr == 'route')]
+    guards = {a.asname or a.name: getattr(routes.auth, a.name)
+              for n in ast.walk(tree)
+              if isinstance(n, ast.ImportFrom) and n.module == 'routes.auth'
+              for a in n.names}
+    ns = {**guards, 'jsonify': lambda body: body, 'os': os,
+          'json': json_module, 'logger': logging.getLogger(f'test_{name}')}
     exec(compile(ast.Module(body=[fn], type_ignores=[]), 'app.py', 'exec'), ns)
     return ns
 
 
-def _set_storage_handler(json_module=json, phone=None):
+def _set_storage_handler(json_module=json, phone=None, guest=False):
     """app.py's own set_storage body, as a function of one post."""
     from types import SimpleNamespace
     ns = _route_body('set_storage', json_module)
 
     def post(posted):
-        with _as_caller(phone):
+        with _as_caller(phone, guest):
             ns['request'] = SimpleNamespace(method='POST', json=posted)
             return ns['set_storage']()
     return post
 
 
-def _post_to_set_storage(posted, phone=None):
-    return _set_storage_handler(phone=phone)(posted)
+def _post_to_set_storage(posted, phone=None, guest=False):
+    return _set_storage_handler(phone=phone, guest=guest)(posted)
 
 
-def _get_storage(key, phone=None):
+def _get_storage(key, phone=None, guest=False):
     """app.py's own get_storage body, for one read of ``key``."""
     from types import SimpleNamespace
     ns = _route_body('get_storage')
-    with _as_caller(phone):
+    with _as_caller(phone, guest):
         ns['request'] = SimpleNamespace(method='GET')
         return ns['get_storage'](key)
 
@@ -553,10 +590,17 @@ def _owner_a_signed_in(home, users_table):
                              'email': 'a@example.com', 'agentname': 'Nunba'}))
 
 
-def _refused_as_desktop_only(reply):
-    assert isinstance(reply, tuple) and reply[1] == 403, \
-        'the phone was answered, not refused'
+def _refusal(reply, status):
+    """The body of a refusal with ``status``: the route's own jsonify is
+    stood in for (a dict), a guard's is Flask's (a Response)."""
+    assert isinstance(reply, tuple) and reply[1] == status, \
+        f'the caller was answered ({reply!r}), not refused with {status}'
     body = reply[0]
+    return body.get_json() if hasattr(body, 'get_json') else body
+
+
+def _refused_as_desktop_only(reply):
+    body = _refusal(reply, 403)
     assert body['success'] is False
     assert "This desktop's sign-in is managed on the desktop" in body['error']
     return body
@@ -648,3 +692,175 @@ def test_a_switch_from_an_account_that_is_no_cloud_id_leaves_its_row(
                           'email': 'c@example.com', 'agentname': 'Nunba'})
     assert login_of(USER_ID) == 'fake-node-own-token'
     assert login_of('30404') == LOGIN_C
+
+
+# ── a LAN device with a guest JWT never reaches this desktop's sign-in ────
+# Review rv_aedb, measured through HARTOS's real gate on aedb1fb7 and on its
+# parent: a device on the LAN registers as a guest on the exempt
+# /api/social/auth/guest-register, and the bundled gate lets that JWT
+# through as 'jwt'.  GET /api/storage/get/access_token answered 200 with the
+# owner's login, and POST /api/storage/set {user_id: 99999} made 99999 the
+# desktop owner.  Both routes take require_local_or_token now: the page on
+# this machine (127.0.0.1) or the local token, and nobody else; a phone the
+# owner allowed still hears why (above).  Fake values only.
+
+@pytest.fixture
+def plain_address_rule(monkeypatch):
+    """The loopback rule as an installed desktop has it: no staging trust
+    (NUNBA_CI) and no trusted proxy."""
+    for name in ('NUNBA_CI', 'TRUSTED_PROXY'):
+        monkeypatch.delenv(name, raising=False)
+
+
+def _refused_as_not_local(reply):
+    body = _refusal(reply, 401)
+    assert body['error'] == 'Unauthorized'
+    return body
+
+
+@pytest.mark.parametrize('posted', [
+    {'user_id': '99999'},                                 # the measured post
+    {'user_id': '99999', 'access_token': GUEST_JWT,       # a whole sign-in
+     'email': 'guest@example.com', 'agentname': 'Nunba'},
+    {'user_id': '', 'access_token': '', 'email': ''},     # a sign-out
+])
+def test_a_lan_guest_jwt_cannot_write_this_desktops_sign_in(
+        fake_home, gi, clean_owner_env, users_table, plain_address_rule,
+        posted):
+    _owner_a_signed_in(fake_home, users_table)
+    gi.sync_owner_identity_env()
+    before = _record(fake_home).read_text(encoding='utf-8')
+    _refused_as_not_local(_post_to_set_storage(posted, guest=True))
+    assert _record(fake_home).read_text(encoding='utf-8') == before
+    _store, login_of = users_table
+    assert login_of('10202') == LOGIN_A, "the owner's stored login was dropped"
+    assert login_of('99999') == 'NO ROW'
+    assert os.environ[OWNER_ENV] == '10202'
+
+
+@pytest.mark.parametrize('key', ['access_token', 'user_id', 'email'])
+def test_a_lan_guest_jwt_cannot_read_this_desktops_sign_in(
+        fake_home, gi, clean_owner_env, users_table, plain_address_rule, key):
+    _owner_a_signed_in(fake_home, users_table)
+    body = _refused_as_not_local(_get_storage(key, guest=True))
+    assert 'data' not in body and LOGIN_A not in json.dumps(body)
+
+
+def test_the_desktops_own_page_keeps_its_hart_reset_and_account_switch(
+        fake_home, gi, clean_owner_env, users_table, plain_address_rule):
+    """The rest of what the page does here, from 127.0.0.1 through the
+    guard: SettingsPage's HART reset (hart_* cleared with '', the sign-in
+    kept) and a sign-in as another account over the one on file."""
+    _owner_a_signed_in(fake_home, users_table)
+    assert _post_to_set_storage({'hart_sealed': True, 'hart_name': 'Ava',
+                                 'hart_emoji': 'x', 'hart_language': 'en'}
+                                )['success'] is True
+    reset = _post_to_set_storage({'hart_sealed': '', 'hart_name': '',
+                                  'hart_emoji': '', 'hart_language': ''})
+    assert reset['success'] is True
+    record = json.loads(_record(fake_home).read_text(encoding='utf-8'))
+    assert not [k for k in record if k.startswith('hart_')]
+    assert _get_storage('access_token') == {'success': True, 'data': LOGIN_A}
+    switch = _post_to_set_storage({'user_id': '30404', 'access_token': LOGIN_C,
+                                   'email': 'c@example.com',
+                                   'agentname': 'Nunba'})
+    assert switch['success'] is True
+    assert _get_storage('user_id') == {'success': True, 'data': '30404'}
+    assert _get_storage('access_token') == {'success': True, 'data': LOGIN_C}
+
+
+def test_through_hartos_gate_a_lan_guest_jwt_is_refused_and_the_page_is_not(
+        fake_home, gi, clean_owner_env, users_table, plain_address_rule,
+        monkeypatch):
+    """The hop the reviewer measured: HARTOS's real API gate
+    (security.middleware.install_api_gate, as on a bundled desktop) in front
+    of app.py's two routes with the guards app.py puts on them.  The gate's
+    JWT check (integrations.social.auth.decode_jwt) answers the fake guest
+    token with guest-register's claims, so the gate lets it through as
+    'jwt' as it did the real one, and what refuses it is the route's guard
+    (its 401, not the gate's).  The page, from 127.0.0.1 with no
+    credential, reads back, signs out and signs in."""
+    import sys
+    from types import SimpleNamespace
+
+    import flask
+    middleware = pytest.importorskip('security.middleware')
+    if not hasattr(middleware, 'install_api_gate'):
+        pytest.skip('this HARTOS predates install_api_gate')
+    monkeypatch.setenv('NUNBA_BUNDLED', '1')
+    monkeypatch.delenv('HEVOLVE_API_KEY', raising=False)
+    monkeypatch.setitem(sys.modules, 'security.secrets_manager',
+                        SimpleNamespace(get_secret=lambda name: ''))
+    admitted = []
+
+    def decode_jwt(token):
+        claims = dict(GUEST_CLAIMS) if token == GUEST_JWT else {}
+        admitted.append(bool(claims))
+        return claims
+    monkeypatch.setitem(sys.modules, 'integrations.social.auth',
+                        SimpleNamespace(decode_jwt=decode_jwt,
+                                        log_refused_credential=lambda **kw: None))
+    app = flask.Flask('desktop')
+    for name, rule, methods in (
+            ('set_storage', '/api/storage/set', ['POST']),
+            ('get_storage', '/api/storage/get/<key>', ['GET'])):
+        ns = _route_body(name)
+        ns.update(request=flask.request, jsonify=flask.jsonify)
+        app.add_url_rule(rule, name, ns[name], methods=methods)
+    assert middleware.install_api_gate(app) is True
+    client = app.test_client()
+    _owner_a_signed_in(fake_home, users_table)
+    gi.sync_owner_identity_env()
+    before = _record(fake_home).read_text(encoding='utf-8')
+
+    lan = {'REMOTE_ADDR': LAN_DEVICE}
+    guest = {'Authorization': f'Bearer {GUEST_JWT}'}
+    read = client.get('/api/storage/get/access_token',
+                      environ_base=lan, headers=guest)
+    write = client.post('/api/storage/set', json={'user_id': '99999'},
+                        environ_base=lan, headers=guest)
+    assert admitted == [True, True], 'the gate did not let the guest JWT by'
+    for reply in (read, write):
+        assert reply.status_code == 401, reply.get_data(as_text=True)
+        assert reply.get_json()['error'] == 'Unauthorized'
+        assert LOGIN_A not in reply.get_data(as_text=True)
+    assert _record(fake_home).read_text(encoding='utf-8') == before
+    assert os.environ[OWNER_ENV] == '10202'
+
+    page = {'REMOTE_ADDR': LOOPBACK}
+    assert client.get('/api/storage/get/access_token',
+                      environ_base=page).get_json() == {'success': True,
+                                                        'data': LOGIN_A}
+    signed_out = client.post('/api/storage/set', environ_base=page, json={
+        'user_id': '', 'access_token': '', 'email': ''})
+    assert signed_out.status_code == 200
+    assert signed_out.get_json()['success'] is True
+    signed_in = client.post('/api/storage/set', environ_base=page, json={
+        'user_id': '10202', 'access_token': LOGIN_A,
+        'email': 'a@example.com', 'agentname': 'Nunba'})
+    assert signed_in.status_code == 200
+    assert signed_in.get_json()['success'] is True
+    assert client.get('/api/storage/get/user_id',
+                      environ_base=page).get_json() == {'success': True,
+                                                        'data': '10202'}
+
+
+def test_one_guard_is_the_home_of_the_phone_refusal():
+    """set_storage and get_storage carry the same one guard from
+    routes.auth, and app.py holds no copy of its phone check or its
+    sentence (review rv_aedb: aedb1fb7 had both inline, once per route)."""
+    source = (REPO / 'app.py').read_text(encoding='utf-8')
+    fns = {n.name: n for n in ast.walk(ast.parse(source))
+           if isinstance(n, ast.FunctionDef)
+           and n.name in ('set_storage', 'get_storage')}
+
+    def guards(fn):
+        return [ast.unparse(d) for d in fn.decorator_list
+                if not (isinstance(d, ast.Call)
+                        and isinstance(d.func, ast.Attribute)
+                        and d.func.attr == 'route')]
+    assert len(guards(fns['set_storage'])) == 1
+    assert guards(fns['set_storage']) == guards(fns['get_storage'])
+    for fn in fns.values():
+        assert 'is_admitted_device' not in ast.unparse(fn), fn.name
+    assert "This desktop's sign-in is managed" not in source

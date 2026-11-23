@@ -5996,28 +5996,21 @@ def start_flask():
                 target=_do_focus, name='api-focus', daemon=True).start()
             return jsonify({"focused": True})
 
+        # user_data.json is this desktop's own sign-in: the desktop owner,
+        # the consent gates and the stored login a phone's cloud turn spends
+        # all follow it, and only the page on this machine signs in or out
+        # here.  Both routes take the loopback-or-token rule: a LAN guest JWT
+        # read and rewrote it (review rv_aedb), and a phone the owner allowed
+        # is told why it is refused (review rv_6546).
+        from routes.auth import (
+            require_local_or_token_for_sign_in as _local_or_token_sign_in,
+        )
+
         @_serving_app.route('/api/storage/set', methods = ['POST', 'OPTIONS'])
+        @_local_or_token_sign_in
         def set_storage():
             if request.method == 'OPTIONS':
                 return jsonify({"status": "ok"})
-
-            # user_data.json is this desktop's own sign-in: the desktop owner,
-            # the consent gates and the stored login a phone's cloud turn
-            # spends all follow it, and only the page on this machine signs in
-            # or out here.  A phone the owner allowed is refused (review
-            # rv_6546, measured): HARTOS's gate holds a phone to its own
-            # account by the body's user_id, so a phone allowed as B posted
-            # {user_id: B, access_token: ''} and signed owner A out, A's
-            # stored login dropped and the record naming B.  A phone keeps
-            # its own sign-in on the phone.
-            from routes.auth import is_admitted_device
-            if is_admitted_device():
-                return jsonify({
-                    'success': False,
-                    'error': ("This desktop's sign-in is managed on the "
-                              "desktop: sign in or out in Nunba there. This "
-                              "phone keeps its own sign-in."),
-                }), 403
 
             try:
                 global _window
@@ -6285,22 +6278,10 @@ def start_flask():
                 return jsonify({'success': False, 'error': str(e)})
 
         @_serving_app.route('/api/storage/get/<key>', methods=['GET', 'OPTIONS'])
+        @_local_or_token_sign_in
         def get_storage(key):
             if request.method == 'OPTIONS':
                 return jsonify({"status": "ok"})
-
-            # The read half of set_storage's refusal: the record holds this
-            # desktop's Hevolve login (access_token), and a phone the owner
-            # allowed was answered with it (review rv_6546).  The page on
-            # this machine reads it back on mount (useStorageSync).
-            from routes.auth import is_admitted_device
-            if is_admitted_device():
-                return jsonify({
-                    'success': False,
-                    'error': ("This desktop's sign-in is managed on the "
-                              "desktop: sign in or out in Nunba there. This "
-                              "phone keeps its own sign-in."),
-                }), 403
 
             try:
                 from desktop.guest_identity import get_user_data_file_path

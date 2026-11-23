@@ -217,6 +217,40 @@ def require_local_token_or_device(f):
     return decorated_function
 
 
+def require_local_or_token_for_sign_in(f):
+    """require_local_or_token for a route that reads or writes this
+    desktop's own sign-in: app.py's /api/storage/set and
+    /api/storage/get/<key>, over user_data.json, which names the desktop
+    owner the consent gates act for and holds the Hevolve login a phone's
+    cloud turn spends.  Only the page on this machine (127.0.0.1) signs in
+    or out there, or a caller with the local token.
+
+    HARTOS's gate lets another machine through with any credential it
+    verifies, and that is no reason to hand it this machine's sign-in.  A
+    LAN device's guest JWT from the exempt /api/social/auth/guest-register
+    passed as 'jwt', read the owner's login back and posted itself as the
+    desktop owner (review rv_aedb, measured): it gets
+    require_local_or_token's 401.  A phone the owner allowed is told why
+    instead, with 403 (review rv_6546: a phone allowed as B posted
+    {user_id: B, access_token: ''} and signed owner A out); it keeps its own
+    sign-in on the phone.
+    """
+    guarded = require_local_or_token(f)
+
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if is_admitted_device():
+            return jsonify({
+                'success': False,
+                'error': ("This desktop's sign-in is managed on the desktop: "
+                          "sign in or out in Nunba there. This phone keeps "
+                          "its own sign-in."),
+            }), 403
+        return guarded(*args, **kwargs)
+
+    return decorated_function
+
+
 _origin_check_unavailable_logged = False
 
 
