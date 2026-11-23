@@ -545,31 +545,37 @@ class TestAgentRouting:
             'id': 'cloud_radha', 'name': 'Radha', 'type': 'cloud',
             'cloud_endpoint': endpoint}])
 
-    @pytest.mark.parametrize('endpoint, host', [
-        ('https://cloud.example.com/chat/custom_gpt', 'cloud.example.com'),
-        ('https://azurekong.hertzai.com.evil/chat/custom_gpt',
+    NOT_CENTRAL = [
+        ('https://cloud.example.com/chat/custom_gpt', 'host', 'cloud.example.com'),
+        ('https://azurekong.hertzai.com.evil/chat/custom_gpt', 'host',
          'azurekong.hertzai.com.evil'),
-        ('https://azurekong.hertzai.com@evil.com/chat/custom_gpt', 'evil.com'),
-        ('https://evil.com/azurekong.hertzai.com/chat/custom_gpt', 'evil.com'),
-        ('http://azurekong.hertzai.com/chat/custom_gpt', 'azurekong.hertzai.com'),
-        ('https://azurekong.hertzai.com:8443/chat/custom_gpt',
+        ('https://azurekong.hertzai.com@evil.com/chat/custom_gpt', 'userinfo',
+         'evil.com'),
+        ('https://evil.com/azurekong.hertzai.com/chat/custom_gpt', 'host',
+         'evil.com'),
+        ('http://azurekong.hertzai.com/chat/custom_gpt', 'scheme',
+         'azurekong.hertzai.com'),
+        ('https://azurekong.hertzai.com:8443/chat/custom_gpt', 'port',
          'azurekong.hertzai.com'),
         # cleaned to the central by urlsplit, so refused: the URL approved
         # must be the URL called
-        ('https://azure\tkong.hertzai.com/chat/custom_gpt',
+        ('https://azure\tkong.hertzai.com/chat/custom_gpt', 'characters',
          'azurekong.hertzai.com'),
-    ])
+    ]
+
+    @pytest.mark.parametrize('endpoint, mismatch, host', NOT_CENTRAL)
     def test_an_agent_endpoint_that_is_no_central_gets_no_authorization(
-            self, client, node, caplog, monkeypatch, endpoint, host):
+            self, client, node, caplog, monkeypatch, endpoint, mismatch, host):
+        """Nothing goes to it, from any source: the turn is a miss whose
+        reason names what is not a central's (host, scheme, port, userinfo
+        or characters) and the endpoint's host, never a bearer."""
         monkeypatch.setenv('HEVOLVE_LLM_API_KEY', self.NODE_KEY)
         with self._agent_with_endpoint(endpoint):
-            self._turn(client, caplog, f'Bearer {self.PAGE_LOGIN}',
-                       prompt_id=None, agent_id='cloud_radha')
-        assert [s['url'] for s in node['sent']] == [endpoint]
-        assert 'Authorization' not in node['sent'][0]['headers']
-        warning = next(r.getMessage() for r in caplog.records
-                       if 'is not a known central' in r.getMessage())
-        assert f'endpoint host {host!r}' in warning
+            body = self._turn(client, caplog, f'Bearer {self.PAGE_LOGIN}',
+                              prompt_id=None, agent_id='cloud_radha')
+        assert node['sent'] == [] and body['text'] == 'local says hi'
+        assert (f'(endpoint is not a known central: its {mismatch} '
+                f'(host {host!r}))') in self._miss(caplog)
         self._no_bearer_logged(caplog)
 
     @pytest.mark.parametrize('caller', ['offline', 'no authorization', 'phone'])
@@ -583,7 +589,7 @@ class TestAgentRouting:
         # have left pointing at a stale copy.
         import importlib
         sync_engine = importlib.import_module('integrations.social.sync_engine')
-        monkeypatch.delattr(sync_engine, 'is_central_origin')
+        monkeypatch.delattr(sync_engine, 'central_origin_mismatch')
         authorization = f'Bearer {self.PAGE_LOGIN}'
         if caller == 'offline':
             node['online'] = False
@@ -602,8 +608,9 @@ class TestAgentRouting:
         elsewhere = 'https://chat.example.net/chat/custom_gpt'
         with patch.dict(cr.CLOUD_API_CONFIG, {'chat_endpoint': elsewhere}):
             self._turn(client, caplog, f'Bearer {self.PAGE_LOGIN}')
-        assert [s['url'] for s in node['sent']] == [elsewhere]
-        assert 'Authorization' not in node['sent'][0]['headers']
+        assert node['sent'] == []
+        assert ("(endpoint is not a known central: its host "
+                "(host 'chat.example.net'))") in self._miss(caplog)
         self._no_bearer_logged(caplog)
 
     def test_a_central_agent_endpoint_written_differently_keeps_its_bearer(
@@ -615,6 +622,66 @@ class TestAgentRouting:
         assert [s['url'] for s in node['sent']] == [endpoint]
         assert node['sent'][0]['headers']['Authorization'] == \
             f'Bearer {self.PAGE_LOGIN}'
+        self._no_bearer_logged(caplog)
+
+    # ── /prompts lists a cloud agent as usable exactly when its turn goes ──
+    # One rule (_cloud_turn_can_reach_central) for the listing and the
+    # forward: a key-only node listed every cloud agent as available while
+    # each of its turns missed (review of 65bf814d).
+
+    def _listed(self, client, authorization=None):
+        import routes.chatbot_routes as cr
+        headers = {'Authorization': authorization} if authorization else {}
+        with patch.object(cr, 'HEVOLVE_PROMPTS_AVAILABLE', False):
+            return client.get('/prompts?type=cloud',
+                              headers=headers).get_json()['prompts']
+
+    def test_a_key_only_node_lists_no_cloud_agent_as_available(
+            self, client, node, monkeypatch):
+        monkeypatch.setenv('HEVOLVE_LLM_API_KEY', self.NODE_KEY)
+        listed = self._listed(client)
+        assert listed and not any(a['available'] for a in listed)
+
+    def test_a_signed_in_page_lists_the_cloud_agents_as_available(
+            self, client, node):
+        listed = self._listed(client, f'Bearer {self.PAGE_LOGIN}')
+        assert listed and all(a['available'] for a in listed)
+
+    CALLERS = ['no authorization', 'page login', 'node key only',
+               'page login and node key', 'phone', 'phone and node key',
+               'offline']
+
+    @pytest.mark.parametrize('endpoint', [
+        CENTRAL, 'https://AzureKong.HertzAI.com:443/chat/teachme2',
+        *(endpoint for endpoint, _mismatch, _host in NOT_CENTRAL)])
+    @pytest.mark.parametrize('caller', CALLERS)
+    def test_the_listing_and_the_turn_agree(
+            self, flask_app, client, node, caplog, monkeypatch, caller,
+            endpoint):
+        authorization = None
+        if 'page login' in caller:
+            authorization = f'Bearer {self.PAGE_LOGIN}'
+        if 'node key' in caller:
+            monkeypatch.setenv('HEVOLVE_LLM_API_KEY', self.NODE_KEY)
+        if 'phone' in caller:
+            self._as_phone(flask_app)
+            authorization = f'Bearer {self.DEVICE_TOKEN}'
+        if caller == 'offline':
+            node['online'] = False
+            authorization = f'Bearer {self.PAGE_LOGIN}'
+        with self._agent_with_endpoint(endpoint):
+            listed = self._listed(client, authorization)
+            body = self._turn(client, caplog, authorization, prompt_id=None,
+                              agent_id='cloud_radha')
+        available = any(a['id'] == 'cloud_radha' and a['available']
+                        for a in listed)
+        went = [s for s in node['sent'] if 'Authorization' in s['headers']]
+        assert available == bool(went) == (body['text'] == 'cloud says hi')
+        central = endpoint in (self.CENTRAL,
+                               'https://AzureKong.HertzAI.com:443/chat/teachme2')
+        assert available == ('page login' in caller and central)
+        assert all(s['headers']['Authorization'] == f'Bearer {self.PAGE_LOGIN}'
+                   for s in went)
         self._no_bearer_logged(caplog)
 
 

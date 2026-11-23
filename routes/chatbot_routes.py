@@ -2353,6 +2353,52 @@ CLOUD_API_CONFIG = {
 }
 
 
+def _cloud_turn_can_reach_central(agent_config, online):
+    """Whether the current request's cloud-agent turn can be answered by
+    central: ``(endpoint, authorization, miss)``.
+
+    The one rule for both the /prompts availability flag and the CLOUD AGENT
+    forward, so a listed cloud agent is one whose turn goes.  ``endpoint``
+    is the agent's cloud_endpoint, else CLOUD_API_CONFIG's.  The turn goes
+    only online, with a bearer, to a central: the bearer is the page's own
+    login (the inbound Authorization), and it goes only when the endpoint's
+    ORIGIN is a known central (HARTOS's sync_engine.is_central_origin).  No
+    other credential stands in: HEVOLVE_LLM_API_KEY is the person's own key
+    for their LLM provider (desktop/ai_key_vault.py), which central cannot
+    take; a phone's device token only this desktop proves (central answers
+    it 401, measured 2026-11-23 on the Cafe agent 344), so it never leaves
+    the node.  ``authorization`` is the header to send, None with ``miss``
+    the reason when the turn cannot go.  The cheap misses come before
+    HARTOS's rule is imported, so a turn that needs no bearer never depends
+    on it (app.py --validate holds a bundle to having it).  The reason names
+    what about the endpoint is not a central's (HARTOS's sync_engine.
+    central_origin_mismatch: its host, scheme, port, userinfo or
+    characters) and the endpoint's host, never a bearer.
+    """
+    endpoint = ((agent_config or {}).get('cloud_endpoint')
+                or CLOUD_API_CONFIG['chat_endpoint'])
+    authorization = request.headers.get('Authorization')
+    if not online:
+        return endpoint, None, 'no internet'
+    if is_admitted_device():
+        return (endpoint, None,
+                'this desktop cannot act for this phone on central yet')
+    if not authorization:
+        return endpoint, None, 'not signed in'
+    from integrations.social.sync_engine import central_origin_mismatch
+    mismatch = central_origin_mismatch(endpoint)
+    if mismatch:
+        from urllib.parse import urlsplit
+        try:
+            host = urlsplit(endpoint).hostname
+        except ValueError:      # a malformed URL names no host
+            host = None
+        return (endpoint, None,
+                f'endpoint is not a known central: its {mismatch} '
+                f'(host {host!r})')
+    return endpoint, authorization, ''
+
+
 _internet_cache = {'online': False, 'checked_at': 0}
 # Concurrency primitives for check_internet_connection.
 #   _internet_check_lock guards _internet_cache writes + _internet_check_in_flight
@@ -2544,13 +2590,16 @@ def get_prompts_route():
         except Exception as e:
             logger.warning(f'HARTOS agent fetch failed: {e}')
 
-    # ── 3. Cloud agents last (only when online + authenticated) ──
-    has_auth = bool(request.headers.get('Authorization') or os.environ.get('HEVOLVE_LLM_API_KEY'))
+    # ── 3. Cloud agents last (only when online; usable when its turn goes) ──
+    # Available exactly when the CLOUD AGENT forward would send its turn
+    # (_cloud_turn_can_reach_central, the one rule): guests can see but
+    # not use.
     if agent_type in ['all', 'cloud'] and is_online:
         for agent in CLOUD_AGENTS:
             if not any(_is_same_agent(a, agent) for a in agents):
                 agent_copy = agent.copy()
-                agent_copy['available'] = has_auth  # guests can see but not use
+                agent_copy['available'] = bool(
+                    _cloud_turn_can_reach_central(agent, is_online)[1])
                 agent_copy['origin'] = ORIGIN_HIVE
                 agents.append(agent_copy)
 
@@ -3118,33 +3167,14 @@ def _run_chat_turn(data):
     # it (offline, not signed in, an error), local_assistant answers it here:
     # no turn is refused.
     #
-    # Its bearer is the page's own login (the inbound Authorization), a
-    # person's credential, so it goes only when the ORIGIN of the endpoint
-    # actually called is a known central (HARTOS's one rule, sync_engine.
-    # is_central_origin), whichever config named that endpoint.  No other
-    # credential stands in: HEVOLVE_LLM_API_KEY is the person's own key for
-    # their LLM provider (desktop/ai_key_vault.py), which central cannot take,
-    # so it is never sent here.  A phone the owner allowed carries its device
-    # token, which only this desktop proves: that token is never sent off
-    # the node (central refuses it, 401, measured 2026-11-23 on the Cafe
-    # agent 344), so its turn is a miss.  The cheap misses come before
-    # HARTOS's rule is imported, so a turn that needs no bearer never
-    # depends on it (app.py --validate holds a bundle to having it).  No
-    # bearer is ever logged, only the reason and the endpoint's host.
+    # Whether it can go, where and with which bearer is
+    # _cloud_turn_can_reach_central's answer, the same one /prompts lists
+    # cloud agents by.  No bearer is ever logged, only the reason.
     if agent_type == 'cloud':
         logger.info(f'Chat with CLOUD agent: {agent_id}')
-        auth_header = request.headers.get('Authorization')
-        if not check_internet_connection():
-            _cloud_miss = 'no internet'
-        elif is_admitted_device():
-            _cloud_miss = 'this desktop cannot act for this phone on central yet'
-        elif not auth_header:
-            _cloud_miss = 'not signed in'
-        else:
-            from integrations.social.sync_engine import is_central_origin
-            cloud_endpoint = CLOUD_API_CONFIG['chat_endpoint']
-            if agent_config and agent_config.get('cloud_endpoint'):
-                cloud_endpoint = agent_config['cloud_endpoint']
+        cloud_endpoint, auth_header, _cloud_miss = _cloud_turn_can_reach_central(
+            agent_config, check_internet_connection())
+        if auth_header:
             payload = {
                 'text': text,
                 'user_id': user_id,
@@ -3156,19 +3186,8 @@ def _run_chat_turn(data):
             # chatbot.py custom_gpt: getprompt/?prompt_id=).
             if prompt_id:
                 payload['prompt_id'] = prompt_id
-            cloud_headers = {'Content-Type': 'application/json'}
-            if is_central_origin(cloud_endpoint):
-                cloud_headers['Authorization'] = auth_header
-            else:
-                from urllib.parse import urlsplit
-                try:
-                    _host = urlsplit(cloud_endpoint).hostname
-                except ValueError:      # a malformed URL names no host
-                    _host = None
-                logger.warning(
-                    'Cloud agent %s: its endpoint host %r is not a known '
-                    'central; the turn goes with no Authorization',
-                    agent_id, _host)
+            cloud_headers = {'Content-Type': 'application/json',
+                             'Authorization': auth_header}
             try:
                 response = requests.post(
                     cloud_endpoint,

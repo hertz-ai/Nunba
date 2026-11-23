@@ -2631,14 +2631,15 @@ if getattr(args, 'validate', False):
             ('_active_tier', lambda v: 'Tier-1' in str(v),
              'Backend adapter not on Tier-1 — check hart_intelligence import chain'),
         ],
-        # The rule routes/chatbot_routes.py's CLOUD AGENT block imports by
-        # name, unguarded (first-party HARTOS is never try/except-degraded):
-        # a bundled HARTOS without it would fail every signed-in cloud-agent
-        # turn, so it fails the build instead.
+        # The rule routes/chatbot_routes.py's _cloud_turn_can_reach_central
+        # imports by name, unguarded (first-party HARTOS is never
+        # try/except-degraded): a bundled HARTOS without it would fail every
+        # signed-in cloud-agent turn and /prompts listing, so it fails the
+        # build instead.
         'integrations.social.sync_engine': [
-            ('is_central_origin', callable,
-             'bundled HARTOS has no is_central_origin: every signed-in '
-             'cloud-agent turn would fail'),
+            ('central_origin_mismatch', callable,
+             'bundled HARTOS has no central_origin_mismatch: every '
+             'signed-in cloud-agent turn would fail'),
         ],
     }
 
