@@ -6,14 +6,15 @@
  *                                     HARTOS cuts it (crossbar_publish
  *                                     ._note_turn_send: partition on
  *                                     '-intermediate', a turn in front)
- *   chatBubble.isShownInTurn          the same words, the same turn
+ *   chatBubble.isShownInTurn          a turn's reply and a send of it, same words
  *   ttsClipPlayer.claimSpeech         the window's one record of what it said
- *   ttsGuards.isSpokenByTurnClip      a send the turn's clip says
+ *   ttsClipPlayer.clipKey             one clip, however its url is written
+ *   ttsGuards.isSpokenByTurnClip      a send the server stamped turn_voiced
  *   ttsGuards.claimLocalReplySpeech   a reply spoken here vs a clip of its turn
  */
 import {isShownInTurn, isTurnSend, turnIdOf, TURN_SEND_MARK} from '../../constants/chatBubble';
-import {claimSpeech, playTtsClip, _resetTtsClipPlayer} from '../../services/ttsClipPlayer';
-import {claimLocalReplySpeech, isSpokenByTurnClip, shouldSpeakPushedText} from '../../utils/ttsGuards';
+import {claimSpeech, clipKey, playTtsClip, _resetTtsClipPlayer} from '../../services/ttsClipPlayer';
+import {claimLocalReplySpeech, isSendOfPendingTurn, isSpokenByTurnClip, shouldSpeakPushedText} from '../../utils/ttsGuards';
 
 function fakeAudio() {
   return {
@@ -46,24 +47,48 @@ describe('the turn a request id names', () => {
   });
 });
 
-describe('the same words, the same turn', () => {
-  const rows = [
-    {type: 'user', content: 'Hi', turnId: 't1'},
-    {type: 'assistant', content: 'Well  done!\n', turnId: 't1'},
-    {type: 'assistant', content: 'No turn here'},
-  ];
+describe('a reply and a send of its turn with the same words', () => {
+  const send = (extra = {}) => ({type: 'assistant', content: 'Well  done!\n', turnId: 't1',
+    turnSend: true, ...extra});
+  const reply = (extra = {}) => ({type: 'assistant', content: 'Well done!', turnId: 't1',
+    turnReply: true, ...extra});
 
-  test('matched on turn, type and words (whitespace aside)', () => {
-    expect(isShownInTurn(rows, {type: 'assistant', content: 'Well done!', turnId: 't1'})).toBe(true);
+  test('the reply after a send of its turn repeats it (whitespace aside)', () => {
+    expect(isShownInTurn([send()], reply())).toBe(true);
   });
 
-  test('never across turns, never for a row with no turn, never on other words', () => {
-    expect(isShownInTurn(rows, {type: 'assistant', content: 'Well done!', turnId: 't2'})).toBe(false);
-    expect(isShownInTurn(rows, {type: 'assistant', content: 'No turn here'})).toBe(false);
-    expect(isShownInTurn(rows, {type: 'assistant', content: 'No turn here', turnId: ''})).toBe(false);
-    expect(isShownInTurn(rows, {type: 'assistant', content: 'Hi', turnId: 't1'})).toBe(false);
-    expect(isShownInTurn(rows, {type: 'assistant', content: 'Well', turnId: 't1'})).toBe(false);
-    expect(isShownInTurn(rows, {type: 'assistant', content: '  ', turnId: 't1'})).toBe(false);
+  test('a send after the reply repeats it only when the server says it was sent in the turn', () => {
+    expect(isShownInTurn([reply()], send({turnVoiced: true}))).toBe(true);
+    expect(isShownInTurn([reply()], send())).toBe(false);
+  });
+
+  test('two sends never repeat each other, stamped or not', () => {
+    expect(isShownInTurn([send()], send())).toBe(false);
+    expect(isShownInTurn([send({turnVoiced: true})], send({turnVoiced: true}))).toBe(false);
+  });
+
+  test('never across turns, for a row with no turn, on other words or another type', () => {
+    expect(isShownInTurn([send()], reply({turnId: 't2'}))).toBe(false);
+    expect(isShownInTurn([send({turnId: undefined})], reply({turnId: undefined}))).toBe(false);
+    expect(isShownInTurn([send()], reply({content: 'Well'}))).toBe(false);
+    expect(isShownInTurn([send()], reply({content: '  '}))).toBe(false);
+    expect(isShownInTurn([send({type: 'user'})], reply())).toBe(false);
+  });
+
+  test('two msg_ids must be the same one; one side without a msg_id still matches', () => {
+    expect(isShownInTurn([send({msgId: 'a'})], reply({msgId: 'b'}))).toBe(false);
+    expect(isShownInTurn([send({msgId: 'a'})], reply({msgId: 'a'}))).toBe(true);
+    expect(isShownInTurn([send({msgId: 'a'})], reply())).toBe(true);
+  });
+});
+
+describe('one clip, however its url is written', () => {
+  test('the phone bundle\'s absolute url and the page\'s path are one key', () => {
+    expect(clipKey('http://192.168.0.5:5000/tts/audio/x.wav')).toBe(clipKey('/tts/audio/x.wav'));
+    expect(clipKey('https://node.example/tts/audio/x.wav')).toBe('clip:/tts/audio/x.wav');
+    expect(clipKey('/tts/audio/y.wav')).not.toBe(clipKey('/tts/audio/x.wav'));
+    expect(clipKey('')).toBe('');
+    expect(clipKey(undefined)).toBe('');
   });
 });
 
@@ -88,13 +113,32 @@ describe('what the window already said', () => {
 });
 
 describe('a send the turn\'s clip says', () => {
-  test('a person\'s turn\'s sends; never a goal turn\'s, a turn\'s own id, or none', () => {
-    expect(isSpokenByTurnClip('msg_1-intermediate')).toBe(true);
-    expect(isSpokenByTurnClip('msg_1-intermediate-2')).toBe(true);
-    expect(isSpokenByTurnClip('daemon_g1-intermediate')).toBe(false);
-    expect(isSpokenByTurnClip('msg_1')).toBe(false);
-    expect(isSpokenByTurnClip('')).toBe(false);
-    expect(isSpokenByTurnClip(undefined)).toBe(false);
+  const stamped = (rid) => ({request_id: rid, turn_voiced: true});
+
+  test('only a send the server stamped turn_voiced, of a person\'s turn', () => {
+    expect(isSpokenByTurnClip(stamped('msg_1-intermediate'))).toBe(true);
+    expect(isSpokenByTurnClip(stamped('msg_1-intermediate-2'))).toBe(true);
+    expect(isSpokenByTurnClip(stamped('daemon_g1-intermediate'))).toBe(false);
+    expect(isSpokenByTurnClip(stamped('msg_1'))).toBe(false);
+    expect(isSpokenByTurnClip(stamped(''))).toBe(false);
+    expect(isSpokenByTurnClip(null)).toBe(false);
+  });
+
+  test('without the stamp, whatever the id says, it is not (review of 4fef48aa)', () => {
+    expect(isSpokenByTurnClip({request_id: 'msg_1-intermediate'})).toBe(false);
+    expect(isSpokenByTurnClip({request_id: 'msg_1-intermediate-4821'})).toBe(false);
+    expect(isSpokenByTurnClip({request_id: '10202_342-intermediate'})).toBe(false);
+    expect(isSpokenByTurnClip({request_id: 'msg_1-intermediate', turn_voiced: 'true'})).toBe(false);
+  });
+
+  test('a send of the turn the page still waits on: the page knows without the stamp', () => {
+    expect(isSendOfPendingTurn({request_id: 'msg_1-intermediate-3'}, 'msg_1')).toBe(true);
+    expect(isSendOfPendingTurn({request_id: 'msg_1-intermediate-3'}, null)).toBe(false);
+    expect(isSendOfPendingTurn({request_id: 'msg_2-intermediate'}, 'msg_1')).toBe(false);
+    expect(isSendOfPendingTurn({request_id: 'msg_1'}, 'msg_1')).toBe(false);
+    expect(isSendOfPendingTurn({request_id: 'daemon_g-intermediate'}, 'daemon_g')).toBe(false);
+    expect(shouldSpeakPushedText({request_id: 'msg_1-intermediate', msg_id: 'q1'}, 1, 'msg_1')).toBe(false);
+    expect(shouldSpeakPushedText({request_id: 'msg_1-intermediate', msg_id: 'q2'}, 1, null)).toBe(true);
   });
 
   test('a pushed message is spoken once per window by its msg_id', () => {

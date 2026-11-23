@@ -71,16 +71,26 @@ export function isTurnSend(requestId) {
     && requestId.indexOf(TURN_SEND_MARK) > 0;
 }
 
-// Whether `rows` already show `row`'s words for `row`'s turn: the same
-// `turnId` and the same text (whitespace aside).  A turn's line reaches the
-// page twice when a send of the turn and the turn's HTTP reply carry it, in
-// either order; the second is not shown.  A row with no turn is never
-// matched, so the same words in another turn, or from no turn, still show.
+// Whether `row` repeats a line `rows` already show for its turn: a turn's
+// HTTP reply (`turnReply`) and a pushed send of that turn (`turnSend`) with
+// the same words (whitespace aside), in either order.  The reply repeats a
+// send shown before it (that send came while the turn ran); a send repeats
+// a reply shown before it only when the server says it was sent inside the
+// turn (`turnVoiced`, HARTOS crossbar_publish.turn_voiced): a scheduled
+// reminder carries the last turn's id too, and is a new line.  Two pushes
+// never repeat each other (the same reminder twice is said twice), rows of
+// another turn or of no turn never match, and two rows that both carry a
+// msg_id match only when it is the same.
 export function isShownInTurn(rows, row) {
   if (!row || !row.turnId || !Array.isArray(rows)) return false;
   const words = (t) => String(t || '').replace(/\s+/g, ' ').trim();
   const text = words(row.content);
   if (!text) return false;
-  return rows.some((m) => m && m.turnId === row.turnId
-    && m.type === row.type && words(m.content) === text);
+  const repeats = (m) => (row.turnReply
+    ? (m.turnSend === true && !m.turnReply)
+    : (row.turnSend === true && row.turnVoiced === true && m.turnReply === true));
+  return rows.some((m) => m && m.turnId === row.turnId && m.type === row.type
+    && repeats(m)
+    && !(m.msgId && row.msgId && m.msgId !== row.msgId)
+    && words(m.content) === text);
 }

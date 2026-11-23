@@ -28,7 +28,7 @@ import { WAMP_LOCAL_URL, WAMP_CLOUD_URL, SOCIAL_API_URL } from '../config/apiBas
 import { selectPdf, selectImage } from '../utils/attachmentUpload';
 import { isLocalBackendHost, localWampUrl } from '../utils/backendHost';
 import { rememberServerPromptId } from '../utils/promptId';
-import { CHAT_BUBBLE_PRIORITY, CHAT_ACTION_THINKING, CHAT_ACTION_STATUS, isOtherTurnEnvelope, isShownInTurn, turnIdOf } from '../constants/chatBubble';
+import { CHAT_BUBBLE_PRIORITY, CHAT_ACTION_THINKING, CHAT_ACTION_STATUS, isOtherTurnEnvelope, isShownInTurn, isTurnSend, turnIdOf } from '../constants/chatBubble';
 import {animateScroll as scrollLibrary} from 'react-scroll';
 
 import autobahn from 'autobahn';
@@ -69,7 +69,7 @@ import {useTTS} from '../hooks/useTTS';
 import {useConsentedCameraStream} from '../hooks/useCameraConsent';
 import {sttConfigMessage, startContinuousRecognition, addressedToNunba, micTurnText, OPEN_MIC_CUE} from '../hooks/useSpeechRecognition';
 import {getTtsAudioElement} from '../services/ttsAudioElement';
-import {playTtsClip} from '../services/ttsClipPlayer';
+import {claimSpeech, clipKey, playTtsClip} from '../services/ttsClipPlayer';
 
 // ── Local engine readiness — gates messageQueue while local LLM is booting.
 //    Returns true in steady-state and on health-endpoint failure (optimistic),
@@ -281,6 +281,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   // copy in review), so for a moment the ref named the previous turn.
   const [requestId, setRequestId] = useState(null);
   const requestIdRef = useRef(null);
+  // The turn whose /chat POST is still out (its reply not back yet), else
+  // null: a send of that turn arriving meanwhile is one the turn's clip will
+  // say (utils/ttsGuards.shouldSpeakPushedText).  Set and cleared around the
+  // POST in handleSend only.
+  const replyPendingRef = useRef(null);
   // Per-msg_id dedup map.  The same priority=49 thinking trace can
   // arrive at handleDataReceived via THREE paths for a single chat
   // turn:
@@ -2468,10 +2473,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         setThinkingStartTime(null);
       }
 
-      // The turn a pushed line belongs to (chatBubble.turnIdOf): a line this
-      // turn already shows (its HTTP reply, or the same send delivered
-      // again) is not shown twice (chatBubble.isShownInTurn).
-      const pushedTurnId = turnIdOf(parsed.request_id);
+      // The turn a pushed line belongs to (chatBubble.turnIdOf), whether it
+      // is a send of that turn, whether the server says it was sent inside
+      // the turn (turn_voiced) and its msg_id: a send that repeats the
+      // turn's HTTP reply is not shown twice (chatBubble.isShownInTurn).
+      const pushedTurn = {
+        turnId: turnIdOf(parsed.request_id),
+        turnSend: isTurnSend(parsed.request_id),
+        turnVoiced: parsed.turn_voiced === true,
+        msgId: parsed.msg_id,
+      };
 
       if (isTextMode) {
         if (extractedText) {
@@ -2481,7 +2492,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             source: parsed.source || 'cloud',
             servedBy: parsed.served_by,
             nodeTier: parsed.node_tier,
-            turnId: pushedTurnId,
+            ...pushedTurn,
           };
           setMessages((prev) => {
             if (isShownInTurn(prev, assistantMessage)) return prev;
@@ -2511,7 +2522,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           source: parsed.source || 'cloud',
           servedBy: parsed.served_by,
           nodeTier: parsed.node_tier,
-          turnId: pushedTurnId,
+          ...pushedTurn,
         };
 
         setMessages((prev) => {
@@ -2534,10 +2545,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           };
           // Race: audio arrival vs 5s timeout
           const timeout = setTimeout(startTypewriter, 5000);
-          // Not a line the turn's clip says (a send during a person's turn):
-          // spoken here as well, it was heard twice (utils/ttsGuards
+          // Not a line the turn's clip will say (the server stamped it
+          // turn_voiced, or it is a send of the turn this page still waits
+          // on): spoken here as well, it was heard twice (utils/ttsGuards
           // .shouldSpeakPushedText).  Such a line types out now.
-          if (shouldSpeakPushedText(parsed)) {
+          if (shouldSpeakPushedText(parsed, Date.now(), replyPendingRef.current)) {
             tts.speak(extractedText).then(() => {
               clearTimeout(timeout);
               startTypewriter();
@@ -2567,7 +2579,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             source: parsed.source,
             servedBy: parsed.served_by,
             nodeTier: parsed.node_tier,
-            turnId: pushedTurnId,
+            ...pushedTurn,
           };
           setMessages((prev) => {
             if (isShownInTurn(prev, assistantMessage)) return prev;
@@ -2579,9 +2591,15 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           setWaitingText(null);
         }
 
+        // The <audio autoPlay src={audioUrl}> below plays this clip: it asks
+        // the window's one record of what was said first, so a clip already
+        // played here (the same clip pushed as TTS) is not played again, and
+        // one played here is not played again by the TTS player.
+        const audioToPlay = responseAudioUrl && claimSpeech(clipKey(responseAudioUrl))
+          ? responseAudioUrl : '';
         setVideoUrl(responseVideoUrl);
-        setAudioUrl(responseAudioUrl);
-        setIsPlayingResponse(true);
+        setAudioUrl(audioToPlay);
+        setIsPlayingResponse(Boolean(audioToPlay || responseVideoUrl));
         setLoading(false);
         setIsRequestInFlight(false);
       }
@@ -4341,6 +4359,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             // (chatbot_routes.py:2427-2439) doesn't try to read a
             // non-existent prompt file at PROMPTS_DIR/{prompt_id}.json.
             const _promptIdForBackend = _isOrphan ? 0 : (currentAgent?.prompt_id ?? 0);
+            // This turn's reply is out until the POST settles: a send of the
+            // turn that arrives meanwhile is said by the turn's clip.
+            replyPendingRef.current = msgId;
             const localResult = await chatApi.chat({
               text: inputMessage,
               user_id: effectiveUserId,
@@ -4358,6 +4379,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               // Local | Hybrid | Hive from the toggle: a Hive turn runs here
               // first and escalates (HARTOS speculative_dispatcher).
               intelligence_preference: intelligencePreference,
+            }).finally(() => {
+              if (replyPendingRef.current === msgId) replyPendingRef.current = null;
             });
             // isRequestInFlight is cleared below, once the reply (or the
             // reason there is none) is on screen.
@@ -4562,9 +4585,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                   speculationId: resultData.speculation_id,
                   isDraft: true,
                 }),
-                // This turn's: a send of the turn pushed with the same words
-                // is shown once, whichever lands first (chatBubble.isShownInTurn).
+                // This turn's reply: a send of the turn pushed with the same
+                // words is shown once, whichever lands first
+                // (chatBubble.isShownInTurn).
                 turnId: msgId,
+                turnReply: true,
+                msgId: resultData.msg_id,
               };
               setMessages((prev) => {
                 const updated = [...prev];
