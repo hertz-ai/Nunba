@@ -295,8 +295,8 @@ function InputBar({liveRun}) {
         // Social panel's send does) and goes with it, so the reply's voice
         // plays on this desktop (utils/ttsGuards.shouldPlayPushedClip: only
         // the device used speaks a turn).  This window plays no audio; the
-        // main window reads the record from the last-turn key both windows
-        // share (one WebView2 profile, one origin).  Sent with no id, the
+        // main window reads the record from the list of turns sent that both
+        // windows share (one WebView2 profile, one origin).  Sent with no id, the
         // server minted one no window knew and the turn went silent.
         const requestId = makeMsgId();
         rememberOwnTurn(requestId);

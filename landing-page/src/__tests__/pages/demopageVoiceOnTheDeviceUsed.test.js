@@ -15,8 +15,8 @@
  * a clip whose turn (its request id cut at '-intermediate') is a person's
  * turn plays only when this page started that turn (utils/chatRetry
  * turnsStartedHere: every turn Demopage or the Social panel sent, every ask
- * this window answered, and the last turn sent, kept across a reload as RN
- * keeps keyID).  A clip of no person's turn ('', None, 'null', undefined)
+ * this window answered, and the desktop's turns sent, kept across a reload
+ * as RN keeps keyID).  A clip of no person's turn ('', None, 'null', undefined)
  * plays as before; a background agent's (daemon_) is skipped as before.  The
  * reply's text still shows on every device: only the voice is gated.
  *
@@ -147,14 +147,17 @@ describe('only the device you used speaks a turn', () => {
 });
 
 describe('the turn record', () => {
-  test('startTurn, the page\'s one minting of a turn, records it, and the last one survives a reload', () => {
+  test('startTurn, the page\'s one minting of a turn, records it, and the turns sent survive a reload', () => {
     const {startTurn, turnsStartedHere} = require('../../utils/chatRetry');
     const a = startTurn({current: null});
     const b = startTurn({current: null});
     expect([...turnsStartedHere()]).toEqual(expect.arrayContaining([a, b]));
     jest.resetModules();
     const fresh = require('../../utils/chatRetry');
-    expect([...fresh.turnsStartedHere()]).toEqual([b]);
+    // Every turn sent, not only the last (review of 79df4713 + ac152433:
+    // one slot silenced the earlier turn's reply after a reload).
+    expect([...fresh.turnsStartedHere()]).toEqual([a, b]);
+    expect(fresh.lastTurnStartedHere()).toBe(b);
   });
 
   test('a storage that throws leaves the page working on the turns it holds', () => {

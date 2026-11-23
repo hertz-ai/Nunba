@@ -190,7 +190,7 @@ describe('the companion\'s quick prompt is a turn of this desktop', () => {
     expect(a).not.toBe(b);
   });
 
-  test('a turn typed in the main window after the companion\'s: the companion\'s late clip does not speak over it', async () => {
+  test('a turn typed in the main window after the companion\'s: the companion\'s late clip does not speak over it (case 3)', async () => {
     const sentIds = companionBridge();
     const desktop = desktopWindow();
     render(<VoiceOrbPage />);
@@ -211,6 +211,75 @@ describe('the companion\'s quick prompt is a turn of this desktop', () => {
     desktop.send();
     desktop.playPushedTts(clip('bc4ed03d', '/tts/audio/tablet2.wav'));
     expect(desktop.played()).toBe(0);
+  });
+});
+
+// Review of 79df4713 + ac152433 (REJECTED): the desktop kept one turn in
+// localStorage, the last sent, so an earlier turn of the desktop that had
+// not been spoken yet went silent where origin/main played it.  The desktop
+// keeps the turns it sent as a bounded list, which every window and a
+// reload read.
+describe('every turn this desktop sent is kept, not only the last', () => {
+  test('case 1: the page idle, two quick prompts, the first one\'s clip lands after the second was sent: it plays', async () => {
+    const sentIds = companionBridge();
+    const desktop = desktopWindow();
+    render(<VoiceOrbPage />);
+    await typeAndSend('first');
+    await typeAndSend('second');
+    const [c1, c2] = sentIds().map(turnOfClip);
+    desktop.playPushedTts(clip(c1, '/tts/audio/c1.wav'));
+    desktop.playPushedTts(clip(c2, '/tts/audio/c2.wav'));
+    expect(desktop.played()).toBe(2);
+  });
+
+  test('case 2: the page sends two turns, reloads, then the first one\'s clip lands: it plays', () => {
+    const before = desktopWindow();
+    const m1 = before.send();
+    before.send();
+    const reloaded = desktopWindow();          // a new realm: no memory, no current turn
+    reloaded.playPushedTts(clip(m1, '/tts/audio/m1.wav'));
+    expect(reloaded.played()).toBe(1);
+  });
+
+  test('the list is bounded: the newest 50 turns sent, the oldest dropped', () => {
+    const before = desktopWindow();
+    const ids = Array.from({length: 55}, () => before.send());
+    const {SENT_TURNS_KEY} = require('../../utils/chatRetry');
+    expect(JSON.parse(localStorage.getItem(SENT_TURNS_KEY))).toEqual(ids.slice(-50));
+    const reloaded = desktopWindow();
+    reloaded.playPushedTts(clip(ids[0], '/tts/audio/a0.wav'));    // dropped
+    reloaded.playPushedTts(clip(ids[5], '/tts/audio/a5.wav'));
+    reloaded.playPushedTts(clip(ids[54], '/tts/audio/a54.wav'));
+    expect(reloaded.played()).toBe(2);
+  });
+
+  test('a store that throws on every read and write: the page still speaks its own turn, and only its own', () => {
+    const setItem = Storage.prototype.setItem;
+    const getItem = Storage.prototype.getItem;
+    Storage.prototype.setItem = () => { throw new Error('blocked'); };
+    Storage.prototype.getItem = () => { throw new Error('blocked'); };
+    try {
+      const desktop = desktopWindow();
+      const m1 = desktop.send();
+      desktop.playPushedTts(clip(m1, '/tts/audio/m1.wav'));
+      desktop.playPushedTts(clip('f25d90c5', '/tts/audio/tablet.wav'));
+      expect(desktop.played()).toBe(1);
+    } finally {
+      Storage.prototype.setItem = setItem;
+      Storage.prototype.getItem = getItem;
+    }
+  });
+
+  test('a store holding something that is not a list of turns is read as no turns', () => {
+    const {SENT_TURNS_KEY} = require('../../utils/chatRetry');
+    ['{not json', '"msg_1_abc"', '{"a":1}', '[1, null, "  "]'].forEach((junk) => {
+      localStorage.setItem(String(SENT_TURNS_KEY), junk);
+      const desktop = desktopWindow();
+      desktop.playPushedTts(clip('f25d90c5', '/tts/audio/tablet.wav'));
+      const m1 = desktop.send();
+      desktop.playPushedTts(clip(m1, `/tts/audio/${junk.length}.wav`));
+      expect(desktop.played()).toBe(1);
+    });
   });
 });
 
