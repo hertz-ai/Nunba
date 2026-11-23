@@ -86,6 +86,36 @@ describe('TypeWriterSubtitle, clock mode', () => {
     expect(container.textContent).toBe(TEXT);
   });
 
+  // Every re-run of the effect now starts the clock again (c2b149fe), so
+  // startAnimation must resume from the characters already shown.  A parent
+  // that passes a new onComplete each render re-runs it on every render.
+  test('repeated re-runs mid-line resume, they do not stall the line', () => {
+    const { container, rerender } = render(
+      <TypeWriterForSubtitle text={TEXT} duration={2} isIdle={false} onComplete={() => {}} />,
+    );
+    for (let i = 0; i < 6; i += 1) {
+      act(() => { jest.advanceTimersByTime(300); });
+      rerender(<TypeWriterForSubtitle text={TEXT} duration={2} isIdle={false} onComplete={() => {}} />);
+    }
+    act(() => { jest.advanceTimersByTime(500); });
+    expect(container.textContent).toBe(TEXT);
+  });
+
+  // ...and a finished line must stay finished: a re-run never types it again
+  // or reports it complete a second time.
+  test('a finished line re-rendered completes once', () => {
+    const done = jest.fn();
+    const { container, rerender } = render(
+      <TypeWriterForSubtitle text={TEXT} duration={2} isIdle={false} onComplete={done} />,
+    );
+    act(() => { jest.advanceTimersByTime(2500); });
+    expect(done).toHaveBeenCalledTimes(1);
+    rerender(<TypeWriterForSubtitle text={TEXT} duration={3} isIdle={false} onComplete={() => done()} />);
+    act(() => { jest.advanceTimersByTime(4000); });
+    expect(container.textContent).toBe(TEXT);
+    expect(done).toHaveBeenCalledTimes(1);
+  });
+
   // The idle video shows the whole line; when the reply's video starts the
   // line types.  It went blank: the re-run took neither start branch.
   test('the line types when the idle video gives way, it does not go blank', () => {
