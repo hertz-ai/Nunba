@@ -395,9 +395,12 @@ export const consentApi = {
   // Never cached: consent answers also arrive from other windows and devices
   // (realtime re-reads) and a revoke/reopen that 404s invalidates nothing,
   // so a cached read showed the old state for up to the 60 s TTL.
-  list: ({consent_type, active_only} = {}, config = {}) => {
+  // agent_id: the agent a page asks about; each row's agent_state then says
+  // where that agent stands (Admin, one agent, Permissions).
+  list: ({consent_type, active_only, agent_id} = {}, config = {}) => {
     const params = {};
     if (consent_type !== undefined) params.consent_type = consent_type;
+    if (agent_id !== undefined) params.agent_id = agent_id;
     if (active_only !== undefined) {
       params.active_only = active_only ? 'true' : 'false';
     }
@@ -1011,6 +1014,23 @@ export const auditApi = {
   getConversations: (agentId) =>
     socialApi.get(`/audit/agents/${agentId}/conversations`),
   getThinking: (agentId) => socialApi.get(`/audit/agents/${agentId}/thinking`),
+  // The audit trail (HARTOS security.audit_trail): every message, transcript,
+  // caption, file, model call and spoken reply for one agent, with hashes.
+  // The page says why a call failed itself (silentError + keepStatus), so a
+  // refusal is never shown as an empty trail or a "session expired" banner.
+  getTrail: (agentId, params) =>
+    socialApi.get(`/audit/agents/${agentId}/trail`,
+      {params, cache: false, silentError: true, keepStatus: true}),
+  exportTrail: (agentId, params) =>
+    socialApi.get(`/audit/agents/${agentId}/trail/export`, {
+      params,
+      cache: false,
+      responseType: 'text',
+      silentError: true,
+      keepStatus: true,
+    }),
+  verifyTrail: () => socialApi.get('/audit/trail/verify',
+    {cache: false, silentError: true, keepStatus: true}),
   getDaemonActivity: () => socialApi.get('/audit/daemon/activity'),
   getDaemonGoals: (params) => socialApi.get('/audit/daemon/goals', {params}),
   getComputeNodes: () => socialApi.get('/audit/compute/nodes'),

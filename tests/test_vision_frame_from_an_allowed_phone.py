@@ -7,13 +7,16 @@ g.auth_source == 'device'; the route's own guard, require_local_or_token,
 then refused it because a phone is neither this machine nor the local token.
 So the agent on the desktop never saw the child the phone was pointed at.
 
-The fix lets that phone in at the route too, and only as its token's user:
-the gate holds a JSON body's user_id to the token (#51), and this body is a
-JPEG, so the route holds the query's user_id to it.  Every other caller is
-judged exactly as before.
+The fix lets that phone in at the route too, and only as its token's user.
+HARTOS's gate holds every user a phone names to its token: a JSON body's
+user_id (#51), and the query's user_id or X-User-Id beside a body that is
+not JSON, as this JPEG.  The route held the query and header itself until
+the gate did; now it only ever acts as the token's user.  Every other caller
+is judged exactly as before.
 
-The gate itself is HARTOS's and has its own tests; here a before_request
-hook stands in for it, setting what it sets on an admitted phone.
+The gate itself is HARTOS's and has its own tests; in most classes here a
+before_request hook stands in for it, setting what it sets on an admitted
+phone.  TestTheRealGateInFrontOfTheRoute runs HARTOS's own gate.
 """
 import os
 import sys
@@ -124,20 +127,21 @@ class TestAnAllowedPhoneIsLetIn:
 
 class TestAnAllowedPhoneActsOnlyAsItsUser:
 
-    def test_naming_another_user_in_the_query_is_refused(self, setup):
+    @pytest.mark.parametrize('query, headers', [
+        (f'?user_id={_OTHER}', None),
+        ('', {'X-User-Id': _OTHER}),
+        (f'?user_id={_OTHER}', {'X-User-Id': _OTHER}),
+    ])
+    def test_a_frame_is_never_kept_under_a_user_the_phone_only_named(
+            self, setup, query, headers):
+        """The stand-in gate lets everything through, as a gate older than
+        the query and header hold would: even then the other user gets no
+        frame.  (In front of the real gate the phone is refused, 403:
+        TestTheRealGateInFrontOfTheRoute.)"""
         client, gate, store = setup
         gate['admitted'] = True
-        resp = _post(client, f'?user_id={_OTHER}')
-        assert resp.status_code == 403
-        assert 'drop user_id' in resp.get_json()['error']      # says what to do
-        assert store.frames == []
-
-    def test_naming_another_user_in_the_header_is_refused(self, setup):
-        client, gate, store = setup
-        gate['admitted'] = True
-        resp = _post(client, headers={'X-User-Id': _OTHER})
-        assert resp.status_code == 403
-        assert store.frames == []
+        _post(client, query, headers=headers)
+        assert _OTHER not in [f[1] for f in store.frames]
 
     def test_a_token_naming_no_user_is_not_let_in(self, setup):
         client, gate, store = setup
@@ -157,6 +161,77 @@ class TestAnAllowedPhoneActsOnlyAsItsUser:
     def test_another_kind_of_admission_is_not_a_phone(self, setup):
         client, gate, store = setup
         gate.update(admitted=True, auth_source='jwt')
+        resp = _post(client, f'?user_id={_OWNER}')
+        assert resp.status_code == 401
+        assert store.frames == []
+
+
+class TestTheRealGateInFrontOfTheRoute:
+    """HARTOS's own gate (security.middleware) before the route, as on a
+    desktop.  Only the token check is stood in for (it needs the owner's
+    grant on file): it answers what verify_device_jwt answers for a phone
+    the owner allowed."""
+
+    @pytest.fixture
+    def gated(self, monkeypatch):
+        import contextlib
+        import types
+        from unittest.mock import patch
+        import integrations.social.auth as social_auth
+        import integrations.social.models as models
+        from security.middleware import _apply_api_auth
+
+        monkeypatch.setenv('NUNBA_BUNDLED', '1')
+        monkeypatch.setenv('HEVOLVE_NODE_TIER', 'flat')
+        monkeypatch.setenv('HEVOLVE_OWNER_USER_ID', _OWNER)
+        for name in ('HEVOLVE_API_KEY', 'TRUSTED_PROXY', 'NUNBA_CI'):
+            monkeypatch.delenv(name, raising=False)
+        svc = _Service()
+        monkeypatch.setattr(cr, '_get_vision_service', lambda: svc)
+        monkeypatch.setattr(
+            social_auth, 'verify_device_jwt',
+            lambda db, token, owner: {'status': 'ok', 'public_key': _PHONE_KEY,
+                                      'payload': {'user_id': _OWNER}})
+
+        @contextlib.contextmanager
+        def _no_db(*args, **kwargs):
+            yield None
+        monkeypatch.setattr(models, 'db_session', _no_db)
+        app = Flask('gated')
+        app.config['TESTING'] = True
+        _apply_api_auth(app)
+        cr.register_routes(app)
+        secrets = {'security.secrets_manager': types.SimpleNamespace(
+            get_secret=lambda name: '')}
+        with patch.dict(sys.modules, secrets):
+            yield app.test_client(), svc.store
+
+    _TOKEN = {'Authorization': 'Bearer a.phone.token'}
+
+    def test_naming_another_user_in_the_query_is_refused(self, gated):
+        client, store = gated
+        resp = _post(client, f'?user_id={_OTHER}', headers=self._TOKEN)
+        assert resp.status_code == 403
+        assert 'drop user_id' in resp.get_json()['error']      # says what to do
+        assert store.frames == []
+
+    def test_naming_another_user_in_the_header_is_refused(self, gated):
+        client, store = gated
+        resp = _post(client, headers={**self._TOKEN, 'X-User-Id': _OTHER})
+        assert resp.status_code == 403
+        assert store.frames == []
+
+    @pytest.mark.parametrize('query', ['', '?channel=camera',
+                                       f'?user_id={_OWNER}&channel=camera'])
+    def test_the_phones_own_frame_is_kept_named_or_not(self, gated, query):
+        client, store = gated
+        resp = _post(client, query, headers=self._TOKEN)
+        assert resp.status_code == 204, resp.get_data(as_text=True)
+        assert [f[:3] for f in store.frames] == [('camera', _OWNER, _JPEG)]
+        assert store.frames[0][3] == f'device:{_PHONE_PRINT}'
+
+    def test_no_token_from_the_network_is_refused(self, gated):
+        client, store = gated
         resp = _post(client, f'?user_id={_OWNER}')
         assert resp.status_code == 401
         assert store.frames == []

@@ -1438,6 +1438,17 @@ def _is_venv_backend(backend: str) -> bool:
         return False
 
 
+def _spoke_this_session(backend: str) -> bool:
+    """True when a handshake of ``backend`` produced real audio in this
+    run (tts_handshake.is_verified_backend).  False when that cannot be
+    read."""
+    try:
+        from tts import tts_handshake
+        return bool(tts_handshake.is_verified_backend(backend))
+    except Exception:
+        return False
+
+
 def _probe_backend_runnable(backend: str, required_pkg: str) -> bool:
     """Single-call probe: is this backend runnable right now?
 
@@ -1550,7 +1561,7 @@ class TTSEngine:
         self._demoted_backends: set[str] = set()
         # When each demotion was first written and when it expires, kept so
         # a later save does not restart an older entry's 7-day clock.
-        self._demotion_meta: dict[str, dict[str, float]] = {}
+        self._demotion_meta: dict[str, dict[str, Any]] = {}
         # 3 strikes is the same threshold the model_lifecycle.py
         # eviction guard uses — keep it consistent across the codebase
         # so failures observed by either subsystem trip a single,
@@ -1570,6 +1581,23 @@ class TTSEngine:
             self._load_persisted_demotions()
         except Exception as _he:
             logger.debug(f"TTS demotion hydrate skipped: {_he}")
+        # A voice set aside for want of a key comes back when the key is
+        # stored: the vault says so where it stores it.  Without HARTOS no
+        # voice is ever set aside for a key.
+        try:
+            from hartos.ai_key_vault import on_credential_stored
+        except ImportError:
+            pass
+        else:
+            on_credential_stored(TTSEngine.restore_voices_waiting_for)
+        # ... and is set aside again when the key is taken back (a HARTOS
+        # from before that signal has none to give).
+        try:
+            from hartos.ai_key_vault import on_credential_removed
+        except ImportError:
+            pass
+        else:
+            on_credential_removed(TTSEngine.set_aside_voices_restored_for)
 
         # Hardware info (detected lazily)
         self.gpu_info = None
@@ -1708,8 +1736,18 @@ class TTSEngine:
                     backend, required_pkg,
                 )
             if not TTSEngine._import_check_cache[cache_key]:
-                logger.debug(f"Backend {backend} skipped: '{required_pkg}' not runnable")
-                return False
+                # The import probe said no, and a real synthesis through
+                # this backend has passed since (tts_handshake): audio on
+                # disk outranks a probe.  The probe cannot run at all in a
+                # source run (it needs the frozen app's python-embed) and
+                # answers "not runnable" there for every backend, so a
+                # voice that had just been set up, verified and used was
+                # "missing" again on the next turn: its setup was started
+                # again and the line was handed to Piper, which has no
+                # voice for the language (live walk, 22 Nov 2026, Tamil).
+                if not _spoke_this_session(backend):
+                    logger.debug(f"Backend {backend} skipped: '{required_pkg}' not runnable")
+                    return False
 
         # ── GPU backends need working CUDA in torch ──
         required_vram = cap.get('vram_gb', 0)
@@ -2145,6 +2183,19 @@ class TTSEngine:
         'cudnn_status_not_initialized',
     )
 
+    @staticmethod
+    def _needed_key(error: BaseException | None) -> str:
+        """The key a failure says the voice's repo wants ('' when it wants
+        none): the worker answer's ``needs_key`` field, which the adapter
+        puts on the exception.
+
+        Read from this exception only, never from what it was raised
+        under.  A fallback voice fails inside the ``except`` of the voice
+        before it, so the first voice's failure is its ``__context__``: a
+        fallback that died of something else was recorded as waiting for
+        the first voice's key (review rv_4625: xtts_v2)."""
+        return str(getattr(error, 'needs_key', '') or '')
+
     @classmethod
     def _is_structural_error(cls, error: Exception | None) -> bool:
         """Classify a synth failure as structural or transient.
@@ -2157,6 +2208,20 @@ class TTSEngine:
         """
         if error is None:
             return False
+        # The worker's own flags come before any text.  ``transient``: the
+        # failure passes by itself (a crash mid-request, or a start that hit
+        # the network, the disk or the GPU's memory), whatever its words
+        # say; 'worker startup failed' alone read every such start as a
+        # broken voice.  ``key_refused``: the repo turned the stored key down
+        # and will refuse it again, so one start is enough (HARTOS
+        # ai_key_vault.gated_weights_failure; no sentence of that answer is
+        # matched here).
+        if getattr(error, 'transient', False):
+            return False
+        # This exception's own field only: what it was raised under may be
+        # another voice's failure (see _needed_key).
+        if getattr(error, 'key_refused', False):
+            return True
         seen: set[int] = set()
         cur: BaseException | None = error
         while cur is not None and id(cur) not in seen:
@@ -2257,6 +2322,16 @@ class TTSEngine:
 
         if n >= threshold and backend not in self._demoted_backends:
             self._demoted_backends.add(backend)
+            # A voice set aside for want of a key says which key, so that
+            # storing it brings the voice back (restore_voices_waiting_for).
+            needed = self._needed_key(error)
+            if needed:
+                import time as _time
+                _now = _time.time()
+                self._demotion_meta.setdefault(backend, {
+                    'first_demoted_at': _now,
+                    'expires_at': _now + _DEMOTION_TTL_SECONDS,
+                })['needs_key'] = needed
             kind = 'STRUCTURAL' if structural else 'transient'
             err_summary = ''
             if error is not None:
@@ -2377,6 +2452,8 @@ class TTSEngine:
                     first, (int, float)) else now,
                 'expires_at': expires_at,
             }
+            if isinstance(info.get('needs_key'), str) and info['needs_key']:
+                self._demotion_meta[backend]['needs_key'] = info['needs_key']
             hydrated.append(backend)
 
         if hydrated:
@@ -2428,6 +2505,8 @@ class TTSEngine:
                 'failures_at_demotion': self._consecutive_failures.get(
                     backend, self._failure_threshold),
             }
+            if meta.get('needs_key'):
+                demoted_payload[backend]['needs_key'] = meta['needs_key']
         payload = {
             'schema': _TTS_STATE_SCHEMA,
             'updated_at': now,
@@ -2463,6 +2542,111 @@ class TTSEngine:
                 raise
         except OSError as e:
             logger.warning(f"Failed to persist TTS demotion state: {e}")
+
+    @classmethod
+    def restore_voices_waiting_for(cls, key_name: str) -> list[str]:
+        """Put back every voice that was set aside for want of ``key_name``
+        (its repo turned the stored key down, or none was stored), and only
+        those: on file, and in the running engine.  Returns their names.
+
+        Called by HARTOS's key vault each time a credential is stored
+        (ai_key_vault.on_credential_stored; the name only, never a value).
+        Without it a voice demoted for 7 days stayed demoted after the
+        owner stored a working key (review rv_2ae3).  If the new key is
+        refused too, the next start demotes the voice again."""
+        if not key_name:
+            return []
+        with cls._restore_lock:
+            return cls._restore_voices_waiting_for(key_name)
+
+    _restore_lock = threading.Lock()
+
+    @classmethod
+    def _restore_voices_waiting_for(cls, key_name: str) -> list[str]:
+        """restore_voices_waiting_for, one caller at a time: two keys stored
+        together each read the saved file and write it back."""
+        waiting: set[str] = set()
+        # What each voice's demotion was, kept for this run: if the key is
+        # taken back (set_aside_voices_restored_for) the same demotion, with
+        # its own clock, is put back.
+        was = cls._restored_for.setdefault(key_name, {})
+        path = _get_tts_state_path()
+        try:
+            with open(path, encoding='utf-8') as _f:
+                persisted = json.load(_f).get('demoted')
+        except (OSError, ValueError, AttributeError):
+            persisted = None
+        if isinstance(persisted, dict):
+            for backend, info in persisted.items():
+                if isinstance(info, dict) and info.get('needs_key') == key_name:
+                    waiting.add(backend)
+                    was[backend] = dict(info)
+        engine = _engine
+        if engine is not None:
+            for backend, meta in list(engine._demotion_meta.items()):
+                if meta.get('needs_key') == key_name:
+                    waiting.add(backend)
+                    was.setdefault(backend, dict(
+                        meta, failures_at_demotion=engine._consecutive_failures
+                        .get(backend, engine._failure_threshold)))
+            for backend in waiting:
+                engine._demoted_backends.discard(backend)
+                engine._demotion_meta.pop(backend, None)
+                engine._consecutive_failures[backend] = 0
+        for backend in waiting:
+            cls.clear_persisted_demotions(backend)
+        if waiting:
+            logger.info(
+                f"TTS: {key_name} was stored; back on the ladder: "
+                f"{', '.join(sorted(waiting))}")
+        return sorted(waiting)
+
+    # key name -> {voice: the demotion it had}, for the voices this run put
+    # back when that key was stored.
+    _restored_for: dict[str, dict[str, dict[str, Any]]] = {}
+
+    @classmethod
+    def set_aside_voices_restored_for(cls, key_name: str) -> list[str]:
+        """The other way: ``key_name`` was taken back (a revoked consent
+        answer; HARTOS ai_key_vault.on_credential_removed).  The voices this
+        run put back when that key was stored are set aside again, with the
+        demotion they had, on file and in the running engine.  Returns
+        their names.
+
+        Without it a voice brought back for a key that is gone again would
+        be started once more for nothing.  Only what this run restored is
+        known: after a restart the voice is found out by its next start,
+        as it was the first time."""
+        if not key_name:
+            return []
+        import time as _time
+        with cls._restore_lock:
+            was = cls._restored_for.pop(key_name, {})
+            now = _time.time()
+            again = {backend: info for backend, info in was.items()
+                     if backend not in (BACKEND_PIPER, BACKEND_NONE)
+                     and isinstance(info.get('expires_at'), (int, float))
+                     and info['expires_at'] > now}
+            if not again:
+                return []
+            # The running engine, or one made only to write the file the
+            # way every demotion is written (it loads what is saved first).
+            engine = _engine if _engine is not None else TTSEngine(
+                auto_init=False)
+            for backend, info in again.items():
+                engine._demoted_backends.add(backend)
+                engine._consecutive_failures[backend] = info.get(
+                    'failures_at_demotion', engine._failure_threshold)
+                engine._demotion_meta[backend] = {
+                    'first_demoted_at': info.get('first_demoted_at', now),
+                    'expires_at': info['expires_at'],
+                    'needs_key': key_name,
+                }
+            engine._save_persisted_demotions()
+            logger.info(
+                f"TTS: {key_name} was taken back; set aside again: "
+                f"{', '.join(sorted(again))}")
+            return sorted(again)
 
     @classmethod
     def clear_persisted_demotions(cls, backend: str | None = None) -> int:
@@ -4038,8 +4222,21 @@ class _SubprocessTTSBackend:
             # Preserve the transient flag on the exception so TTSEngine's
             # fallback chain can short-circuit straight to Piper on GPU
             # OOM, instead of walking every other GPU engine.
-            err = RuntimeError(f"{self._engine_id}: {result['error']}")
+            # What the worker died of, when it says so (HARTOS gpu_worker:
+            # the answer's ``cause``): the reason itself goes with the
+            # error, into the log line and to whoever reads this failure.
+            # The error's words alone were "died during startup (exit=1)".
+            said = str(result['error'])
+            cause = str(result.get('cause') or '')
+            if cause and cause not in said:
+                said = f"{said} (cause: {cause})"
+            err = RuntimeError(f"{self._engine_id}: {said}")
+            err.cause = cause  # type: ignore[attr-defined]
             err.transient = bool(result.get('transient'))  # type: ignore[attr-defined]
+            # Which key the voice's repo wants, and whether it refused the
+            # stored one (HARTOS ai_key_vault.gated_weights_failure).
+            err.needs_key = str(result.get('needs_key') or '')  # type: ignore[attr-defined]
+            err.key_refused = bool(result.get('key_refused'))  # type: ignore[attr-defined]
             raise err
         return result.get('path', output_path)
 

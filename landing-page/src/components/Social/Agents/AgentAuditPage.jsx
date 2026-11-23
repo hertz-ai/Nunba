@@ -1,6 +1,10 @@
 /* eslint-disable no-unused-vars */
 import {useSocial} from '../../../contexts/SocialContext';
 import {auditApi} from '../../../services/socialApi';
+import {
+  trailBody, trailCheckChip, trailError, trailKindFilters, trailWho,
+} from '../../../utils/auditTrail';
+import {saveTextFile} from '../../../utils/nativeFilePicker';
 import {formatTier} from '../../../utils/tier';
 import {useRoleAccess} from '../../RoleGuard';
 
@@ -182,6 +186,150 @@ function ActivityTimeline({events, loading}) {
   );
 }
 
+const TRAIL_PAGE = 500;
+const TRAIL_EXPORT_CAP = 5000;
+
+function TrailView({agentId}) {
+  const [kind, setKind] = useState('');
+  // The kinds HARTOS says this trail can be filtered by (meta.kinds).
+  const [kinds, setKinds] = useState([]);
+  const [rows, setRows] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [check, setCheck] = useState({state: 'checking'});
+  const [exportNote, setExportNote] = useState('');
+
+  useEffect(() => {
+    if (!agentId) return;
+    setBusy(true);
+    setError('');
+    setExportNote('');
+    auditApi
+      .getTrail(agentId, {kinds: kind || undefined, limit: TRAIL_PAGE})
+      .then((res) => {
+        setRows(res?.data || []);
+        if (Array.isArray(res?.meta?.kinds)) setKinds(res.meta.kinds);
+      })
+      .catch((err) => {
+        setRows([]);
+        setError(trailError(err));
+      })
+      .finally(() => setBusy(false));
+  }, [agentId, kind]);
+
+  // The chain check covers every agent's lines on this node, so it runs once
+  // when the panel opens, not on every agent picked.
+  useEffect(() => {
+    auditApi
+      .verifyTrail()
+      .then((res) => setCheck({state: 'done', ...(res?.data || {})}))
+      .catch((err) => setCheck({state: 'failed', why: trailError(err)}));
+  }, []);
+
+  const exportJsonl = async () => {
+    setExportNote('');
+    try {
+      const text = await auditApi.exportTrail(agentId,
+        {kinds: kind || undefined, limit: TRAIL_EXPORT_CAP});
+      const lines = String(text || '').split('\n').filter(Boolean).length;
+      if (!lines) {
+        setExportNote('Nothing to export for this agent yet.');
+        return;
+      }
+      const safeId = String(agentId).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
+      const res = await saveTextFile(`audit_${safeId}.jsonl`, text, 'application/x-ndjson');
+      if (!res.saved) {
+        setExportNote(res.cancelled
+          ? 'Export cancelled; nothing was saved.'
+          : `Export failed: ${res.error}`);
+        return;
+      }
+      const capped = lines >= TRAIL_EXPORT_CAP
+        ? ` That is the ${TRAIL_EXPORT_CAP}-line limit, so there may be older lines; the complete record is on the node: the trail's lines in its audit_trail folder, the security events in its database.`
+        : '';
+      setExportNote(`Exported ${lines} line(s) to ${res.where}.${capped}`);
+    } catch (err) {
+      setExportNote(`Export failed. ${trailError(err)}`);
+    }
+  };
+
+  const checkChip = trailCheckChip(check);
+
+  return (
+    <Box sx={{mb: 2}}>
+      <Box sx={{display: 'flex', alignItems: 'center', gap: 1, mb: 1, flexWrap: 'wrap'}}>
+        <Typography variant="subtitle2" sx={{color: 'rgba(255,255,255,0.6)'}}>
+          Audit trail
+        </Typography>
+        <Chip
+          size="small"
+          variant="outlined"
+          label={checkChip.label}
+          title={checkChip.title}
+          sx={{color: checkChip.color, borderColor: `${checkChip.color}66`}}
+        />
+        <Chip size="small" variant="outlined" label="Export" onClick={exportJsonl}
+          sx={{color: '#6C63FF', borderColor: '#6C63FF66', ml: 'auto'}} />
+      </Box>
+      {exportNote && (
+        <Typography variant="caption" sx={{display: 'block', color: 'rgba(255,255,255,0.6)', mb: 1}}>
+          {exportNote}
+        </Typography>
+      )}
+      <Box sx={{display: 'flex', gap: 0.5, mb: 1, flexWrap: 'wrap'}}>
+        {trailKindFilters(kinds).map(([k, label]) => (
+          <Chip key={k || 'all'} label={label} size="small" variant="outlined"
+            onClick={() => setKind(k)}
+            sx={{
+              color: kind === k ? '#6C63FF' : 'rgba(255,255,255,0.4)',
+              borderColor: kind === k ? '#6C63FF' : 'rgba(255,255,255,0.1)',
+              fontSize: '0.7rem',
+            }} />
+        ))}
+      </Box>
+      {busy ? (
+        <CircularProgress size={20} sx={{color: '#6C63FF'}} />
+      ) : error ? (
+        <Typography variant="body2" sx={{color: '#FF9800', py: 1}}>
+          {error}
+        </Typography>
+      ) : rows.length === 0 ? (
+        <Typography variant="body2" sx={{color: 'rgba(255,255,255,0.4)', py: 1}}>
+          Nothing recorded for this agent yet
+        </Typography>
+      ) : (
+        <>
+        {rows.length >= TRAIL_PAGE && (
+          <Typography variant="caption" sx={{display: 'block', color: 'rgba(255,255,255,0.4)'}}>
+            Showing the newest {TRAIL_PAGE} lines; Export has up to {TRAIL_EXPORT_CAP}.
+          </Typography>
+        )}
+        <List dense disablePadding>
+          {rows.map((row) => (
+            <ListItem key={row.hash} sx={{px: 0, alignItems: 'flex-start'}}>
+              <ListItemText
+                primary={
+                  <Typography variant="body2" sx={{color: '#fff', fontSize: '0.8125rem', whiteSpace: 'pre-wrap'}}>
+                    {trailBody(row)}
+                  </Typography>
+                }
+                secondary={
+                  <Typography variant="caption" sx={{color: 'rgba(255,255,255,0.35)'}}>
+                    {row.ts ? new Date(row.ts).toLocaleString() : ''} · {row.kind} {row.dir === 'out' ? '→' : row.dir === 'in' ? '←' : ''} · {trailWho(row)}
+                    {row.sha256 ? ` · sha256 ${row.sha256.slice(0, 12)}` : ''}
+                    {row.bytes ? ` · ${row.bytes} bytes` : ''}
+                  </Typography>
+                }
+              />
+            </ListItem>
+          ))}
+        </List>
+        </>
+      )}
+    </Box>
+  );
+}
+
 function DaemonGoalCard({goal}) {
   const progress = goal.progress;
   const pct = progress
@@ -291,8 +439,8 @@ function ComputeNodeCard({node}) {
 
 export default function AgentAuditPage() {
   const {accessTier} = useSocial();
-  const {canAccess} = useRoleAccess();
-  const canSeeCompute = canAccess('regional');
+  // useRoleAccess has no canAccess; calling it threw on every render.
+  const {isRegional: canSeeCompute} = useRoleAccess();
 
   const [tab, setTab] = useState(0);
   const [agents, setAgents] = useState([]);
@@ -551,6 +699,7 @@ export default function AgentAuditPage() {
                   </Box>
                 </Box>
                 <Divider sx={{borderColor: 'rgba(255,255,255,0.06)', mb: 2}} />
+                <TrailView agentId={selectedAgent.id || selectedAgent.agent_id} />
                 <Typography
                   variant="subtitle2"
                   sx={{color: 'rgba(255,255,255,0.6)', mb: 1}}

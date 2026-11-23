@@ -27,7 +27,8 @@ from werkzeug.utils import secure_filename
 # Canonical auth gate for endpoints that accept LOCAL FILESYSTEM PATHS
 # (vs multipart uploads).  Stacked above @upload_bp.route on
 # /upload/native so the wrapped function is registered with Flask.
-from routes.auth import require_local_or_token
+from routes.auth import (
+    admitted_device_user, is_admitted_device, require_local_or_token)
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +173,26 @@ def _start_book_parse(pdf_path, user_id, request_id):
         return None
 
 
+def _form_user():
+    """``(user_id, refusal)``: whose upload this is, or the answer to give.
+
+    A caller on this machine names the user in the form's user_id, '0'
+    when it names none, as it always has.  A phone the owner allowed
+    (HARTOS's gate admitted it and holds any user it names to its token)
+    acts as its token's user, named or not: with no user_id in its form the
+    upload was filed under '0', nobody's.  A phone whose token names no
+    user is told so; nothing is filed for nobody.
+    """
+    if not is_admitted_device():
+        return request.form.get('user_id', '0'), None
+    user_id = admitted_device_user()
+    if user_id is None:
+        return None, (jsonify({
+            "error": "This phone's token names no user. Sign in on the "
+                     "phone, then send again."}), 401)
+    return user_id, None
+
+
 # ── Routes ──
 
 @upload_bp.route('/upload/file', methods=['POST'])
@@ -185,7 +206,9 @@ def upload_file():
     if not file_obj:
         return jsonify({"error": "No file provided"}), 400
 
-    user_id = request.form.get('user_id', '0')
+    user_id, refusal = _form_user()
+    if refusal:
+        return refusal
     request_id = request.form.get('request_id', '')
     prompt_id = request.form.get('prompt_id')
     agent = request.form.get('agent')
@@ -237,7 +260,9 @@ def upload_image():
     if not image_file:
         return jsonify({"error": "No image provided"}), 400
 
-    user_id = request.form.get('user_id', '0')
+    user_id, refusal = _form_user()
+    if refusal:
+        return refusal
     name_param = request.form.get('name', '')
     request_id = request.form.get('request_id', '')
 
@@ -280,7 +305,9 @@ def upload_audio():
     if not audio_file:
         return jsonify({"error": "No audio provided"}), 400
 
-    user_id = request.form.get('user_id', '0')
+    user_id, refusal = _form_user()
+    if refusal:
+        return refusal
     request_id = request.form.get('request_id', '')
 
     saved_path, name, _ = _save_file(audio_file, AUDIO_DIR)

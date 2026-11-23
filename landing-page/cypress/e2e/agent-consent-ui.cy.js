@@ -23,7 +23,15 @@
 const CONSENT_REQUEST = {
   request_id: 'req-consent-e2e-001',
   agent_id: 'claude_orchestrator',
-  agent_name: 'Claude Orchestrator',
+  // A name HARTOS and the page's dated fallback word DIFFERENTLY, so the
+  // spec can tell which one the card showed: HARTOS says "Agent AgentÜber",
+  // the fallback (constants/consentAsks.askerName, due for deletion by
+  // 2026-12-31) would say "AgentÜber".  With "Claude Orchestrator" both gave
+  // "Agent Claude Orchestrator" and the spec passed on either.
+  agent_name: 'AgentÜber',
+  // What the route sends beside the name since 72f4493f, and what the card
+  // shows.
+  agent_asker: 'Agent AgentÜber',
   reason:
     'Authorize WhatsApp onboarding outreach via the hive — reach 10K users via seeded marketing goals.',
   requires_consent: true,
@@ -68,7 +76,7 @@ describe('agent consent UI', () => {
     // MUI Slide wrapper may keep the dialog momentarily off-screen
     // during animation, so we assert "exists in DOM" rather than
     // "visible in viewport".
-    cy.contains(CONSENT_REQUEST.agent_name, {timeout: 8000}).should('exist');
+    cy.contains(CONSENT_REQUEST.agent_asker, {timeout: 8000}).should('exist');
     cy.contains('wants to talk to you').should('exist');
     cy.contains(CONSENT_REQUEST.reason).should('exist');
 
