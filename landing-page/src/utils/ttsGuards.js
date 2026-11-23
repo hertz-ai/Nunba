@@ -77,37 +77,15 @@ export function shouldPlayPushedClip(data, currentRequestId, ttsEnabled) {
 
 
 /**
- * Whether the server's clip of a turn will say this pushed message: HARTOS
- * stamps `turn_voiced: true` on a send it published inside a person's /chat
- * turn whose reply it voices (core/peer_link/crossbar_publish.turn_voiced),
- * and _chat_reply then speaks every such send with the reply in ONE clip
- * (turn_speech_text).  The stamp is the server's word, not the request id's
- * shape: a send under a turn's mark is not always voiced (a scheduled REUSE
- * run or a camera result under the last turn's id, CREATE's
- * '<user>_<prompt>' fallback id, central's posts, review of 4fef48aa), and
- * a page that did not start the turn (the tablet's, seen on the desktop)
- * cannot tell.  The mark and a person's turn are still required, so a stray
- * stamp silences nothing else.
+ * Whether the server's clip of a turn says this message: one an agent sent
+ * during a person's turn ('<turn>-intermediate', chatBubble.isTurnSend).
+ * HARTOS's _chat_reply speaks every such send with the reply, in ONE clip
+ * under the turn's id (core/peer_link/crossbar_publish.turn_speech_text).  A
+ * background turn's (daemon_<goal>) is never voiced by the server
+ * (dispatch.is_genuine_user_request), so its sends are not covered.
  */
-export function isSpokenByTurnClip(data) {
-  if (!data || data.turn_voiced !== true) return false;
-  const requestId = data.request_id;
+export function isSpokenByTurnClip(requestId) {
   return isTurnSend(requestId) && !isBackgroundRequest(turnIdOf(requestId));
-}
-
-
-/**
- * Whether a pushed send belongs to the turn this page started and whose
- * reply it is still waiting for (`pendingTurnId`, Demopage's
- * replyPendingRef): the page's own node voices that turn's sends in the
- * turn's clip, and the page knows it without the server's stamp.  A goal
- * turn's never (no clip voices one).
- */
-export function isSendOfPendingTurn(data, pendingTurnId) {
-  if (!data || !pendingTurnId) return false;
-  const requestId = data.request_id;
-  return isTurnSend(requestId) && turnIdOf(requestId) === pendingTurnId
-    && !isBackgroundRequest(pendingTurnId);
 }
 
 
@@ -116,17 +94,14 @@ export function isSendOfPendingTurn(data, pendingTurnId) {
  * already checked the speaker and the engine).  Not one the turn's clip will
  * say: the page spoke it as it arrived and the clip said it again, two voices
  * for one line (owner 2026-11-23), and for a turn the tablet started the
- * desktop spoke it too.  Known two ways: the server's stamp
- * (isSpokenByTurnClip, any turn, the tablet's included), or a send of the
- * turn this page is still waiting on (isSendOfPendingTurn).  Every other
- * message is spoken here as before (a reminder, a notice published outside a
- * turn, a goal turn's send, CREATE's fallback id, a message from a node that
- * does not stamp).  Each message once per window, by its msg_id (the same
- * words sent again are another message, a cue repeated to a child).
+ * desktop spoke it too.  What the server never voices is still spoken here: a
+ * background turn's send, a notice published outside a turn (Reel Studio),
+ * a message with no request id.  Each message once per window, by its msg_id
+ * (the same words sent again are another message, a cue repeated to a child).
  */
-export function shouldSpeakPushedText(data, now = Date.now(), pendingTurnId = null) {
+export function shouldSpeakPushedText(data, now = Date.now()) {
   if (!data) return false;
-  if (isSpokenByTurnClip(data) || isSendOfPendingTurn(data, pendingTurnId)) return false;
+  if (isSpokenByTurnClip(data.request_id)) return false;
   return claimSpeech(data.msg_id ? `msg:${data.msg_id}` : '', now);
 }
 

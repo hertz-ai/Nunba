@@ -111,12 +111,10 @@ function imports(el, loads) {
 
 // The desktop page with its speaker on, current turn `turn` (null: it has
 // started none).
-// `pending`: the turn whose /chat POST is still out (replyPendingRef).
-function desktopPage({turn = null, textMode = false, speaker = true, pending = null} = {}) {
+function desktopPage({turn = null, textMode = false, speaker = true} = {}) {
   const el = audioElement();
   const loads = [];
   let messages = [];
-  const audioUrls = [];
   const speak = jest.fn(() => Promise.resolve());
   const requestIdRef = {current: turn};
   const scope = {
@@ -134,7 +132,6 @@ function desktopPage({turn = null, textMode = false, speaker = true, pending = n
     staleClearRef: {current: null},
     audioRef: {current: null},
     requestIdRef,
-    replyPendingRef: {current: pending},
     ttsEnabledRef: {current: speaker},
     ttsEnabled: speaker,
     tts: {isAvailable: true, speak, stop: () => {}},
@@ -150,7 +147,7 @@ function desktopPage({turn = null, textMode = false, speaker = true, pending = n
     setDuration: () => {},
     setWaitingText: () => {},
     setVideoUrl: () => {},
-    setAudioUrl: (u) => { audioUrls.push(u); },
+    setAudioUrl: () => {},
     setIsPlayingResponse: () => {},
   };
   const names = bindable(scope);
@@ -158,9 +155,8 @@ function desktopPage({turn = null, textMode = false, speaker = true, pending = n
   const page = new Function(...names,
     `${HANDLERS}\nreturn {playPushedTts, handleDataReceived};`)(
     ...names.map((n) => scope[n]));
-  const httpReply = (msgId, text, replyMsgId) => {
-    const resultData = {text, source: 'langchain_local',
-      ...(replyMsgId ? {msg_id: replyMsgId} : {})};
+  const httpReply = (msgId, text) => {
+    const resultData = {text, source: 'langchain_local'};
     const s = {...scope, resultData, msgId};
     const keys = bindable(s);
     // eslint-disable-next-line no-new-func
@@ -174,7 +170,6 @@ function desktopPage({turn = null, textMode = false, speaker = true, pending = n
     loads,
     requestIdRef,
     rows: () => messages.filter((m) => m.type === 'assistant').map((m) => m.content),
-    audioUrls: () => audioUrls,
   };
 }
 
@@ -193,16 +188,11 @@ function panelPlayer(page, {turn = null} = {}) {
     ...names.map((n) => scope[n]));
 }
 
-// An agent's message as HARTOS publish_agent_message sends it.  `voiced`: the
-// server stamped it turn_voiced (crossbar_publish.turn_voiced: sent inside a
-// person's /chat turn whose clip will say it).
-const send = (requestId, text, msgId, {voiced = false} = {}) => ({
+const send = (requestId, text, msgId) => ({
   text: [text], request_id: requestId, prompt_id: '342', bot_type: 'Custom GPT',
   options: [], newoptions: [], page_image_url: '', analogy_image_url: '',
   probe: false, inp: '', ...(msgId ? {msg_id: msgId} : {}),
-  ...(voiced ? {turn_voiced: true} : {}),
 });
-const voicedSend = (requestId, text, msgId) => send(requestId, text, msgId, {voiced: true});
 const clip = (turn, url) => ({
   action: 'TTS', generated_audio_url: url, request_id: turn,
   text: ['Twinkle twinkle little star\n\nWell sung!'],
@@ -221,10 +211,10 @@ afterEach(() => {
   jest.useRealTimers();
 });
 
-describe('candidate 1: a send the turn\'s clip says (server-stamped) is heard once, in the clip', () => {
+describe('candidate 1: a message sent during a turn is heard once, in the turn\'s clip', () => {
   test('CREATE: the page\'s own turn, a send then the clip: one voice', () => {
     const page = desktopPage({turn: 'msg_T1'});
-    page.handleDataReceived(voicedSend('msg_T1-intermediate', 'Twinkle twinkle little star', 'm1'));
+    page.handleDataReceived(send('msg_T1-intermediate', 'Twinkle twinkle little star', 'm1'));
     page.playPushedTts(clip('msg_T1', '/tts/audio/t1.wav'));
     expect(page.speak).not.toHaveBeenCalled();
     expect(played(page)).toBe(1);
@@ -233,81 +223,25 @@ describe('candidate 1: a send the turn\'s clip says (server-stamped) is heard on
 
   test('REUSE (-intermediate-<n>): one voice', () => {
     const page = desktopPage({turn: 'msg_T1'});
-    page.handleDataReceived(voicedSend('msg_T1-intermediate-2', 'Say ba.', 'm2'));
+    page.handleDataReceived(send('msg_T1-intermediate-2', 'Say ba.', 'm2'));
     page.playPushedTts(clip('msg_T1', '/tts/audio/t1.wav'));
     expect(voices(page)).toBe(1);
   });
 
-  test('a voiced turn the tablet started, the desktop page with no turn of its own: the send is not spoken here and the clip plays once', () => {
+  test('a turn the tablet started, the page with no turn of its own: the send is not spoken here', () => {
     const page = desktopPage({turn: null});
-    page.handleDataReceived(voicedSend('tab_T9-intermediate', 'Twinkle twinkle little star', 'm3'));
+    page.handleDataReceived(send('tab_T9-intermediate', 'Twinkle twinkle little star', 'm3'));
     page.playPushedTts(clip('tab_T9', '/tts/audio/t9.wav'));
-    page.handleDataReceived(clip('tab_T9', '/tts/audio/t9.wav'));   // the WAMP copy
     expect(page.speak).not.toHaveBeenCalled();
-    // The clip itself plays here: candidate 2, kept (see below).
-    expect(page.el.loads).toEqual(['/tts/audio/t9.wav']);
+    // The clip itself still plays here: candidate 2, kept (see below).
+    expect(played(page)).toBe(1);
   });
 
-  test('a voiced turn the tablet started, the page on a turn of its own: nothing of it is spoken here', () => {
+  test('a turn the tablet started, the page on a turn of its own: nothing of it is spoken here', () => {
     const page = desktopPage({turn: 'msg_D0'});
-    page.handleDataReceived(voicedSend('tab_T9-intermediate', 'Twinkle twinkle little star', 'm4'));
+    page.handleDataReceived(send('tab_T9-intermediate', 'Twinkle twinkle little star', 'm4'));
     page.playPushedTts(clip('tab_T9', '/tts/audio/t9.wav'));
     expect(voices(page)).toBe(0);
-  });
-});
-
-describe('a send of the turn this page still waits on is heard once, in the clip (page-local)', () => {
-  test('the page\'s own turn, its reply not back, an unstamped send then the clip: one voice', () => {
-    const page = desktopPage({turn: 'msg_T1', pending: 'msg_T1'});
-    page.handleDataReceived(send('msg_T1-intermediate-2', 'Say ba.', 'p1'));
-    page.playPushedTts(clip('msg_T1', '/tts/audio/t1.wav'));
-    expect(page.speak).not.toHaveBeenCalled();
-    expect(page.el.loads).toEqual(['/tts/audio/t1.wav']);
-  });
-
-  test('once its reply is back, a send under the turn\'s id (a reminder) is spoken here', () => {
-    const page = desktopPage({turn: 'msg_T1', pending: null});
-    page.handleDataReceived(send('msg_T1-intermediate-4821', 'Time for your practice!', 'p2'));
-    expect(page.speak).toHaveBeenCalledTimes(1);
-  });
-
-  test('while it waits, another turn\'s send and CREATE\'s fallback id are spoken here', () => {
-    const page = desktopPage({turn: 'msg_T1', pending: 'msg_T1'});
-    page.handleDataReceived(send('tab_T9-intermediate', 'Hello from the tablet', 'p3'));
-    page.handleDataReceived(send('10202_342-intermediate', 'What is your child\'s name?', 'p4'));
-    expect(page.speak).toHaveBeenCalledTimes(2);
-  });
-});
-
-describe('a send no clip will say is spoken here, as before (review of 4fef48aa)', () => {
-  test('a scheduled reminder (REUSE, the last turn\'s id, no stamp)', () => {
-    const page = desktopPage({turn: null});
-    page.handleDataReceived(send('msg_T1-intermediate-4821', 'Time for your practice!', 'r1'));
-    expect(page.speak).toHaveBeenCalledWith('Time for your practice!');
-  });
-
-  test('a scheduled reminder while the page is on that same turn', () => {
-    const page = desktopPage({turn: 'msg_T1'});
-    page.handleDataReceived(send('msg_T1-intermediate-4821', 'Time for your practice!', 'r2'));
-    expect(page.speak).toHaveBeenCalledTimes(1);
-  });
-
-  test('CREATE\'s fallback id (<user>_<prompt>-intermediate) names no turn', () => {
-    const page = desktopPage({turn: 'msg_T1'});
-    page.handleDataReceived(send('10202_342-intermediate', 'What is your child\'s name?', 'c1'));
-    expect(page.speak).toHaveBeenCalledTimes(1);
-  });
-
-  test('a push from central or an older node (never stamped)', () => {
-    const page = desktopPage({turn: 'msg_T1'});
-    page.handleDataReceived(send('msg_T1-intermediate', 'Twinkle twinkle little star', 'k1'));
-    expect(page.speak).toHaveBeenCalledTimes(1);
-  });
-
-  test('a stamp on a goal turn\'s send silences nothing (no clip voices a goal turn)', () => {
-    const page = desktopPage({turn: null});
-    page.handleDataReceived(voicedSend('daemon_g1-intermediate', 'Good morning!', 'g1'));
-    expect(page.speak).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -346,36 +280,6 @@ describe('what the server does not voice is still spoken here (proactive speech)
   });
 });
 
-describe('a clip a message carries (<audio autoPlay src={audioUrl}>) asks the same record', () => {
-  // A message with video_link.aud_url sets audioUrl, which the page's
-  // <audio autoPlay> plays; the phone bundle writes the clip's url absolute.
-  const withAudio = (url) => ({text: ['Well sung!'], request_id: 'msg_T1', msg_id: `a-${url}`,
-    video_link: {aud_url: url}});
-
-  test('a clip the TTS player already played is not played again by it', () => {
-    const page = desktopPage({turn: 'msg_T1'});
-    page.playPushedTts(clip('msg_T1', '/tts/audio/t1.wav'));
-    page.handleDataReceived(withAudio('http://192.168.0.5:5000/tts/audio/t1.wav'));
-    expect(page.audioUrls()).toEqual(['']);
-    expect(page.el.loads).toEqual(['/tts/audio/t1.wav']);
-  });
-
-  test('a clip it played is not played again by the TTS player', () => {
-    const page = desktopPage({turn: 'msg_T1'});
-    page.handleDataReceived(withAudio('http://192.168.0.5:5000/tts/audio/t1.wav'));
-    page.playPushedTts(clip('msg_T1', '/tts/audio/t1.wav'));
-    expect(page.audioUrls()).toEqual(['http://192.168.0.5:5000/tts/audio/t1.wav']);
-    expect(page.el.loads).toEqual([]);
-  });
-
-  test('another clip still plays', () => {
-    const page = desktopPage({turn: 'msg_T1'});
-    page.playPushedTts(clip('msg_T1', '/tts/audio/t1.wav'));
-    page.handleDataReceived(withAudio('/tts/audio/t2.wav'));
-    expect(page.audioUrls()).toEqual(['/tts/audio/t2.wav']);
-  });
-});
-
 describe('candidate 3: one clip is loaded once per window', () => {
   test('both players of the window, and both transports: one load', () => {
     const page = desktopPage({turn: 'msg_T1'});
@@ -403,39 +307,11 @@ describe('a desktop-typed turn shows each of its lines once', () => {
     expect(page.rows()).toEqual(['What is your child\'s name?']);
   });
 
-  test('the HTTP reply first, then a send the server says was made in the turn, same words: one bubble', () => {
+  test('the HTTP reply first, then a send of the turn with the same words: one bubble', () => {
     const page = desktopPage({turn: 'msg_T1'});
     page.httpReply('msg_T1', 'What is your child\'s name?');
-    page.handleDataReceived(voicedSend('msg_T1-intermediate', 'What is your child\'s name?', 'm12'));
+    page.handleDataReceived(send('msg_T1-intermediate', 'What is your child\'s name?', 'm12'));
     expect(page.rows()).toEqual(['What is your child\'s name?']);
-  });
-
-  test('a reminder repeated under the turn\'s id is shown each time (review of 4fef48aa)', () => {
-    const page = desktopPage({turn: 'msg_T1'});
-    page.handleDataReceived(send('msg_T1-intermediate-4821', 'Time for your practice!', 'r3'));
-    page.handleDataReceived(send('msg_T1-intermediate-1907', 'Time for your practice!', 'r4'));
-    expect(page.rows()).toEqual(['Time for your practice!', 'Time for your practice!']);
-  });
-
-  test('a reminder after the turn\'s reply, with the reply\'s words, is shown (no stamp: not sent in the turn)', () => {
-    const page = desktopPage({turn: 'msg_T1'});
-    page.httpReply('msg_T1', 'Time for your practice!');
-    page.handleDataReceived(send('msg_T1-intermediate-4821', 'Time for your practice!', 'r5'));
-    expect(page.rows()).toEqual(['Time for your practice!', 'Time for your practice!']);
-  });
-
-  test('two sends of one turn with the same words are both shown', () => {
-    const page = desktopPage({turn: 'msg_T1'});
-    page.handleDataReceived(voicedSend('msg_T1-intermediate', 'Say ba.', 's1'));
-    page.handleDataReceived(voicedSend('msg_T1-intermediate', 'Say ba.', 's2'));
-    expect(page.rows()).toEqual(['Say ba.', 'Say ba.']);
-  });
-
-  test('a reply and a send that carry different msg_ids are both shown', () => {
-    const page = desktopPage({turn: 'msg_T1'});
-    page.handleDataReceived(voicedSend('msg_T1-intermediate', 'Well done!', 's3'));
-    page.httpReply('msg_T1', 'Well done!', 'other');
-    expect(page.rows()).toEqual(['Well done!', 'Well done!']);
   });
 
   test('the same words in another turn are shown again, in either order', () => {

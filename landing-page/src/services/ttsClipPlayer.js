@@ -34,8 +34,7 @@ function saidLately(key, now) {
  * it was said here inside DEDUP_MS, or when `coveredBy` was (the same words
  * said another way).  An empty key is never recorded and always may.
  *
- * Keys: clipKey(url) (playTtsClip, and Demopage's <audio autoPlay> for a
- * clip a message carries), 'msg:<msg_id>' (a pushed message the page
+ * Keys: 'clip:<url>' (playTtsClip), 'msg:<msg_id>' (a pushed message the page
  * speaks itself), 'said:<turn id>' (a turn's reply the page spoke itself) and
  * 'played:<turn id>' (a clip of that turn played here).
  */
@@ -52,16 +51,6 @@ export function claimSpeech(key, now = Date.now(), coveredBy = '') {
 }
 
 /**
- * The record's key for a clip: its path, so one clip is one key whichever
- * way its url is written (the SPA's '/tts/audio/x.wav', the phone bundle's
- * 'http://<node>:5000/tts/audio/x.wav').  '' for no url.
- */
-export function clipKey(url) {
-  if (!url || typeof url !== 'string') return '';
-  return `clip:${url.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*/i, '')}`;
-}
-
-/**
  * @param {HTMLAudioElement|null} el  the shared element
  * @param {string} url                the clip
  * @param {{onStart?:Function,onEnd?:Function,onError?:Function}} [hooks]
@@ -74,7 +63,7 @@ export function clipKey(url) {
 export function playTtsClip(el, url, hooks = {}, now = Date.now(), turnId = '') {
   if (!el) return 'no-element';
   if (!url) return 'no-url';
-  if (!claimSpeech(clipKey(url), now, turnId ? `said:${turnId}` : '')) return 'duplicate';
+  if (!claimSpeech(`clip:${url}`, now, turnId ? `said:${turnId}` : '')) return 'duplicate';
   // Noted, not claimed: a turn may have more than one clip (a draft's, then
   // the expert reply's), and each plays.
   if (turnId) claimSpeech(`played:${turnId}`, now);
