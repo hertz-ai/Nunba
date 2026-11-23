@@ -307,6 +307,30 @@ describe('AdminLayout Component', () => {
       expect(mockFetchProfile).toHaveBeenCalledTimes(1);
     });
 
+    // Owner, 2026-11-21: "/admin/channels is not navigating to admin".
+    // Measured: /auth/me answered role "student" for the signed-in owner (the
+    // account store's role, copied by profile_sync).  It is no access level,
+    // so it counted as signed out and Admin redirected to /social.
+    test('a signed-in person whose role is no access level stays on Admin', () => {
+      renderWithProviders(
+        <AskingSocial
+          initial={{
+            ...SIGNED_IN,
+            currentUser: {id: '10202', username: 'owner', role: 'student'},
+            userRole: 'student',
+            accessTier: 'student',
+          }}
+          answer={SIGNED_IN}>
+          <AdminLayout>
+            <div data-testid="test-child">Dashboard</div>
+          </AdminLayout>
+        </AskingSocial>
+      );
+      expect(screen.queryByTestId('redirect')).toBeNull();
+      expect(screen.getByTestId('test-child')).toBeInTheDocument();
+      expect(mockFetchProfile).not.toHaveBeenCalled();
+    });
+
     test('a signed-out answer (401/403) redirects without asking again', () => {
       renderWithProviders(
         <AskingSocial initial={{profileAnswer: 'answered'}} answer={SIGNED_IN}>

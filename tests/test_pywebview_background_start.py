@@ -15,7 +15,17 @@ This test:
   4. Simulates the "show" event (via Win+N hotkey or tray click)
   5. Verifies React mounted AND pixels are painted
 
-Requires: Running on Windows with Nunba installed.
+Requires: Running on Windows with Nunba installed, AND asking for it:
+NUNBA_TEST_INSTALLED_APP=1.
+
+This file is not hermetic and cannot be made so: it force-stops every running
+Nunba (taskkill /F /IM Nunba.exe), starts the INSTALLED Nunba.exe on :5000
+against the person's real data, and presses Win+N on the real desktop.  On
+22 Nov 2026 a plain `pytest tests/...` run that happened to include it left
+the installed app running for 85 minutes after the run was killed.  So it
+runs only for someone who asks, on a machine where that is wanted; every
+other run skips it and says why.
+tests/test_the_installed_app_is_not_started_by_a_test_run.py pins that.
 """
 import json
 import os
@@ -26,11 +36,22 @@ import unittest
 
 import requests
 
+from tests.hermetic_run import env_outside_the_run
+
 NUNBA_EXE = os.path.join(
     os.environ.get('ProgramFiles(x86)', 'C:\\Program Files (x86)'),
     'HevolveAI', 'Nunba', 'Nunba.exe'
 )
 FLASK_URL = 'http://localhost:5000'
+
+#: The one switch.  Unset, nothing in this file runs.
+OPT_IN_ENV = 'NUNBA_TEST_INSTALLED_APP'
+_OPTED_IN = os.environ.get(OPT_IN_ENV, '').strip() == '1'
+_CAN_RUN = _OPTED_IN and sys.platform == 'win32' and os.path.isfile(NUNBA_EXE)
+_WHY_SKIPPED = (
+    f"starts the INSTALLED Nunba.exe, force-stops any running Nunba and "
+    f"presses Win+N on the desktop; set {OPT_IN_ENV}=1 to run it on purpose"
+    if not _OPTED_IN else "Windows + Nunba installed required")
 MAX_STARTUP_WAIT = 60  # seconds
 SHOW_DELAY = 5  # seconds after show before checking
 
@@ -64,10 +85,7 @@ def _get_webview_state():
     return {'error': 'unexpected'}
 
 
-@unittest.skipUnless(
-    sys.platform == 'win32' and os.path.isfile(NUNBA_EXE),
-    "Windows + Nunba installed required"
-)
+@unittest.skipUnless(_CAN_RUN, _WHY_SKIPPED)
 class TestBackgroundStart(unittest.TestCase):
     """Test that Nunba starts correctly in background mode."""
 
@@ -88,6 +106,10 @@ class TestBackgroundStart(unittest.TestCase):
             [NUNBA_EXE, '--background'],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            # The real app, as the person runs it: not with this test run's
+            # variables (no model boot, a private home), which would make
+            # test_llm_health_during_background measure the test run.
+            env=env_outside_the_run(),
         )
 
         # Wait for Flask to be ready
@@ -191,10 +213,7 @@ class TestBackgroundStart(unittest.TestCase):
         )
 
 
-@unittest.skipUnless(
-    sys.platform == 'win32' and os.path.isfile(NUNBA_EXE),
-    "Windows + Nunba installed required"
-)
+@unittest.skipUnless(_CAN_RUN, _WHY_SKIPPED)
 class TestBackgroundToForeground(unittest.TestCase):
     """Test the hidden→visible transition (the actual black screen bug).
 
@@ -223,6 +242,10 @@ class TestBackgroundToForeground(unittest.TestCase):
             [NUNBA_EXE, '--background'],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            # The real app, as the person runs it: not with this test run's
+            # variables (no model boot, a private home), which would make
+            # test_llm_health_during_background measure the test run.
+            env=env_outside_the_run(),
         )
 
         # Wait for Flask

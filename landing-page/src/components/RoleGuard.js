@@ -6,13 +6,26 @@ import React, {useEffect, useRef} from 'react';
 import {Navigate, useLocation} from 'react-router-dom';
 
 // Role hierarchy: central > regional > flat > guest > anonymous
-const ROLE_LEVELS = {
+export const ROLE_LEVELS = {
   anonymous: 0,
   guest: 1,
   flat: 2,
   regional: 3,
   central: 4,
 };
+
+/**
+ * The level of an access tier.  A signed-in person whose `role` is no access
+ * tier (another system's role, e.g. the Hevolve account's "student") is an
+ * ordinary signed-in person, never signed out: on 2026-11-21 that role sent
+ * the owner from /admin to /social.
+ */
+export function levelOf(accessTier, isAuthenticated) {
+  if (Object.prototype.hasOwnProperty.call(ROLE_LEVELS, accessTier)) {
+    return ROLE_LEVELS[accessTier];
+  }
+  return isAuthenticated ? ROLE_LEVELS.flat : ROLE_LEVELS.anonymous;
+}
 
 /**
  * RoleGuard - Route protection based on user role tier.
@@ -28,12 +41,12 @@ export default function RoleGuard({
   allowGuest = false,
   fallback = '/social',
 }) {
-  const {accessTier, loading} = useSocial();
+  const {accessTier, loading, isAuthenticated} = useSocial();
   const location = useLocation();
 
   if (loading) return <PageSkeleton dark />;
 
-  const userLevel = ROLE_LEVELS[accessTier] || 0;
+  const userLevel = levelOf(accessTier, isAuthenticated);
   const requiredLevel = ROLE_LEVELS[minRole] || 0;
 
   // User meets the minimum role requirement
@@ -54,8 +67,8 @@ export default function RoleGuard({
  * useRoleAccess - Hook for component-level permission checks.
  */
 export function useRoleAccess() {
-  const {accessTier} = useSocial();
-  const level = ROLE_LEVELS[accessTier] || 0;
+  const {accessTier, isAuthenticated} = useSocial();
+  const level = levelOf(accessTier, isAuthenticated);
 
   return {
     accessTier,
