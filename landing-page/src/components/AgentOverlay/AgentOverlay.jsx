@@ -40,6 +40,9 @@ const AUTO_DISMISS_MS = 15000;
 // file_request: an agent waits on her files (HARTOS person_ask), so the card
 // stays until it is answered here or anywhere else (ask.answered).
 const PERSIST_TYPES = new Set(['checkout', 'approval', 'form', 'meet_copilot', 'consent.request', 'qr_pair', 'file_request']);
+// "Later" on an agent's ask puts its card off on this surface for this long,
+// the period the phone's Later uses (Android PersonAskSurface.LATER_MS).
+export const ASK_LATER_MS = 5 * 60 * 1000;
 
 // The card's frosted surface is the ONE HART glass (src/theme/hartGlass,
 // mirroring HARTOS theme_service.py's emitted shell values), so an overlay
@@ -433,10 +436,11 @@ async function answerAsk(askId, answer) {
   if (!res.ok) throw await refusedReply(res, 'The answer was refused');
 }
 
-// The person closed the ask's card here (its X, or "Later" on an approval
-// ask: owner, 2026-11-04): every surface drops it.  The card goes from this
-// screen whatever HARTOS answers (an ask already answered or gone elsewhere
-// is closed there too), so a refusal is only logged.
+// The person closed the ask's card here with its X (Dismiss): every surface
+// drops it.  The card goes from this screen whatever HARTOS answers (an ask
+// already answered or gone elsewhere is closed there too), so a refusal is
+// only logged.  "Later" is not this: it puts the card off on this surface
+// only (ASK_LATER_MS).
 function dismissAsk(askId) {
   return postApproval({ ask_id: askId, dismiss: true }).then((res) => {
     if (!res.ok) console.warn(`ask ${askId}: the dismissal was refused (HTTP ${res.status})`);
@@ -535,7 +539,7 @@ function FileRequestOverlay({ data, onDismiss, onAction }) {
   );
 }
 
-function ApprovalOverlay({ data, onDismiss, onAction }) {
+function ApprovalOverlay({ data, onDismiss, onAction, onLater }) {
   const [act, run] = useActionRunner(onAction);
   // Which decision is on its way, and why the last one did not go through.
   // The card closes only once HARTOS has the answer: its .catch(() => {})
@@ -601,12 +605,15 @@ function ApprovalOverlay({ data, onDismiss, onAction }) {
   // Only approve | deny are answers /api/agent/approval records; HARTOS
   // refuses 'later' with 400, so on a plain approval the defer button closes
   // the card and sends nothing, like "Not now" on the consent card (the
-  // producer asks again).  On an agent's ask it dismisses the ask, so every
-  // surface drops it and the agent is told (owner, 2026-11-04: "Later
-  // dismisses everywhere", as the X does).
+  // producer asks again).  On an agent's ask it puts the card off on this
+  // surface only, for ASK_LATER_MS, as the phone's Later does: the ask stays
+  // open on her other surfaces and comes back here unless she answers or
+  // dismisses it meanwhile.  Only the X dismisses an ask everywhere.  (Owner
+  // 2026-11-04 had Later dismiss everywhere, 8d6bc928; the 11-23 review made
+  // it this surface's, as Android's.)
   const later = () => {
-    if (data.ask_id) dismissAsk(data.ask_id);
-    onDismiss();
+    if (data.ask_id && onLater) onLater();
+    else if (onDismiss) onDismiss();
   };
   const label = (i, dflt) => {
     const o = Array.isArray(data.options) ? data.options[i] : null;
@@ -833,11 +840,11 @@ function ListOverlay({ data }) {
   );
 }
 
-function LayoutOverlay({ data, navigate, onDismiss, onAction }) {
+function LayoutOverlay({ data, navigate, onDismiss, onAction, onLater }) {
   return (
     <Box sx={{ display: 'flex', flexDirection: data.direction || 'column', gap: data.gap || 1 }}>
       {(data.children || []).map((child, i) => (
-        <Box key={i}><OverlayContent data={child} navigate={navigate} onDismiss={onDismiss} onAction={onAction} /></Box>
+        <Box key={i}><OverlayContent data={child} navigate={navigate} onDismiss={onDismiss} onAction={onAction} onLater={onLater} /></Box>
       ))}
     </Box>
   );
@@ -1195,7 +1202,7 @@ function ChannelConnectedOverlay({ data, onDismiss }) {
 // always has in the app.  The <hart-agent> embed passes it so card buttons
 // go through the host bridge (cart.add, checkout.start, payment.authorize…)
 // instead of opening or POSTing agent-supplied URLs.
-export function OverlayContent({ data, onDismiss, navigate, onAction }) {
+export function OverlayContent({ data, onDismiss, navigate, onAction, onLater }) {
   const type = data.type || data.component_type || 'notification';
   switch (type) {
     case 'notification': return <NotificationCard data={data} navigate={navigate} onDismiss={onDismiss} />;
@@ -1234,7 +1241,7 @@ export function OverlayContent({ data, onDismiss, navigate, onAction }) {
     case 'comparison': return <ComparisonOverlay data={data} />;
     case 'progress': return <ProgressOverlay data={data} />;
     case 'agent_action': return <AgentActionOverlay data={data} />;
-    case 'approval': return <ApprovalOverlay data={data} onDismiss={onDismiss} onAction={onAction} />;
+    case 'approval': return <ApprovalOverlay data={data} onDismiss={onDismiss} onAction={onAction} onLater={onLater} />;
     case 'file_request': return <FileRequestOverlay data={data} onDismiss={onDismiss} onAction={onAction} />;
     case 'chart': return <ChartOverlay data={data} />;
     case 'code': return <CodeOverlay data={data} />;
@@ -1246,7 +1253,7 @@ export function OverlayContent({ data, onDismiss, navigate, onAction }) {
     case 'pair_code': return <PairCodeOverlay data={data} onDismiss={onDismiss} />;
     case 'channel_connected': return <ChannelConnectedOverlay data={data} onDismiss={onDismiss} />;
     case 'list': return <ListOverlay data={data} />;
-    case 'layout': return <LayoutOverlay data={data} navigate={navigate} onDismiss={onDismiss} onAction={onAction} />;
+    case 'layout': return <LayoutOverlay data={data} navigate={navigate} onDismiss={onDismiss} onAction={onAction} onLater={onLater} />;
     case 'meet_copilot': return <MeetCopilotOverlay data={data} onDismiss={onDismiss} />;
     case 'consent_prompt': return <ConsentPromptOverlay data={data} onDismiss={onDismiss} />;
     case 'consent.request': return <ConsentPromptOverlay data={data} onDismiss={onDismiss} />;
@@ -1545,6 +1552,12 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
   // that are safe to repeat: React may run a state updater twice.
   const parkedRef = useRef([]);
 
+  // Asks the person put off here with "Later": ask_id -> {card, timer}.  The
+  // card comes back after ASK_LATER_MS unless the ask is answered or
+  // dismissed anywhere meanwhile (ask.answered), and the same ask sent again
+  // meanwhile stays put off.
+  const laterRef = useRef(new Map());
+
   const dismiss = useCallback((id) => {
     clearTimeout(timersRef.current[id]);
     delete timersRef.current[id];
@@ -1604,6 +1617,11 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
     const askId = answered && answered.ask_id;
     if (!askId) return;
     parkedRef.current = parkedRef.current.filter((o) => o.ask_id !== askId);
+    const putOff = laterRef.current.get(askId);
+    if (putOff) {
+      clearTimeout(putOff.timer);
+      laterRef.current.delete(askId);
+    }
     setOverlays((prev) => {
       const gone = prev.filter((o) => o.ask_id === askId);
       if (gone.length === 0) return prev;
@@ -1642,6 +1660,13 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
     // This message is already on screen.
     const msgId = payload.msg_id;
     if (msgId && showingRef.current.has(msgId)) return;
+    // The same ask sent again while it is put off here stays put off: the
+    // newer copy is the one that comes back.
+    const putOff = payload.ask_id && laterRef.current.get(payload.ask_id);
+    if (putOff) {
+      putOff.card = payload;
+      return;
+    }
     // The same ask sent again shows now, so its parked copy does not come back.
     if (payload.ask_id) {
       parkedRef.current = parkedRef.current.filter((o) => o.ask_id !== payload.ask_id);
@@ -1691,6 +1716,24 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
     arm(entry);
   }, [navigate, onInlineChatCard, arm, evictOver, forgetShowing]);
 
+  // "Later" on an ask's card: off this screen now, back after ASK_LATER_MS
+  // as if the ask had just arrived.  Nothing is sent: the ask stays open on
+  // her other surfaces.
+  const putOff = useCallback((overlay) => {
+    dismiss(overlay._id);
+    const askId = overlay.ask_id;
+    if (!askId) return;
+    const prior = laterRef.current.get(askId);
+    if (prior) clearTimeout(prior.timer);
+    const held = { card: overlay, timer: null };
+    held.timer = setTimeout(() => {
+      if (laterRef.current.get(askId) !== held) return;
+      laterRef.current.delete(askId);
+      handleEvent(held.card);
+    }, ASK_LATER_MS);
+    laterRef.current.set(askId, held);
+  }, [dismiss, handleEvent]);
+
   // A slot freed (a card answered, closed, timed out or replaced): the oldest
   // parked asks come back into it.
   useEffect(() => {
@@ -1724,6 +1767,12 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
     };
   }, [handleEvent, settleAsks, dropAnswered, subscribe]);
 
+  // Put-off asks do not come back to a page that is gone.
+  useEffect(() => () => {
+    laterRef.current.forEach((held) => clearTimeout(held.timer));
+    laterRef.current.clear();
+  }, []);
+
   if (overlays.length === 0) return null;
 
   return (
@@ -1752,14 +1801,16 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
                 sx={{ position: 'absolute', top: 8, left: 12, fontSize: '0.65rem', height: 20,
                   background: 'rgba(108,99,255,0.2)', color: ACCENT, border: '1px solid rgba(108,99,255,0.3)' }} />
             )}
-            {/* Close button: on an ask's card it dismisses the ask everywhere */}
+            {/* Close button (Dismiss): on an ask's card it dismisses the ask
+                everywhere; its Later puts it off on this surface only */}
             <IconButton size="small" aria-label="Dismiss"
               onClick={() => { if (overlay.ask_id) dismissAsk(overlay.ask_id); dismiss(overlay._id); }}
               sx={{ position: 'absolute', top: 4, right: 4, color: 'rgba(255,255,255,0.4)', '&:hover': { color: '#fff' } }}>
               <CloseIcon sx={{ fontSize: 16 }} />
             </IconButton>
             <Box sx={{ mt: overlay.agent_name ? 2.5 : 0 }}>
-              <OverlayContent data={overlay} onDismiss={() => dismiss(overlay._id)} navigate={navigate} onAction={onAction} />
+              <OverlayContent data={overlay} onDismiss={() => dismiss(overlay._id)} navigate={navigate} onAction={onAction}
+                onLater={() => putOff(overlay)} />
             </Box>
           </Box>
         </CardTransition>
