@@ -1396,7 +1396,9 @@ def _sibling_repo_candidates(repo_name: str) -> list[str]:
 # top-level package dirs each sibling repo provides in site-packages
 _SIBLING_REPO_PROVIDES = {
     'hevolveai': {'hevolveai', 'embodied_ai'},
-    'Hevolve_Database': {'sql', 'crossbarhttp'},
+    # not crossbarhttp: that is crossbarhttp3's (Hevolve_Database's stub of
+    # it is gone, and _ship_the_real_crossbarhttp puts the real one back)
+    'Hevolve_Database': {'sql'},
     'HARTOS': {
         'integrations', 'security', 'core', 'agent_ledger',
         'hartos',   # implementation package (flat root modules moved in, 2026-08-30)
@@ -2131,6 +2133,39 @@ if 'build' in sys.argv or 'build_exe' in sys.argv:
 # the BUILD venv's pip with --target to install into python-embed directly.
 import subprocess
 
+
+def _ship_the_real_crossbarhttp(sp):
+    """Make python-embed's ``crossbarhttp`` crossbarhttp3's package, or stop
+    the build saying why.
+
+    HARTOS posts every Crossbar message (a push handed to central's relay
+    among them) through crossbarhttp3's Client, whose package is named
+    ``crossbarhttp``.  Hevolve_Database shipped a stub package of that name
+    (Client.publish returned {"ok": True} and sent nothing) and the sibling
+    install below put it over the real one, so a desktop's relayed pushes
+    read as sent and never left (measured 2026-11-23).  Runs after the
+    sibling installs, so whatever a sibling ships, the bundle ends with the
+    pinned crossbarhttp3 (deps.CORE_DEPS)."""
+    from deps import CORE_DEPS, crossbarhttp_is_real
+    if crossbarhttp_is_real(sp):
+        return
+    spec = f"crossbarhttp3=={CORE_DEPS['crossbarhttp3']}"
+    print(f"python-embed: crossbarhttp is not crossbarhttp3's package "
+          f"(a stub or a broken install); installing {spec}")
+    r = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--target", sp, "--upgrade",
+         "--force-reinstall", "--no-deps", "--no-build-isolation", spec],
+        capture_output=True, text=True, timeout=600)
+    if not crossbarhttp_is_real(sp):
+        raise SystemExit(
+            f"python-embed: crossbarhttp is still not crossbarhttp3's package "
+            f"after pip install {spec} (exit {r.returncode}); the app would "
+            f"publish nothing over Crossbar.  pip said:\n"
+            f"{(r.stderr or '') + (r.stdout or '')}")
+    print(f"python-embed: {spec} installed (crossbarhttp is the real package)")
+# ── end crossbarhttp check ──
+
+
 if ('build' in sys.argv or 'build_exe' in sys.argv):
     _embed_sp = os.path.join("python-embed", "Lib", "site-packages")
     if os.path.isdir(_embed_sp):
@@ -2379,6 +2414,10 @@ if ('build' in sys.argv or 'build_exe' in sys.argv):
                     print(f"python-embed: {_pkg_name} updated OK")
                 else:
                     print(f"python-embed: {_pkg_name} update FAILED: {_r.stderr[:200]}")
+
+        # After every sibling: an older Hevolve_Database still carries the
+        # crossbarhttp stub, and a past build left it in python-embed.
+        _ship_the_real_crossbarhttp(_embed_sp)
 
         # ── Sanitize hevolveai METADATA — strip dependency-tree leak ──
         # hevolveai's setup.py declares torch / transformers / peft / bitsandbytes
