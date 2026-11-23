@@ -28,15 +28,9 @@
  *
  * shouldPlayPushedClip(data, currentRequestId, ttsEnabled) is the other
  * half: whether a clip the server pushed (SSE 'tts' or WAMP) plays at all.
- *
- * shouldSpeakPushedText(data) and claimLocalReplySpeech(turnId) are the
- * page's own speech of a pushed message and of a turn's HTTP reply; both ask
- * the window's one record of what it already said
- * (services/ttsClipPlayer.claimSpeech) before speaking.
  */
 
-import {isBackgroundRequest, isOtherTurnEnvelope, isTurnSend, turnIdOf} from '../constants/chatBubble';
-import {claimSpeech} from '../services/ttsClipPlayer';
+import {isOtherTurnEnvelope} from '../constants/chatBubble';
 
 
 export function isDraftReply(resultData) {
@@ -73,47 +67,6 @@ export function shouldPlayPushedClip(data, currentRequestId, ttsEnabled) {
   if (ttsEnabled !== true) return false;
   if (!data || !data.generated_audio_url) return false;
   return !isOtherTurnEnvelope(data.request_id, currentRequestId);
-}
-
-
-/**
- * Whether the server's clip of a turn says this message: one an agent sent
- * during a person's turn ('<turn>-intermediate', chatBubble.isTurnSend).
- * HARTOS's _chat_reply speaks every such send with the reply, in ONE clip
- * under the turn's id (core/peer_link/crossbar_publish.turn_speech_text).  A
- * background turn's (daemon_<goal>) is never voiced by the server
- * (dispatch.is_genuine_user_request), so its sends are not covered.
- */
-export function isSpokenByTurnClip(requestId) {
-  return isTurnSend(requestId) && !isBackgroundRequest(turnIdOf(requestId));
-}
-
-
-/**
- * Whether the page speaks a pushed agent message itself (the caller has
- * already checked the speaker and the engine).  Not one the turn's clip will
- * say: the page spoke it as it arrived and the clip said it again, two voices
- * for one line (owner 2026-11-23), and for a turn the tablet started the
- * desktop spoke it too.  What the server never voices is still spoken here: a
- * background turn's send, a notice published outside a turn (Reel Studio),
- * a message with no request id.  Each message once per window, by its msg_id
- * (the same words sent again are another message, a cue repeated to a child).
- */
-export function shouldSpeakPushedText(data, now = Date.now()) {
-  if (!data) return false;
-  if (isSpokenByTurnClip(data.request_id)) return false;
-  return claimSpeech(data.msg_id ? `msg:${data.msg_id}` : '', now);
-}
-
-
-/**
- * Whether the page speaks turn `turnId`'s HTTP reply itself, recording it
- * when it does: not once a clip of that turn played here.  A clip of the turn
- * that lands after it is then not played (services/ttsClipPlayer.playTtsClip).
- */
-export function claimLocalReplySpeech(turnId, now = Date.now()) {
-  if (!turnId) return true;
-  return claimSpeech(`said:${turnId}`, now, `played:${turnId}`);
 }
 
 
