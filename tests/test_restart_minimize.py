@@ -414,7 +414,8 @@ class RestartMinimizeStaticTests(unittest.TestCase):
         {text, user_id, agent_id, agent_type, conversation_id, video_req}
         (chat_route docstring) and its turn reads `text`; both companion
         senders posted the prompt as `message`, the RN alias only
-        /custom_gpt's _turn_text accepts.  The client conforms; the server
+        /custom_gpt's turn_text (core.phone_chat) accepts.  The client
+        conforms; the server
         contract stays.
         """
         import re

@@ -73,7 +73,7 @@ backend/model surfaced which defect.
 | A1 | Acceptance harness greps source strings; passes against source dir, fails against frozen bundle — same binary, two truths. | unit | — |
 | A2 | `slim_python_embed` allowlist silently strips dist-info that transformers needs at runtime (filelock, tqdm, etc.). | unit | SSoT of required dist-info |
 | A3 | Build completes without fingerprinting `git HEAD`, so a stale `build/Nunba/` can ship pre-fix code. | unit | — |
-| A4 | `landing-page/build/` reused across builds; stale React bundle ships. | unit | — |
+| A4 | `landing-page/build/` reused across builds; stale React bundle ships. Tested by behaviour in `tests/test_build_rebuilds_the_page_bundle.py`. | unit | — |
 | A5 | cx_Freeze can strip `.py` source in bundle, breaking text-grep-based post-install checks. | unit | — |
 
 ### Family B — TTS auto-install (per backend)
