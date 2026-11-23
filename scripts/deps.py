@@ -254,6 +254,15 @@ EMBED_DEPS = {
     "tree-sitter-embedded-template": "0.25.0",
     "tree-sitter-yaml": "0.7.2",
     "pathspec": "0.12.1",   # grep-ast's one pure-python dep
+    # dnspython: the MX lookup of HARTOS's mailbox code
+    # (integrations/channels/mailing_list._mx_host, `import dns.resolver`),
+    # in the HARTOS main process.  HARTOS declares it since d072f8ea6; its
+    # only other route is `dig`, which Windows does not have.  Here for the
+    # pathspec reason above: cx_Freeze never traces HARTOS modules, and
+    # EMBED_DEPS is what fills python-embed.  Pure Python, no dependencies of
+    # its own.  Version matches HARTOS requirements.txt.  It installs as
+    # `dns`, see _EMBED_DIR_EXCEPTIONS.
+    "dnspython": "2.7.0",
     # NOTE: descript-audio-codec (dac) is NOT here — it pulls a massive
     # transitive tree (descript-audiotools → librosa → scipy → matplotlib).
     # It's installed at RUNTIME by install_backend_full('indic_parler')
@@ -523,6 +532,7 @@ _EMBED_DIR_EXCEPTIONS = {
     'sentence-transformers': 'sentence_transformers',
     'langchain-core': 'langchain_core',
     'tiktoken': 'tiktoken',
+    'dnspython': 'dns',
     # The three LiveKit distributions share one `livekit` namespace
     # directory, so each is present when ITS subpackage is.
     'livekit': 'livekit/rtc',

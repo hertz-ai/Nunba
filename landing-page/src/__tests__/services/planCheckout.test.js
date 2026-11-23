@@ -23,7 +23,9 @@ import {
   seatsLabel,
 } from '../../services/planCheckout';
 
-jest.mock('axios', () => ({post: jest.fn(), get: jest.fn()}));
+jest.mock('axios', () =>
+  jest.requireActual('../../testSupport/axiosWire').wireAxios()
+);
 jest.mock('../../services/socialApi', () => ({
   mailerApi: {getPlans: jest.fn()},
   chatApi: {post: jest.fn(() => Promise.resolve({}))},
