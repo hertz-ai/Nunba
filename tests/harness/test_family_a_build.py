@@ -98,24 +98,11 @@ def test_a3b_build_writes_hartos_head_sha(source_build_py, source_text):
     )
 
 
-def test_a4_landing_build_staleness_check(source_build_py, source_text):
-    """A4 — frontend bundle staleness check.
-
-    build.py must either always rebuild landing-page/build/ OR compare
-    src/ mtime vs build/ mtime before skipping. Currently neither.
-    """
-    src = source_text(source_build_py)
-    assert (
-        "landing-page/build" in src
-        and ("npm run build" in src or "yarn build" in src)
-    ), "scripts/build.py must explicitly rebuild the React bundle"
-    # Either unconditional rebuild, or a clear mtime comparison.
-    has_mtime_check = "getmtime" in src and "landing-page" in src
-    has_unconditional = src.count("npm run build") >= 1 and "if _stale" not in src
-    assert has_mtime_check or has_unconditional, (
-        "landing-page/build/ must either rebuild unconditionally or use "
-        "a source-vs-build mtime check; stale React bundles shipped twice"
-    )
+# A4 (a stale React bundle ships) is tested by behaviour in
+# tests/test_build_rebuilds_the_page_bundle.py: build.py's main() runs and the
+# bundle step's calls are recorded.  The text check that stood here passed
+# while main() skipped the rebuild on --skip-deps, and build/Nunba b36e2275
+# shipped the 2026-11-12 bundle.
 
 
 def test_a5_bundle_acceptance_falls_back_when_py_absent(source_app_py, source_text):

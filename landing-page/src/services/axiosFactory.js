@@ -38,7 +38,7 @@ function _getClearTokenWriter() {
 
 export function createApiClient(
   baseURL,
-  {timeout = 15000, handle401 = true, cache = true} = {}
+  {timeout = 15000, handle401 = true, cache = true, sendToken = true} = {}
 ) {
   const instance = axios.create({
     baseURL,
@@ -47,9 +47,20 @@ export function createApiClient(
   });
 
   // ── Auth interceptor ────────────────────────────────────────────────
+  // The person's bearer token goes on every request, with two ways to keep
+  // it off:
+  //   sendToken: false on the CLIENT, for a client of somebody else's host
+  //     (a geocoder, a file on GitHub).  The token is this person's sign-in
+  //     to our own servers and must never leave for another host; a client
+  //     made for one says so once, and no request of it can forget.
+  //   sendToken: false on one REQUEST of a client that otherwise sends it.
+  //     The checkout's /makepayment asks for no token (the account store
+  //     wants it only on /addsubscription_by_phone).
   instance.interceptors.request.use((config) => {
     const token = localStorage.getItem('access_token');
-    if (token) config.headers.Authorization = `Bearer ${token}`;
+    if (token && sendToken && config.sendToken !== false) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
     return config;
   });
 

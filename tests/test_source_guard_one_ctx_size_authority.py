@@ -21,28 +21,8 @@ import sys
 
 import pytest
 
-
-def _hartos_root():
-    """Where HARTOS lives, or None.
-
-    Same resolution order the HARTOS-side guard uses for Nunba, inverted:
-    explicit env var, sibling checkout, then whatever is already providing
-    ``core`` on this interpreter's path (the bundled/installed case).
-    """
-    env = os.environ.get('HARTOS_REPO')
-    if env and os.path.isfile(os.path.join(env, 'core', 'constants.py')):
-        return env
-    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    sibling = os.path.join(os.path.dirname(here), 'HARTOS')
-    if os.path.isfile(os.path.join(sibling, 'core', 'constants.py')):
-        return sibling
-    try:
-        import core.constants as _cc
-    except ImportError:
-        return None
-    # <root>/core/constants.py -> <root>
-    return os.path.dirname(os.path.dirname(os.path.abspath(_cc.__file__)))
-
+# The one rule for where HARTOS is (tests/hartos_root.py).
+from tests.hartos_root import hartos_root as _hartos_root  # noqa: E402
 
 _ROOT = _hartos_root()
 if _ROOT is None:

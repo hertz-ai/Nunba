@@ -26,7 +26,14 @@ from pathlib import Path
 
 import requests
 
-from llama.llama_installer import MODEL_PRESETS, QWEN35_RUNTIME_FAMILY, LlamaInstaller, ModelPreset, model_size_gib
+from llama.llama_installer import (
+    MODEL_PRESETS,
+    QWEN35_RUNTIME_FAMILY,
+    LlamaInstaller,
+    ModelPreset,
+    home_dir,
+    model_size_gib,
+)
 
 logger = logging.getLogger('NunbaLlamaConfig')
 
@@ -484,7 +491,7 @@ class LlamaConfig:
         Args:
             config_dir: Directory for config files (defaults to ~/.nunba)
         """
-        home = Path.home()
+        home = home_dir()
         self.config_dir = Path(config_dir) if config_dir else home / ".nunba"
         self.config_file = self.config_dir / "llama_config.json"
         self.server_status_file = self.config_dir / "server_status.json"
@@ -1505,10 +1512,19 @@ class LlamaConfig:
                 # Same unit as every other VRAM figure (GiB, measured from the
                 # file) — this row is what TTS/STT/vision subtract when they
                 # decide whether they fit, so a 133 MB overstatement here
-                # propagates into their decisions too.
-                model_gb = model_size_gib(preset, installer=self.installer)
-                vm._allocations['llm'] = model_gb
-                logger.info(f"Registered VRAM allocation: llm = {model_gb:.3f}GiB")
+                # propagates into their decisions too.  The spawn inside
+                # start_server may just have measured this file on the card
+                # (a --cpu-moe mixture of experts takes far less than its
+                # file); that figure is kept, as the reused-server path keeps
+                # it.  Measured 2026-11-18 by rv_b9: 2.910 booked at spawn,
+                # then 2.712 (the file size) written over it here.
+                if llm_vram_measured_for(vm, self.installer.get_model_path(preset)):
+                    logger.info("VRAM allocation kept: llm = %.3fGiB (measured "
+                                "when the server started)", vm._allocations['llm'])
+                else:
+                    model_gb = model_size_gib(preset, installer=self.installer)
+                    book_llm_vram(vm, model_gb)
+                    logger.info(f"Registered VRAM allocation: llm = {model_gb:.3f}GiB")
 
         mode_label = 'GPU' if diag['run_mode'] == 'gpu' else 'CPU'
         if started:
@@ -1866,7 +1882,7 @@ class LlamaConfig:
         # Write to all known status file locations
         for status_path in [
             self.server_status_file,  # ~/.nunba/server_status.json
-            Path.home() / ".trueflow" / "server_status.json",
+            home_dir() / ".trueflow" / "server_status.json",
         ]:
             try:
                 status_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2750,7 +2766,7 @@ class LlamaConfig:
             # See task #80 — the silent-crash investigation that
             # surfaced this gap.
             _llama_log_dir = os.path.join(
-                os.path.expanduser('~'), 'Documents', 'Nunba', 'logs'
+                str(home_dir()), 'Documents', 'Nunba', 'logs'
             )
             try:
                 os.makedirs(_llama_log_dir, exist_ok=True)
@@ -3490,7 +3506,7 @@ class LlamaConfig:
         }
         for status_path in [
             self.config_dir / "caption_server_status.json",
-            Path.home() / ".trueflow" / "caption_server_status.json",
+            home_dir() / ".trueflow" / "caption_server_status.json",
         ]:
             try:
                 status_path.parent.mkdir(parents=True, exist_ok=True)
