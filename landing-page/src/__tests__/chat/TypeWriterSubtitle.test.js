@@ -21,9 +21,8 @@ describe('TypeWriterSubtitle, clock mode', () => {
 
   test('follows the clock and catches up after a stall; completes once', () => {
     const done = jest.fn();
-    // The component starts its clock when `text` CHANGES (the message list
-    // mounts it with the empty placeholder first), so mount empty, then move
-    // to the subtitle under test.
+    // The streamed path: the message list mounts it with the empty
+    // placeholder first, then the reply's text arrives.
     const { container, rerender } = render(
       <TypeWriterForSubtitle text="" duration={2} isIdle={false} onComplete={done} />,
     );
@@ -53,6 +52,49 @@ describe('TypeWriterSubtitle, clock mode', () => {
     const { container } = render(
       <TypeWriterForSubtitle text={TEXT} duration={2} isIdle />,
     );
+    expect(container.textContent).toBe(TEXT);
+  });
+
+  // A reply another device's turn pushed to this page (SSE chat.response,
+  // Demopage handleDataReceived) is appended WITH its text, so the message
+  // list mounts the typewriter with the line itself, no empty placeholder
+  // first.  Live 2026-11-23 on the desktop page: the tablet's "Super Arjun!"
+  // bubble stayed empty until the next message arrived.
+  test('a line it mounts with types to the end', () => {
+    const { container } = render(
+      <TypeWriterForSubtitle text={TEXT} duration={2} isIdle={false} />,
+    );
+    act(() => { jest.advanceTimersByTime(1000); });
+    expect(container.textContent.length).toBeGreaterThanOrEqual(45);
+    act(() => { jest.advanceTimersByTime(1500); });
+    expect(container.textContent).toBe(TEXT);
+  });
+
+  // Demopage refines the duration while the line types (its word estimate,
+  // then the clip's real length).  A change under 10% re-ran the effect,
+  // whose cleanup stopped the clock, and nothing restarted it.
+  test('a small duration change mid-line does not freeze the line', () => {
+    const { container, rerender } = render(
+      <TypeWriterForSubtitle text="" duration={2} isIdle={false} />,
+    );
+    rerender(<TypeWriterForSubtitle text={TEXT} duration={2} isIdle={false} />);
+    act(() => { jest.advanceTimersByTime(500); });
+    const before = container.textContent.length;
+    expect(before).toBeGreaterThan(0);
+    rerender(<TypeWriterForSubtitle text={TEXT} duration={2.1} isIdle={false} />);
+    act(() => { jest.advanceTimersByTime(3000); });
+    expect(container.textContent).toBe(TEXT);
+  });
+
+  // The idle video shows the whole line; when the reply's video starts the
+  // line types.  It went blank: the re-run took neither start branch.
+  test('the line types when the idle video gives way, it does not go blank', () => {
+    const { container, rerender } = render(
+      <TypeWriterForSubtitle text={TEXT} duration={2} isIdle />,
+    );
+    expect(container.textContent).toBe(TEXT);
+    rerender(<TypeWriterForSubtitle text={TEXT} duration={2} isIdle={false} />);
+    act(() => { jest.advanceTimersByTime(2500); });
     expect(container.textContent).toBe(TEXT);
   });
 });
