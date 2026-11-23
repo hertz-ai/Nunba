@@ -598,9 +598,15 @@ export function askClosedText(state, reason) {
     case 'unknown': return 'Could not check whether this question is still open.';
     case 'moved': return 'Waiting for your answer on its card.';
     // Put off with the card's Later: no card shows until the period ends.
-    case 'later': return `Put off for now: it comes back in ${Math.round(ASK_LATER_MS / 60000)} minutes.`;
+    case 'later': return `Put off for now: it comes back in ${minutesText(ASK_LATER_MS)}.`;
     default: return 'Checking whether this question is still open...';
   }
+}
+
+/** A period in whole minutes, said right: "1 minute", "5 minutes". */
+export function minutesText(ms) {
+  const minutes = Math.round(ms / 60000);
+  return `${minutes} minute${minutes === 1 ? '' : 's'}`;
 }
 
 /**
@@ -1756,7 +1762,9 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
   // The open asks shown in the chat in front: ask_id -> card.  Never also a
   // card here.
   const inChatRef = useRef(new Map());
-  // Asks that have a bubble in a chat (they were shown in one): only they
+  // Asks that have a bubble in a chat, whatever put it there: moved into it
+  // here, or in the chat's history (stored, or written by another tab),
+  // which the chat asks this window to check (askIdsToCheck).  Only they
   // are told about 'moved' and 'later'.
   const bubbledRef = useRef(new Set());
   const chatRef = useRef(chatAsks);
@@ -1925,6 +1933,9 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
     const putOff = payload.ask_id && laterRef.current.get(payload.ask_id);
     if (putOff) {
       putOff.card = payload;
+      // Its bubble (if it has one) says it is put off, also when HARTOS's
+      // read of a history bubble finds it here, never "Checking...".
+      if (bubbledRef.current.has(payload.ask_id)) tellChat({ askId: payload.ask_id, state: 'later' });
       return;
     }
     // The asking agent's chat is in front: the ask is that chat's message.
@@ -1979,7 +1990,7 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
     });
 
     arm(entry);
-  }, [navigate, onInlineChatCard, arm, evictOver, forgetShowing, toChat]);
+  }, [navigate, onInlineChatCard, arm, evictOver, forgetShowing, toChat, tellChat]);
 
   // "Later" on an ask's card: off this screen now, back after ASK_LATER_MS
   // as if the ask had just arrived.  Nothing is sent: the ask stays open on
@@ -2085,6 +2096,9 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
   useEffect(() => {
     if (!checkKey) return;
     checkKey.split(',').filter(Boolean).forEach((askId) => {
+      // The chat shows its bubble: it hears 'later' and 'moved' as a bubble
+      // moved in here does.
+      bubbledRef.current.add(askId);
       if (checkedRef.current.has(askId) || inChatRef.current.has(askId)
           || overlaysRef.current.some((o) => o.ask_id === askId)) return;
       checkedRef.current.add(askId);

@@ -522,3 +522,100 @@ describe('Demopage puts the open asks back after each agent-switch history load'
     expect(SRC).toMatch(/askStatesRef\.current = askStates;/);
   });
 });
+
+// Review of 41767b70 (hartos-17, P9): only an ask this page moved into the
+// chat counted as having a bubble.  A bubble from the chat's stored history
+// or another tab, of an ask put off here with Later, read "Checking whether
+// this question is still open..." with no buttons until the period ended.
+// Every bubble the chat asks this window to check counts as one.
+describe('a bubble this page did not move in, of an ask put off here (review of 41767b70, P9)', () => {
+  // The read's promise chain (fetch, then its json) settles; no timer moves.
+  const settle = () => act(async () => { for (let i = 0; i < 10; i += 1) await Promise.resolve(); });
+  const readOf = (q) => `/api/agent/approval?ask_id=${q.ask_id}`;
+  const stateOf = () => screen.getByTestId('chat-ask').getAttribute('data-ask-state');
+
+  test('put off on its card, then its chat opens with the bubble in its stored history: it says put off, never "Checking...", and its buttons are back after the period', async () => {
+    jest.useFakeTimers();
+    try {
+      const q = ask();
+      global.fetch = jest.fn((url) => (url === readOf(q) ? reply(200, q) : reply(200, {status: 'ok'})));
+      const {send} = mount(OTHER_CHAT);
+      send(q);
+      fireEvent.click(screen.getByText('Later'));
+      expect(inOverlay(q.title)).toBe(false);
+      // Its chat opens, and its stored history (an earlier load of the page,
+      // or another tab) has the bubble: HARTOS's read says it is open.
+      act(() => { Page.switchTo(CHAT, [askChatMessage(q)]); });
+      act(() => { jest.advanceTimersByTime(150); });
+      await settle();
+      expect(global.fetch.mock.calls.some(([url]) => url === readOf(q))).toBe(true);
+      expect(stateOf()).toBe('later');
+      expect(inChat(q.title)).toBe(true);
+      expect(inChat('Put off for now: it comes back in 5 minutes.')).toBe(true);
+      expect(inChat('Checking whether this question is still open')).toBe(false);
+      expect(inOverlay(q.title)).toBe(false);
+      act(() => { jest.advanceTimersByTime(5 * 60 * 1000); });
+      expect(stateOf()).toBe('open');
+      expect(screen.getAllByText('Approve')).toHaveLength(1);
+      expect(inOverlay(q.title)).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('its history bubble was read while its chat was away, then put off on the card: the bubble says put off when its chat opens', async () => {
+    jest.useFakeTimers();
+    try {
+      const q = ask();
+      let answerRead;
+      global.fetch = jest.fn((url) => (url === readOf(q)
+        ? new Promise((resolve) => { answerRead = () => resolve({ok: true, status: 200, json: () => Promise.resolve(q)}); })
+        : reply(200, {status: 'ok'})));
+      mount(CHAT, [askChatMessage(q)]);
+      expect(stateOf()).toBe('checking');
+      // Another agent's chat opens before HARTOS answers the read.
+      act(() => { Page.switchTo(OTHER_CHAT, []); });
+      act(() => { jest.advanceTimersByTime(150); });
+      answerRead();
+      await settle();
+      expect(inOverlay(q.title)).toBe(true);
+      fireEvent.click(screen.getByText('Later'));
+      expect(inOverlay(q.title)).toBe(false);
+      act(() => { Page.switchTo(CHAT, [askChatMessage(q)]); });
+      act(() => { jest.advanceTimersByTime(150); });
+      await settle();
+      expect(stateOf()).toBe('later');
+      expect(inChat('Checking whether this question is still open')).toBe(false);
+      act(() => { jest.advanceTimersByTime(5 * 60 * 1000); });
+      expect(stateOf()).toBe('open');
+      expect(screen.getAllByText('Approve')).toHaveLength(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('guard: an ask moved into the chat here tells its chat the same states, in order, and is never read', () => {
+    jest.useFakeTimers();
+    try {
+      const {send, rerender} = mount();
+      const q = ask();
+      send(q);                                                    // into the chat
+      rerender(OTHER_CHAT);                                       // back to a card
+      fireEvent.click(screen.getByText('Later'));                 // put off
+      act(() => { jest.advanceTimersByTime(5 * 60 * 1000); });    // back as a card
+      rerender(CHAT);                                             // into the chat again
+      expect(Page.events.filter((e) => e.askId === q.ask_id).map((e) => e.state))
+        .toEqual(['open', 'moved', 'later', 'moved', 'open']);
+      expect(global.fetch.mock.calls.filter(([url]) => String(url).includes('?ask_id='))).toEqual([]);
+      expect(screen.getAllByText('Approve')).toHaveLength(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('the put-off wording says its minutes right: 1 minute, 5 minutes', () => {
+    expect(overlayModule.minutesText(60 * 1000)).toBe('1 minute');
+    expect(overlayModule.minutesText(5 * 60 * 1000)).toBe('5 minutes');
+    expect(overlayModule.askClosedText('later')).toBe('Put off for now: it comes back in 5 minutes.');
+  });
+});
