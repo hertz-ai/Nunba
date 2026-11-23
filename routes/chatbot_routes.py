@@ -100,17 +100,26 @@ def _fire_nunba_tts(text, user_id, request_id, language='en'):
 
     def _bg():
         try:
-            import re
+            from integrations.channels.media.tts_router import (
+                SOURCE_URGENCY,
+                llm_rewrite_allowed,
+            )
+            from integrations.channels.media.tts_text_normalizer import (
+                CHAT_REPLY_SOURCE,
+                normalize_for_tts,
+                nothing_to_say,
+            )
 
             from tts.tts_engine import synthesize_text
-            # Clean text for TTS
-            _clean = re.sub(r'```[\s\S]*?```', '', text)
-            _clean = re.sub(r'`[^`]+`', '', _clean)
-            _clean = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', _clean)
-            _clean = re.sub(r'https?://\S+', '', _clean)
-            _clean = re.sub(r'[*_~]{1,3}', '', _clean)
-            _clean = re.sub(r'\s+', ' ', _clean).strip()
-            if not _clean:
+            # What a chat reply sounds like is HARTOS's rule (markup, emoji
+            # and bare links cut, numbers said as words), the same call its
+            # own chat path makes.  No second copy of the cuts here.
+            _clean = normalize_for_tts(
+                text, language,
+                use_llm=llm_rewrite_allowed(
+                    SOURCE_URGENCY.get(CHAT_REPLY_SOURCE, 'normal')),
+                source=CHAT_REPLY_SOURCE)
+            if nothing_to_say(_clean):
                 return
             audio_path = synthesize_text(_clean, language=language)
             if audio_path and os.path.isfile(audio_path):
@@ -811,24 +820,6 @@ def _get_vision_service():
     return None
 
 
-def _shrink_frame(frame_bytes, max_side=640, quality=70):
-    """``frame_bytes`` re-encoded as a JPEG at most ``max_side`` px on its
-    long side, the size the page's own camera sends and the caption model
-    reads; None when the bytes are no image."""
-    import cv2
-    import numpy as np
-    img = cv2.imdecode(np.frombuffer(frame_bytes, np.uint8), cv2.IMREAD_COLOR)
-    if img is None:
-        return None
-    h, w = img.shape[:2]
-    scale = min(1.0, float(max_side) / max(h, w))
-    if scale < 1.0:
-        img = cv2.resize(img, (max(1, int(w * scale)), max(1, int(h * scale))),
-                         interpolation=cv2.INTER_AREA)
-    ok, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, quality])
-    return buf.tobytes() if ok else None
-
-
 def vision_frame_ingest():
     """POST /api/vision/frame?user_id=&channel=camera|screen, body=JPEG bytes.
 
@@ -852,10 +843,14 @@ def vision_frame_ingest():
     registration.  This machine or the local token: user_id is read from
     the query or X-User-Id as sent.  A phone the owner allowed (HARTOS's
     gate admitted it): it acts only as its token's user, named or not;
-    another user is 403.
+    another user is 403, said by the gate (security.middleware holds every
+    user a phone names, in a JSON body, the query or X-User-Id, to its
+    token before any route runs), so the frame is kept under the token's
+    user here whatever the request names.
     Sizes: the store keeps a frame of at most 512KB (5 FPS × ~40KB JPEG @
     640×480 q=0.6 = ~200KB/s).  A larger frame up to the 8MB upload ceiling
-    is shrunk to caption size (_shrink_frame) instead of refused: a phone
+    is shrunk to caption size (HARTOS frame_store.shrink_frame) instead of
+    refused: a phone
     sends its camera's own frames, and every one was answered 413 (live
     13 Nov 2026 14:42 IST, build 75), so no phone frame reached the caption
     model.  Past the ceiling, or a body that is no image, is still 413.
@@ -872,12 +867,9 @@ def vision_frame_ingest():
     asked_for = request.args.get('user_id') or request.headers.get('X-User-Id')
     device_user = admitted_device_user()
     if device_user is not None:
-        # A phone acts only as its token's user: the gate holds a JSON body
-        # to that rule (#51), and this body is a JPEG, so it is held here.
-        if asked_for and str(asked_for) != device_user:
-            return jsonify({'ok': False,
-                            'error': ("This phone sends frames as its own user only: "
-                                      "drop user_id, or send the user its token names.")}), 403
+        # A phone acts only as its token's user.  HARTOS's gate refused it
+        # already if it named another (query or X-User-Id, 403), so what it
+        # names is never read here.
         user_id = device_user
     else:
         user_id = str(asked_for or 'anon')
@@ -889,7 +881,8 @@ def vision_frame_ingest():
         return jsonify({'ok': False, 'error': 'frame_too_large',
                         'max_bytes': _MAX_UPLOAD_BYTES}), 413
     if len(frame_bytes) > _MAX_FRAME_BYTES:
-        frame_bytes = _shrink_frame(frame_bytes)
+        from integrations.vision.frame_store import shrink_frame
+        frame_bytes = shrink_frame(frame_bytes)
         if not frame_bytes or len(frame_bytes) > _MAX_FRAME_BYTES:
             return jsonify({'ok': False, 'error': 'frame_too_large',
                             'max_bytes': _MAX_FRAME_BYTES}), 413
@@ -976,58 +969,6 @@ def answer_fetcher(inp, user_id, request_id):
     """
     logger.info(f'STUB: answer_fetcher called for user {user_id}')
     return f"Answer to '{inp}': This is a stub response. Implement actual QA system."
-
-
-# ========== Agent reply ==========
-
-def _reply_parts(body):
-    """The reply's text as its non-empty parts: a multi-part reply keeps
-    every part, and a reply that is Liquid UI alone has none."""
-    text = body.get('text') or body.get('response') or ''
-    parts = text if isinstance(text, list) else [text]
-    return [p for p in parts if isinstance(p, str) and p.strip()]
-
-
-def _agent_reply(turn_body, request_id, dynamic_data=None, status=200):
-    """The reply to a chat turn: ONE shape for every agent and every path.
-
-    It is the body /chat returns (text, the agent and routing fields,
-    dynamic_layout, ...) plus two things:
-
-      * `dynamic_data`, the flexible map.  Any agent puts its own keys here
-        (a Teach Yourself topic and its "continue" option, a custom agent's
-        name and avatar), merged over whatever the turn itself returned.
-        Liquid UI binds dynamic_layout's nodes to it: the same layout + data
-        pair HARTOS's core.peer_link.ui_commands.ui_overlay_show sends, and
-        the key RN/iOS LiquidOverlay already read (res.dynamic_data).  A
-        client that does not know a key ignores it.
-      * what a phone's native chat screen needs to show any reply.  Android
-        parses this body as Revision_Response_Message, which has no `text`
-        field: the bubble is drawn from answerList, a message without a
-        priority is dropped (AbstractChatActivity.addNewMessage), answer
-        chips come from optionLists (the map's `options`) and the Teach
-        Yourself mode from `teachme`.  Derived the same way for every agent.
-    """
-    body = dict(turn_body or {})
-    # RN's CustomBotChatScreen shows `message` before `text`, so nothing but
-    # the reply may sit there; central's reply carries no `message` at all.
-    body.pop('message', None)
-    parts = _reply_parts(body)
-    data = dict(body.get('dynamic_data') or {})
-    data.update(dynamic_data or {})
-    body.update({
-        # a string, as central sends; every part stays in answerList
-        'text': '\n'.join(parts),
-        # never [] -- AbstractChatActivity reads answerList.get(0)
-        'answerList': parts or [''],
-        'priority': 99,
-        'optionLists': [str(o) for o in (data.get('options') or [])],
-        'request_id': str(request_id),
-        'dynamic_data': data,
-    })
-    if 'teachme' in data:
-        body['teachme'] = bool(data['teachme'])
-    return jsonify(body), status
 
 
 # ========== Main Route Functions ==========
@@ -1193,37 +1134,13 @@ def _agent_reply(turn_body, request_id, dynamic_data=None, status=200):
 
 
 # ========== Central chat paths served by this node ==========
-
-def _turn_text(data):
-    """The message of a /custom_gpt or /chat/teachme2 body.
-
-    `text` first: every caller puts the message there -- Android as a
-    one-item list (translated to English; `raw_text` keeps the original),
-    RN's custom-bot screen as a string, and RN's kids calls their full
-    instruction, with a short label in `raw_text` -- so `raw_text` never wins
-    over it.  `message` is RN's alias.
-    """
-    for key in ('text', 'message', 'raw_text'):
-        value = data.get(key)
-        if isinstance(value, list):
-            value = value[0] if value else ''
-        if isinstance(value, str) and value.strip():
-            return value
-    return ''
-
-
-#: What the phone shows when a turn produced no answer.  Never the error
-#: itself: exception text and backend envelopes are not for the user.
-_TURN_FAILED_TEXT = "Sorry, I couldn't answer that just now. Please try again."
-
-#: A request id a client may name for its own turn.  The phone mints one per
-#: turn so that a reply arriving after its wait (the push, file_list recovery)
-#: finds the bubble waiting for it; the web page and the watch send one per
-#: turn too.  The id keys the turn's state on this desktop (HARTOS's per-turn
-#: caches, and the user file store's binding of the turn's attachments:
-#: core.chat_attachments.bind_inbound), so only this alphabet and length are
-#: taken from a client.
-_CLIENT_REQUEST_ID = re.compile(r'[A-Za-z0-9_-]{8,64}')
+#
+# chat/custom_gpt and chat/teachme2 are the phone's paths.  What their bodies
+# mean, how a topic is taught, when a turn counts as answered and the reply's
+# shape live once in HARTOS (core.phone_chat), which central serves too.  This
+# node runs each turn through its own /chat (_chat_turn) and keeps what is its
+# own: how a request names its turn's id (_turn_request_id, which /chat
+# shares), and its bounded `sessions` store.
 
 
 def _turn_request_id(data, fresh=None):
@@ -1236,16 +1153,9 @@ def _turn_request_id(data, fresh=None):
     _chat_turn, the body of /chat, settles /chat's.  Settled once per
     request: the id this request already settled passes through untouched
     (core.chat_client: passthrough, never re-mint), so a turn custom_gpt or
-    teachme2 hands _chat_turn keeps its one id.
-
-    A client may name a turn with a well-formed id (_CLIENT_REQUEST_ID) that
-    does not carry HARTOS's background tag (core.chat_client.DAEMON_PREFIX,
-    its one spelling): HARTOS reads a ``daemon_<goal>`` turn as the agent
-    daemon's own work (dispatch.is_genuine_user_request), so it would keep
-    that goal's lane, not mark the person active, and book escalations to
-    the goal (create_recipe, daemon_goal_id).  When the tag cannot be read,
-    no client names a turn.  An id that is not taken is logged by its shape,
-    never by its value.
+    teachme2 hands _chat_turn keeps its one id.  Which ids a client may name
+    is HARTOS's rule (core.phone_chat.settle_request_id); when it cannot be
+    loaded, no client names a turn.
 
     The request also keeps whether its id is the client's own
     (g.turn_id_from_client).  Only a client's id can arrive again for the
@@ -1257,52 +1167,27 @@ def _turn_request_id(data, fresh=None):
     if in_request and sent is not None and g.get('turn_request_id') == sent:
         return sent                       # this request already settled it
     fresh = fresh or str(int(time.time() * 1000))
-    rid = _settle_request_id(sent, fresh,
-                             request.path if in_request else 'turn')
+    route = request.path if in_request else 'turn'
+    try:
+        from core.phone_chat import settle_request_id
+    except Exception:
+        logger.warning("%s: core.phone_chat is unavailable, so a client's "
+                       "request id cannot be checked; the turn runs as %s",
+                       route, fresh, exc_info=True)
+        rid = fresh
+    else:
+        rid = settle_request_id(sent, fresh, route)
     if in_request:
         g.turn_request_id = rid
         g.turn_id_from_client = rid != fresh
     return rid
 
 
-def _settle_request_id(sent, fresh, route):
-    """_turn_request_id's rule for one body's ``sent`` id (see there)."""
-    if sent in (None, '') or (sent == 0 and not isinstance(sent, bool)):
-        return fresh                      # no id: the turn gets one
-    rid = (str(sent) if isinstance(sent, (str, int))
-           and not isinstance(sent, bool) else None)
-    if not (rid and _CLIENT_REQUEST_ID.fullmatch(rid)):
-        why = 'is not a request id'
-    else:
-        try:
-            from core.chat_client import DAEMON_PREFIX
-        except Exception:
-            # Fail closed: without HARTOS's tag a person's turn cannot be told
-            # from the daemon's, so no client's id is taken, well formed or not.
-            logger.warning("%s: core.chat_client is unavailable, so a person's "
-                           "turn cannot be told from the daemon's; the turn "
-                           "runs as %s, not under the id the body names",
-                           route, fresh, exc_info=True)
-            return fresh
-        if not rid.startswith(DAEMON_PREFIX):
-            return rid
-        why = "carries HARTOS's background tag"
-    # Shape only, never the value: it is whatever the client sent.
-    logger.info("%s: the body's request_id (%s, length %s) %s; the turn runs "
-                "as %s", route, type(sent).__name__, len(rid) if rid else '-',
-                why, fresh)
-    return fresh
-
-
 def _run_turn(turn):
-    """(body, status) of one turn run by _chat_turn, the body of /chat.
-
-    A turn that failed, or answered with neither text, nor a Liquid UI
-    payload (dynamic_layout / dynamic_data: a reply can be the overlay
-    alone), nor `media` (a reel can be the whole answer), comes back as an
-    empty body with a non-2xx status; why stays in the log, never in the
-    reply.
-    """
+    """(body, status) of one turn run by _chat_turn, the body of /chat, as
+    HARTOS's core.phone_chat.turn_outcome reads it: a failed or empty turn is
+    an empty body with a non-2xx status, and why stays in the log."""
+    from core.phone_chat import turn_outcome
     try:
         result = _chat_turn(turn)
     except Exception:
@@ -1314,191 +1199,41 @@ def _run_turn(turn):
         body = response.get_json(silent=True) or {}
     except Exception:
         body = {}
-    if status >= 400:
-        return {}, status
-    if not (_reply_parts(body) or body.get('dynamic_layout')
-            or body.get('dynamic_data') or body.get('media')):
-        return {}, 502
-    return body, status
+    return turn_outcome(body, status)
 
 
 def custom_gpt():
     """POST /custom_gpt and /chat/custom_gpt: a turn with a custom agent.
 
-    Central serves this at /chat/custom_gpt, and the phone clients post there
-    (Android's CustomChatBotAPI, RN's chatApi.customGpt and its kids calls)
-    over a base URL their local->LAN->cloud cascade picks.  So this node
-    answers with a real turn: the SAME one /chat runs (_chat_turn), returned
-    in the one agent reply shape (_agent_reply).  draft_first is off because
-    these screens show only this synchronous reply, and a draft's standby
-    ("let me check...") would otherwise be the whole answer.
-
-    The phone names each turn's request_id, kept when a client may name the
-    turn (_turn_request_id) so a late push or file_list recovery finds its
-    bubble.  A Reel Studio turn carries attachments and goal_tags, which the
-    adapter forwards to HARTOS as far as HARTOS's contracts accept them
-    (turn_attachments, turn_goal_tags); the `media` HARTOS answers with is
-    in the reply as HARTOS sent it.
+    The phone clients post here (Android's CustomChatBotAPI, RN's
+    chatApi.customGpt and its kids calls) over a base URL their
+    local->LAN->cloud cascade picks.  HARTOS's core.phone_chat.custom_gpt_turn
+    reads the body and shapes the reply; the turn is the SAME one /chat runs
+    (_chat_turn).  The phone names each turn's request_id, kept when a client
+    may name the turn (_turn_request_id) so a late push or file_list
+    recovery finds its bubble.
     """
+    from core.phone_chat import custom_gpt_turn
     data = request.get_json(silent=True) or {}
-    user_id = data.get('user_id', 'guest')
-    request_id = _turn_request_id(data)
-    text = _turn_text(data)
-    if not text.strip():
-        return _agent_reply(
-            {'text': "Request cannot be blank, Please enter something as request.."},
-            request_id, status=400)
-    prompt_id = data.get('prompt_id') or data.get('bot_id')
-    turn = {
-        'text': text,
-        'user_id': user_id,
-        'request_id': request_id,
-        'conversation_id': (data.get('conversation_id')
-                            or f'custom_{prompt_id or "default"}'),
-        'create_agent': bool(data.get('create_agent')),
-        'teacher_avatar_id': data.get('teacher_avatar_id'),
-        'draft_first': False,
-    }
-    if prompt_id not in (None, '', 0, '0'):
-        turn['prompt_id'] = prompt_id
-    # attachments (the phone's refs into this desktop's user file store) and
-    # goal_tags (the agent-creation hint) go on the turn as sent; the
-    # adapter's chat() bounds them by HARTOS's contracts on the way to
-    # HARTOS /chat (turn_attachments, turn_goal_tags), whose chat() binds the
-    # refs to the turn and reads the hint for that turn alone.
-    for key in ('preferred_lang', 'language', 'media_mode',
-                'attachments', 'goal_tags'):
-        if data.get(key):
-            turn[key] = data[key]
-    body, status = _run_turn(turn)
-    if not body:
-        return _agent_reply({'text': _TURN_FAILED_TEXT}, request_id, status=status)
-    return _agent_reply(body, request_id)
-
-
-#: The goals scopes the Teach Yourself screen sends when the learner picks
-#: what to learn.  Other callers post chat/teachme2 as a transport (kids
-#: progress reports, catalog requests); those must not start a topic.
-_TEACH_SCOPES = ('book', 'course', 'topic', 'goals')
-
-#: What a learner sends to go on with the current topic.
-_TEACH_CONTINUE = ('continue', 'next', 'go on')
-
-#: The goals scopes the kids clients post to chat/teachme2 as a TRANSPORT
-#: (iOS and RN's committed kidsLearningApi: getAdaptiveQuestion 'kids_game',
-#: reportGameCompletion 'progress_report', syncResults 'batch_sync').  They
-#: are not lessons.  Central answers them with an error, and that error is
-#: what makes the client keep the result and retry; a 2xx would drop it.
-_KIDS_TRANSPORT_SCOPES = ('kids_game', 'progress_report', 'batch_sync')
-
-
-def _tutor_opening(goals, learner_text):
-    """The first turn of a topic: what to teach, and how much of it.
-
-    Deliberately short.  Measured 2026-09-13, an opening carrying HARTOS's
-    full tutor persona ran past the 120 s LLM timeout on this node, while the
-    same model answered a scoped "first step, then one check question" turn
-    in about 45 s.
-    """
-    name = goals.get('name') or goals.get('book_name') or 'this topic'
-    book, pages = goals.get('book_name') or '', goals.get('pages') or []
-    where = f' (pages {pages[0]}-{pages[-1]} of "{book}")' if pages and book else ''
-    about = f" -- {goals['text']}" if goals.get('text') else ''
-    ask = learner_text or f'Teach me {name}.'
-    return (f'{ask}\nYou are my patient tutor. Teach {name}{where}{about}: '
-            f'the first step only, simply, then one quick check question.')
-
-
-#: The agent that serves Teach Yourself on this node once it is built (owner
-#: ruling 2026-09-14: Teach Yourself is a created agent).  54 is the prompt_id
-#: of the Nunba chat page's "Personalised Learning" agent (Demopage.js), the
-#: one its sidebar launches, so the phone and the desktop talk to the SAME
-#: agent.  NUNBA_TEACH_AGENT_ID overrides it; an empty value turns it off.
-TEACH_AGENT_PROMPT_ID = '54'
-
-
-def _teach_agent_prompt_id():
-    """The Teach Yourself agent's prompt_id when it is built, else None.
-
-    "Built" is HARTOS's own question (core.flow_recipe_optimizer.recipe_exists:
-    the flow-0 recipe is in the prompts dir /chat reads).  Until it is, the
-    turn names no agent: /chat given the id of an agent that has a config and
-    no recipe starts BUILDING it (measured 2026-10-05 on id 54: "I need your
-    input to finish building this agent"), which is not what a learner's turn
-    should do.
-    """
-    pid = os.environ.get('NUNBA_TEACH_AGENT_ID', TEACH_AGENT_PROMPT_ID).strip()
-    if not pid:
-        return None
-    try:
-        from core.flow_recipe_optimizer import recipe_exists
-        return pid if recipe_exists(pid, 0) else None
-    except Exception:
-        logger.warning('Teach Yourself agent %s: cannot tell whether it is '
-                       'built; serving the turn without it', pid, exc_info=True)
-        return None
+    body, status = custom_gpt_turn(data, _turn_request_id(data), _run_turn)
+    return jsonify(body), status
 
 
 def teachme2():
-    """POST /chat/teachme2: central's Teach Yourself turn, served here.
+    """POST /chat/teachme2: Teach Yourself, served here.
 
-    Android's TeachYourselfActivity posts every turn to chat/teachme2.  This
-    node runs the SAME turn /chat runs (_chat_turn); a newly picked topic is
-    framed as a short tutoring request (_tutor_opening).  Android sends the
-    topic (`goals`) on the first turn only, so it is kept on the learner's
-    entry in the bounded `sessions` store and "continue" keeps teaching it.
-    The topic and its "continue" option travel in the reply's dynamic_data,
-    like any agent's own fields.
-
-    TRANSITIONAL (owner ruling 2026-09-14): Teach Yourself is a created
-    agent.  The turn names it (_teach_agent_prompt_id) once its recipe is
-    built; until then it runs without an agent id, as before.
-
-    The body's request_id names the turn only when a client may name one
-    (_turn_request_id, the rule custom_gpt and /chat use).
+    Android's TeachYourselfActivity posts every turn to chat/teachme2.
+    HARTOS's core.phone_chat.teachme2_turn frames the topic and shapes the
+    reply; the turn is the SAME one /chat runs (_chat_turn), and the
+    learner's topic is kept on their entry in this node's bounded `sessions`
+    store.  The body's request_id names the turn only when a client may name
+    one (_turn_request_id, the rule custom_gpt and /chat use).
     """
+    from core.phone_chat import teachme2_turn
     data = request.get_json(silent=True) or {}
-    user_id = str(data.get('user_id', 'guest'))
-    request_id = _turn_request_id(data)
-    text = _turn_text(data)
-    goals = data.get('goals')
-    if isinstance(goals, dict) and goals.get('scope') in _KIDS_TRANSPORT_SCOPES:
-        return _agent_reply({'text': 'This request is not served on this node.'},
-                            request_id, status=501)
-    with _sessions_lock:
-        entry = sessions.get(user_id) or {}
-        if isinstance(goals, dict) and goals.get('scope') in _TEACH_SCOPES:
-            entry['teach_topic'] = goals
-            text = _tutor_opening(goals, text)
-        topic = entry.get('teach_topic')
-        # Assigned, not setdefault: _BoundedSessionDict enforces its cap in
-        # __setitem__, which dict.setdefault never calls.
-        sessions[user_id] = entry
-    if topic and text.strip().lower() in _TEACH_CONTINUE:
-        name = topic.get('name') or topic.get('book_name') or 'the topic'
-        text = (f'Continue teaching {name}: the next step, '
-                f'then one quick check question.')
-    teach_data = ({'topic': topic.get('name') or topic.get('book_name') or '',
-                   'options': ['continue'], 'teachme': True} if topic else {})
-    if not text.strip():
-        return _agent_reply({'text': "Please enter something as response.."},
-                            request_id, dynamic_data=teach_data, status=400)
-    turn = {
-        'text': text,
-        'user_id': user_id,
-        'request_id': request_id,
-        'conversation_id': f'teachme_{user_id}',
-        'teacher_avatar_id': data.get('teacher_avatar_id'),
-        'draft_first': False,
-    }
-    agent = _teach_agent_prompt_id()
-    if agent:
-        turn['prompt_id'] = agent
-    body, status = _run_turn(turn)
-    if not body:
-        return _agent_reply({'text': _TURN_FAILED_TEXT}, request_id,
-                            dynamic_data=teach_data, status=status)
-    return _agent_reply(body, request_id, dynamic_data=teach_data)
+    body, status = teachme2_turn(data, _turn_request_id(data), _run_turn,
+                                 topics=sessions, topics_lock=_sessions_lock)
+    return jsonify(body), status
 
 
 # ========== TTS Routes ==========
@@ -1557,6 +1292,10 @@ def tts_synthesize():
     if not TTS_AVAILABLE:
         return jsonify({"error": "TTS not available"}), 503
 
+    # The words that are spoken, once the request's text is cut down to them.
+    # An error answer carries them as "spoken_text", so the page's own voice
+    # says the same words when it takes over.
+    spoken = None
     try:
         data = request.get_json() or {}
         text = data.get("text", "").strip()
@@ -1572,8 +1311,24 @@ def tts_synthesize():
         if len(text) > 5000:
             return jsonify({"error": "Text too long (max 5000 characters)"}), 400
 
+        # Markup and emoji are written for the eye: HARTOS's normalizer cuts
+        # them and says numbers as words, as it does for every other
+        # speaker.  The rule pass only (use_llm=False): this request waits
+        # on the audio, and before this call it waited on no model.
+        from integrations.channels.media.tts_router import detect_language
+        from integrations.channels.media.tts_text_normalizer import (
+            normalize_for_tts,
+            nothing_to_say,
+        )
+        spoken = normalize_for_tts(
+            text, language or detect_language(text), use_llm=False,
+            source='read_aloud')
+        if nothing_to_say(spoken):      # '** **', '...', a lone emoji
+            return jsonify({"error": "No text provided",
+                            "spoken_text": ""}), 400
+
         # Synthesize using unified engine (language triggers engine routing)
-        audio_path = synthesize_text(text, voice=voice, speed=speed,
+        audio_path = synthesize_text(spoken, voice=voice, speed=speed,
                                       language=language)
 
         if audio_path and os.path.exists(audio_path):
@@ -1594,11 +1349,15 @@ def tts_synthesize():
                 download_name="speech.wav"
             )
         else:
-            return jsonify({"error": "Synthesis failed"}), 500
+            return jsonify({"error": "Synthesis failed",
+                            "spoken_text": spoken}), 500
 
     except Exception as e:
         logger.error(f"TTS synthesis error: {e}")
-        return jsonify({"error": str(e)}), 500
+        body = {"error": str(e)}
+        if spoken is not None:
+            body["spoken_text"] = spoken
+        return jsonify(body), 500
 
 
 def tts_voices():
@@ -1678,8 +1437,11 @@ def tts_install_voice():
             # Sync catalog download state
             try:
                 from models.orchestrator import get_orchestrator
+                from tts.package_installer import registry_engine_id
                 backend = info.get('backend', '')
-                get_orchestrator().notify_downloaded(ModelType.TTS, backend)
+                # The catalog row is named by the registry id ('f5' is f5_tts).
+                get_orchestrator().notify_downloaded(
+                    ModelType.TTS, registry_engine_id(backend))
             except Exception:
                 pass
             return jsonify({"success": True, "message": f"Voice {voice_id} installed"})
@@ -1791,7 +1553,9 @@ def tts_setup_engine():
     if ok:
         try:
             from models.orchestrator import get_orchestrator
-            get_orchestrator().notify_downloaded(ModelType.TTS, backend)
+            from tts.package_installer import registry_engine_id
+            get_orchestrator().notify_downloaded(
+                ModelType.TTS, registry_engine_id(backend))
         except Exception:
             pass
     return jsonify({
@@ -2224,7 +1988,11 @@ def voice_transcribe():
             pass
 
         # Emit present-tense audio perception event + evaluate audio watchers
-        _uid = request.form.get('user_id', request.headers.get('X-User-Id', ''))
+        # A phone the owner allowed is heard as its token's user, named or
+        # not (it was heard as '', nobody, when its form named none).
+        _uid = admitted_device_user()
+        if _uid is None:
+            _uid = request.form.get('user_id', request.headers.get('X-User-Id', ''))
         _text = result.get('text', '')
         try:
             import time as _time
@@ -2346,7 +2114,9 @@ def voice_diarize():
         # Emit speaker diarization event
         try:
             from core.platform.events import emit_event
-            _uid = request.form.get('user_id', request.headers.get('X-User-Id', ''))
+            _uid = admitted_device_user()       # a phone: its token's user
+            if _uid is None:
+                _uid = request.form.get('user_id', request.headers.get('X-User-Id', ''))
             emit_event('perception.audio.speaker', {
                 'user_id': _uid,
                 'speaker_count': result.get('no_of_speaker', 0),
@@ -3753,7 +3523,7 @@ def _run_chat_turn(data):
                     # (creative tools: Movie_Maker, Game_Asset_Creator, Story_Director
                     #  return JSON that the Liquid UI renders natively)
                     # The agent's own flexible map: Liquid UI binds the
-                    # layout's nodes to it (see _agent_reply).
+                    # layout's nodes to it (see core.phone_chat.agent_reply_body).
                     if result.get('dynamic_data'):
                         response_json['dynamic_data'] = result['dynamic_data']
                     if result.get('dynamic_layout'):
@@ -3816,9 +3586,21 @@ def _run_chat_turn(data):
                     #   evidence 2026-05-10 22:03:02 showed a chat served
                     #   while HARTOS was still loading; HARTOS's bg TTS
                     #   thread did NOT fire so Nunba MUST step in).
-                    # - Non-English (frozen HARTOS doesn't always pass
-                    #   preferred_lang to the synth pipeline; Indic Parler
-                    #   / Kokoro routing lives in Nunba's tts_engine).
+                    # - Non-English, when the reply did not come from
+                    #   HARTOS's own /chat in this process (Tier-2 HTTP,
+                    #   whose HARTOS may not pass preferred_lang to the
+                    #   synth pipeline; Indic Parler / Kokoro routing
+                    #   lives in Nunba's tts_engine).  A Tier-1 reply
+                    #   (result '_tier' == 'direct') is spoken already:
+                    #   HARTOS's _chat_reply speaks the turn, every message
+                    #   it sent and then the reply, as ONE clip under the
+                    #   request id, through this same tts_engine and in
+                    #   the language this request carried (its chat()
+                    #   persists preferred_lang before the turn runs, and
+                    #   _chat_reply reads it back).  A second clip from
+                    #   here replaced that one on the page (ttsClipPlayer
+                    #   loads a new url over the one playing), so a Tamil
+                    #   turn's sends were cut off by a reply-only clip.
                     #
                     # The earlier 2d574bc4 attempt to drop the
                     # `not _ensure_hartos()` clause (claiming "HARTOS
@@ -3833,7 +3615,8 @@ def _run_chat_turn(data):
                     # legitimate Nunba fallback.
                     from routes.hartos_backend_adapter import _ensure_hartos
                     _nunba_handles_tts = (not _ensure_hartos() or
-                                          (preferred_lang and not preferred_lang.startswith('en')))
+                                          (preferred_lang and not preferred_lang.startswith('en')
+                                           and result.get('_tier') != 'direct'))
                     if audio_mode and response_text and _nunba_handles_tts:
                         _fire_nunba_tts(response_text, user_id, request_id, preferred_lang)
                     return jsonify(response_json)
@@ -4648,6 +4431,19 @@ def vault_store():
                           "HART OS and enter it again."),
             })
 
+        if key_type != 'channel_secret':
+            # A key typed on this computer's card is kept by the desktop
+            # vault and never passes through HARTOS's store_credential, so
+            # HARTOS is told here, by name: whatever was set aside for want
+            # of this key (a voice whose repo refused or lacked it) is put
+            # back.  An older HART OS has nobody to tell.
+            try:
+                from hartos.ai_key_vault import announce_credential_stored
+            except ImportError:
+                pass
+            else:
+                announce_credential_stored(key_name)
+
         return jsonify({'success': True, 'key_name': key_name, 'stored': True})
     except Exception as e:
         logger.error(f'Vault store error: {e}')
@@ -4737,6 +4533,15 @@ def agent_contact_request():
 
     is_owned = agent_config and agent_config.get('creator_user_id') == target_user_id
     agent_name = (agent_config or {}).get('name', f'Agent {agent_id[:8]}')
+    # The name as a card says it ("Agent <name>"), worded by HARTOS's one
+    # rule and sent beside the bare name, as a consent ask carries it
+    # (consent_service._named).  The two cards these payloads have on the
+    # page read it through constants/consentAsks.askerOf: AgentContactRequest
+    # (its name line) and AgentMessageToast (its headline).  Until 2026-11-22
+    # both showed the bare agent_name and nothing read this key.  The browser
+    # embed mounts neither card.
+    from integrations.social.consent_service import agent_as_asker
+    agent_asker = agent_as_asker(agent_name)
 
     request_id = str(uuid.uuid4())[:12]
 
@@ -4749,6 +4554,7 @@ def agent_contact_request():
                 'type': 'agent_message',
                 'agent_id': agent_id,
                 'agent_name': agent_name,
+                'agent_asker': agent_asker,
                 'message': message,
                 'reason': reason,
                 'request_id': request_id,
@@ -4804,6 +4610,7 @@ def agent_contact_request():
                 'type': 'agent_contact_request',
                 'agent_id': agent_id,
                 'agent_name': agent_name,
+                'agent_asker': agent_asker,
                 'reason': reason,
                 'request_id': request_id,
                 'requires_consent': True,
