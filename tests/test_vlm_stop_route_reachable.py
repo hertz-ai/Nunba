@@ -173,11 +173,13 @@ class TestTheAcceptedSetCoversWhatTheHandlerEmits:
         sibling repo happens to be present is a test that silently stops
         running.  This one only catches the pin going stale.
         """
-        hartos = os.environ.get('HARTOS_REPO') or os.path.join(
-            os.path.dirname(REPO), 'HARTOS')
+        from tests.hartos_root import hartos_root, searched
+        hartos = hartos_root()
+        if hartos is None:
+            pytest.skip(f'HARTOS tree not found (looked at {searched()})')
         entry = os.path.join(hartos, 'hart_intelligence_entry.py')
         if not os.path.isfile(entry):
-            pytest.skip(f'HARTOS tree not found at {entry}')
+            pytest.skip(f'HARTOS is at {hartos} but has no hart_intelligence_entry.py there')
         with open(entry, encoding='utf-8', errors='replace') as fh:
             src = fh.read()
         found = set(re.findall(
