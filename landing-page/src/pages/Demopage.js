@@ -964,9 +964,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           'Processing...';
         setMessages((prev) => [...prev, { type: 'system', content: phaseLabel }]);
 
+        // Each step the page sends on its own is a turn of this page,
+        // started as handleSend starts one (chatRetry.startTurn), so its
+        // reply's voice plays here (ttsGuards.shouldPlayPushedClip).  Sent
+        // with no id, the server minted one this page did not know.
+        const contTurn = startTurn(requestIdRef);
+        setRequestId(contTurn);
         const contResult = await chatApi.chat({
           text: 'Yes, proceed with the next step',
           user_id: effectiveUserId,
+          request_id: contTurn,
           agent_id: currentAgent?.id || 'local_assistant',
           agent_type: 'local',
           conversation_id: conversationId,
@@ -1027,9 +1034,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               // Trigger one more continuation to run the agent with the original task
               setTimeout(async () => {
                 try {
+                  const execTurn = startTurn(requestIdRef);   // a turn of this page, as above
+                  setRequestId(execTurn);
                   const execResult = await chatApi.chat({
                     text: originalTask,
                     user_id: effectiveUserId,
+                    request_id: execTurn,
                     agent_id: currentAgent?.id || 'local_assistant',
                     agent_type: 'local',
                     conversation_id: conversationId,
@@ -4730,9 +4740,14 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     try {
       setIsRequestInFlight(true);
       const effectiveUserId = decryptedUserId || guestUserId;
+      // Executing the plan is a turn of this page, started as handleSend
+      // starts one, so its reply's voice plays here.
+      const planTurn = startTurn(requestIdRef);
+      setRequestId(planTurn);
       const result = await chatApi.chat({
         text: plan.task_description,
         user_id: effectiveUserId,
+        request_id: planTurn,
         prompt_id: promptId,
         agentic_execute: true,
         agentic_plan: plan,

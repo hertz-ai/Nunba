@@ -8287,6 +8287,16 @@ def main():
                         # steering client (review of Nunba e6e806bf).
                         _url = f"http://127.0.0.1:{_port}/chat"
                         _body = {"text": prompt, "source": "companion_input_bar"}
+                        # The turn's id the companion minted and recorded as
+                        # this desktop's (VoiceOrbPage), so the reply's voice
+                        # plays on this desktop (landing-page ttsGuards
+                        # shouldPlayPushedClip: only the device used speaks a
+                        # turn).  Without it the server minted an id no window
+                        # knew.  The route keeps it only in the form a client
+                        # may name a turn by (_turn_request_id).
+                        _rid = context.get("request_id") if isinstance(context, dict) else None
+                        if isinstance(_rid, str) and _rid.strip():
+                            _body["request_id"] = _rid.strip()
                         try:
                             # /chat's contract names the prompt `text`
                             # (routes/chatbot_routes.py chat_route); the

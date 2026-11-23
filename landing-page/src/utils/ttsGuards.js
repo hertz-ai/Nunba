@@ -30,8 +30,8 @@
  * half: whether a clip the server pushed (SSE 'tts' or WAMP) plays at all.
  */
 
-import {isOtherTurnEnvelope, turnIdOf} from '../constants/chatBubble';
-import {turnsStartedHere} from './chatRetry';
+import {isBackgroundRequest, isOtherTurnEnvelope, turnIdOf} from '../constants/chatBubble';
+import {lastTurnStartedHere, turnsStartedHere} from './chatRetry';
 
 
 export function isDraftReply(resultData) {
@@ -73,12 +73,21 @@ export function hasServerAudioPayload(resultData) {
  * as the Android app's ChatBubble.playsVoiceOf: a clip of no person's turn
  * (no id, or one naming nothing: '', None, null, undefined) plays as before.
  * Only the voice: the reply's words show on every device.
+ *
+ * The device is the desktop, not one window of it.  The last turn the
+ * desktop sent (`lastHere`, chatRetry.lastTurnStartedHere, written by
+ * whichever window sent it) is its current turn too: a quick prompt typed in
+ * the floating companion, which plays no audio, is spoken by this window
+ * even while this page is on an earlier turn of its own.  A turn this page
+ * sends after it moves both on, so the companion's late clip is then an
+ * earlier turn's.
  */
 export function shouldPlayPushedClip(data, currentRequestId, ttsEnabled,
-  sentHere = turnsStartedHere()) {
+  sentHere = turnsStartedHere(), lastHere = lastTurnStartedHere()) {
   if (ttsEnabled !== true) return false;
   if (!data || !data.generated_audio_url) return false;
   const turn = clipTurnOf(data.request_id);
+  if (turn && turn === lastHere && !isBackgroundRequest(turn)) return true;
   if (isOtherTurnEnvelope(turn, currentRequestId)) return false;
   if (!turn) return true;
   return turn === currentRequestId || Boolean(sentHere && sentHere.has(turn));

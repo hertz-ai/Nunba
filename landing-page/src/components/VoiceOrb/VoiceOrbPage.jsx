@@ -6,6 +6,7 @@ import useComputerActivity from '../../hooks/useComputerActivity';
 import realtimeService from '../../services/realtimeService';
 import { dashboardApi } from '../../services/socialApi';
 import { COMPANION_CARD_RADIUS, COMPANION_GLASS_SURFACE } from '../../theme/hartGlass';
+import { makeMsgId, rememberOwnTurn } from '../../utils/chatRetry';
 import { ConsentPromptOverlay } from '../AgentOverlay/AgentOverlay';
 import VoiceVisualizer from '../VoiceVisualizer';
 
@@ -288,16 +289,31 @@ function InputBar({liveRun}) {
           (d) => (d?.success ? 'Guidance sent to the active HART.' : steerError(d)),
           (e) => steerError(e),
         );
-      } else if (api && api.on_companion_prompt) {
-        answer = await api.on_companion_prompt(t, context);
       } else {
-        const r = await fetch('/chat', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({text: t, source: 'companion_input_bar', priority: 'high', user_priority: true}),
-        });
-        const d = await r.json().catch(() => null);
-        answer = (d && (d.response || d.message || d.text)) || 'OK';
+        // A quick prompt is a turn of this desktop.  Its id is minted and
+        // recorded as the page's own sends are (utils/chatRetry, as the
+        // Social panel's send does) and goes with it, so the reply's voice
+        // plays on this desktop (utils/ttsGuards.shouldPlayPushedClip: only
+        // the device used speaks a turn).  This window plays no audio; the
+        // main window reads the record from the last-turn key both windows
+        // share (one WebView2 profile, one origin).  Sent with no id, the
+        // server minted one no window knew and the turn went silent.
+        const requestId = makeMsgId();
+        rememberOwnTurn(requestId);
+        if (api && api.on_companion_prompt) {
+          answer = await api.on_companion_prompt(t, {...context, request_id: requestId});
+        } else {
+          const r = await fetch('/chat', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+              text: t, request_id: requestId, source: 'companion_input_bar',
+              priority: 'high', user_priority: true,
+            }),
+          });
+          const d = await r.json().catch(() => null);
+          answer = (d && (d.response || d.message || d.text)) || 'OK';
+        }
       }
       showReply(typeof answer === 'string' && answer ? answer : 'Done');
       setText('');

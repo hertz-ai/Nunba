@@ -90,13 +90,26 @@ export function rememberOwnTurn(turnId, { last = true } = {}) {
   }
 }
 
+/**
+ * The last turn sent from this desktop, by whichever of its windows sent it
+ * ('' for none, or storage blocked).  The key is shared by the app's windows
+ * (one WebView2 profile, one origin), so a quick prompt sent from the
+ * floating companion (VoiceOrbPage) is read here by the main window.
+ */
+export function lastTurnStartedHere() {
+  try {
+    const last = localStorage.getItem(LAST_TURN_KEY);
+    return last && last.trim() ? last.trim() : '';
+  } catch (e) {
+    return ''; // storage blocked
+  }
+}
+
 /** Every turn this page started: this page's record and the last sent. */
 export function turnsStartedHere() {
   const here = new Set(ownTurns);
-  try {
-    const last = localStorage.getItem(LAST_TURN_KEY);
-    if (last && last.trim()) here.add(last.trim());
-  } catch (e) { /* storage blocked */ }
+  const last = lastTurnStartedHere();
+  if (last) here.add(last);
   return here;
 }
 
