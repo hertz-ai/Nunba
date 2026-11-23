@@ -9,6 +9,7 @@ import { formatMoney } from '../../constants/liquidFragments';
 import realtimeService from '../../services/realtimeService';
 import { agentFormApi, chatApi, consentApi, notificationsApi } from '../../services/socialApi';
 import { HART_GLASS_SURFACE } from '../../theme/hartGlass';
+import { rememberOwnTurn } from '../../utils/chatRetry';
 
 
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
@@ -453,6 +454,9 @@ export function askAnsweredHere(askId) {
 }
 
 async function answerAsk(askId, answer) {
+  // Answered in this window: what HARTOS voices for it is this device's
+  // (utils/ttsGuards.shouldPlayPushedClip: only the device used speaks).
+  rememberOwnTurn(askId, { last: false });
   answeredHere.add(askId);
   let res;
   try {

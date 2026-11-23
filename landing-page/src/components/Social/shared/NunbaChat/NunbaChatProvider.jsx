@@ -22,6 +22,7 @@ import {
   classifyError,
   getBackoff,
   makeMsgId,
+  rememberOwnTurn,
 } from '../../../../utils/chatRetry';
 import {getStableDeviceIdOnce} from '../../../../utils/deviceId';
 import {rememberServerPromptId} from '../../../../utils/promptId';
@@ -763,6 +764,9 @@ export default function NunbaChatProvider({children}) {
       const {mentionedAgents} = parseMentions(text);
       const agentKey = currentAgentRef.current;
       const msgId = makeMsgId();
+      // This page's turn: its voice plays here and only here (ttsGuards.
+      // shouldPlayPushedClip: only the device used speaks a turn).
+      rememberOwnTurn(msgId);
       const userMsg = {
         role: 'user',
         text: text.trim(),

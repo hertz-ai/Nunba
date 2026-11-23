@@ -48,3 +48,18 @@ export function isOtherTurnEnvelope(requestId, currentRequestId) {
   if (!currentRequestId || !requestId) return false;
   return requestId !== currentRequestId;
 }
+
+// A message an agent sent during a turn carries the turn's id with this mark
+// after it ('<turn>-intermediate', '<turn>-intermediate-<n>').  Mirror of
+// HARTOS core.peer_link.crossbar_publish._TURN_SEND_MARK and the Android
+// app's ChatBubble.TURN_SEND_MARK.
+export const TURN_SEND_MARK = '-intermediate';
+
+// The turn a request id names: the id up to the mark, the whole id with no
+// mark, '' for none (RN ChatBubble.turnIdOf).
+export function turnIdOf(requestId) {
+  if (requestId === undefined || requestId === null) return '';
+  const id = String(requestId);
+  const i = id.indexOf(TURN_SEND_MARK);
+  return i < 0 ? id : id.slice(0, i);
+}

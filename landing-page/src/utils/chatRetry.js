@@ -59,7 +59,45 @@ export function makeMsgId() {
 export function startTurn(currentTurnRef) {
   const id = makeMsgId();
   currentTurnRef.current = id;
+  rememberOwnTurn(id);
   return id;
+}
+
+// The turns this page started, so a turn's voice plays only on the device
+// that started it (owner 2026-11-23: "Only the device you used";
+// utils/ttsGuards.shouldPlayPushedClip).  The newest OWN_TURNS_KEPT of this
+// page, and the last one sent, which is kept in localStorage so a reload
+// mid-turn still speaks that turn's reply (as the Android app keeps keyID).
+const OWN_TURNS_KEPT = 200;
+export const LAST_TURN_KEY = 'nunba_last_turn_id';
+const ownTurns = new Set();
+
+/**
+ * Record `turnId` as this page's.  `last` (default true): it is the turn
+ * just sent, kept across a reload; an ask answered here is recorded with
+ * last: false.  Storage that throws is skipped.
+ */
+export function rememberOwnTurn(turnId, { last = true } = {}) {
+  if (!turnId) return;
+  const id = String(turnId);
+  ownTurns.delete(id);
+  ownTurns.add(id);
+  while (ownTurns.size > OWN_TURNS_KEPT) {
+    ownTurns.delete(ownTurns.values().next().value);
+  }
+  if (last) {
+    try { localStorage.setItem(LAST_TURN_KEY, id); } catch (e) { /* storage blocked */ }
+  }
+}
+
+/** Every turn this page started: this page's record and the last sent. */
+export function turnsStartedHere() {
+  const here = new Set(ownTurns);
+  try {
+    const last = localStorage.getItem(LAST_TURN_KEY);
+    if (last && last.trim()) here.add(last.trim());
+  } catch (e) { /* storage blocked */ }
+  return here;
 }
 
 /**

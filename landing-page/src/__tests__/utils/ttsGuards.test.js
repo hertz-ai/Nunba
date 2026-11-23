@@ -146,9 +146,17 @@ describe('shouldPlayPushedClip', () => {
     expect(shouldPlayPushedClip(clip('daemon_goal_20260412_235046_b18bba6f'), null, ON)).toBe(false);
   });
 
-  test('a clip with no id, or one arriving before the page has a turn, plays', () => {
+  test('a clip with no id plays, with or without a turn of our own', () => {
     expect(shouldPlayPushedClip(clip(undefined), second, ON)).toBe(true);
-    expect(shouldPlayPushedClip(clip(first), null, ON)).toBe(true);
+    expect(shouldPlayPushedClip(clip(undefined), null, ON)).toBe(true);
+  });
+
+  // Owner 2026-11-23: "Only the device you used".  A clip arriving before the
+  // page has a turn is another device's turn's unless this page started it
+  // (pages/demopageVoiceOnTheDeviceUsed.test.js).
+  test('a clip of a turn this page did not start does not play, even before the page has a turn', () => {
+    expect(shouldPlayPushedClip(clip(first), null, ON, new Set())).toBe(false);
+    expect(shouldPlayPushedClip(clip(first), null, ON, new Set([first]))).toBe(true);
   });
 
   test('nothing plays without a clip url', () => {
