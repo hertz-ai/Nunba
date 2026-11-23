@@ -21,6 +21,16 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+# ---------------------------------------------------------------------------
+# A test run starts no model server, leaves the installed app alone and keeps
+# llama's files out of the person's home.  The whole of it is in
+# tests/hermetic_run.py, the one helper every runner calls; a runner that does
+# not load this file (a direct-call driver) calls install() itself.
+# ---------------------------------------------------------------------------
+from tests.hermetic_run import install as _make_this_run_hermetic  # noqa: E402
+
+_make_this_run_hermetic()
+
 # ── Layer 1: synthetic CUDA fixtures for GPU-path coverage on CPU runners ──
 # Re-export synthetic_cuda / synthetic_cuda_* fixtures from conftest_cuda_mock
 # so any test can request them without extra imports.

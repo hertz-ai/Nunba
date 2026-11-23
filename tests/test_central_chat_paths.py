@@ -175,7 +175,8 @@ def test_a_failed_turn_is_non_2xx_and_never_leaks(client, turns, reply):
     resp = client.post('/chat/custom_gpt', json=ANDROID_CUSTOM_BOT)
     assert resp.status_code >= 500
     assert 'secret' not in resp.get_data(as_text=True)
-    assert resp.get_json()['answerList'] == [cr._TURN_FAILED_TEXT]
+    from core.phone_chat import TURN_FAILED_TEXT
+    assert resp.get_json()['answerList'] == [TURN_FAILED_TEXT]
 
 
 # ── /chat/teachme2 ───────────────────────────────────────────────────
@@ -441,3 +442,22 @@ def test_a_built_check_that_cannot_answer_serves_the_turn_without_the_agent(
     resp = _teach(client, text=['teach me'])
     assert resp.status_code == 200
     assert 'prompt_id' not in seen[0]
+
+
+# ── one home: HARTOS core.phone_chat ─────────────────────────────────
+
+def test_the_phone_paths_have_one_home_in_hartos():
+    """What the phone's bodies mean and the reply's shape live once, in
+    HARTOS's core.phone_chat, which central serves too.  A copy here would
+    drift from central's (the parallel path this move removed)."""
+    import ast
+    tree = ast.parse(open(cr.__file__, encoding='utf-8').read())
+    defined = {n.name for n in ast.walk(tree)
+               if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
+    defined |= {t.id for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                for t in n.targets if isinstance(t, ast.Name)}
+    moved = {'_agent_reply', '_reply_parts', '_turn_text', '_settle_request_id',
+             '_tutor_opening', '_teach_agent_prompt_id', '_TURN_FAILED_TEXT',
+             '_CLIENT_REQUEST_ID', '_TEACH_SCOPES', '_TEACH_CONTINUE',
+             '_KIDS_TRANSPORT_SCOPES', 'TEACH_AGENT_PROMPT_ID'}
+    assert not (defined & moved), sorted(defined & moved)
