@@ -445,7 +445,11 @@ describe('AgentOverlay consent.request — a device ask (#111)', () => {
     agent_id: null,
     requester_name: 'Giri',
     requester_fingerprint: FINGERPRINT,
-    reason: "Giri's phone asks to use this computer's agents from the network.",
+    // The server's sentence (HARTOS auth._device_ask_reason, #306): the
+    // name as the phone's claim, the key, the account it says it is in.
+    reason: `A phone (it says its name is "Giri") with key ${FINGERPRINT} ` +
+            "wants to use this computer's agents. This phone says it is " +
+            'signed in as account 40021. Allow it only if the phone is yours.',
   };
 
   test('names the phone as a claim, shows the code to match, grants that one phone', async () => {
@@ -457,10 +461,12 @@ describe('AgentOverlay consent.request — a device ask (#111)', () => {
     expect(code).toHaveTextContent(FINGERPRINT);
     expect(code.tagName).toBe('CODE');
     expect(screen.getByText('Check the code matches on the phone')).toBeInTheDocument();
-    // The server's sentence states the self-asserted name as fact; the
-    // card does not repeat it, and the name appears nowhere else.
-    expect(screen.queryByText(DEVICE_ASK.reason)).toBeNull();
-    expect(screen.getAllByText(/Giri/)).toHaveLength(1);
+    // The server's sentence is shown (rv_2c18): it names the account the
+    // phone claims, and the name only as the phone's claim, here and in
+    // the title, never as fact.
+    expect(screen.getByText(DEVICE_ASK.reason)).toBeInTheDocument();
+    expect(screen.getAllByText(/Giri/)).toHaveLength(2);
+    expect(screen.queryByText(/Giri's phone/)).toBeNull();
     expect(screen.queryByRole('button', {name: /ALL agents/})).toBeNull();
     expect(screen.queryByRole('button', {name: /Giri/})).toBeNull();
 

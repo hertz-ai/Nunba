@@ -1280,17 +1280,22 @@ function consentCardFor(data) {
   if (data.type === 'consent.request') {
     const type = data.consent_type;
     // An agent's ask names the agent; a phone's ask names the phone, and
-    // that name is self-asserted: it goes in the title as a claim, the
-    // body says what is asked without it, and the server's reason (which
-    // states the name as fact) is not repeated.  The fingerprint of the
-    // phone's key is what the owner matches against the phone.
+    // that name is self-asserted: it goes in the title as a claim.  The
+    // server's reason is the body: it says the name as the phone's claim
+    // and which account the phone says it is signed in as, the account a
+    // yes admits it as (HARTOS #306), or that a phone already allowed is
+    // switching accounts (requester_switch_from).  The fingerprint of the
+    // phone's key is what the owner matches against the phone.  The answer
+    // names the ask (request_id), so it binds the account this card showed.
     if (isPerRequester(type)) {
       return {
         consentType: type,
         scope: data.scope || '*',
         agentId: data.agent_id || null,
-        title: askTitle(type, data.requester_name),
-        text: `This phone asks to ${consentAskText(type)}.`,
+        requestId: data.request_id || null,
+        title: askTitle(type, data.requester_name, Boolean(data.requester_switch_from)),
+        text: String(data.reason || '').trim()
+          || `This phone asks to ${consentAskText(type)}.`,
         fingerprint: data.requester_fingerprint || deviceFingerprint(data.scope),
         caption: FINGERPRINT_CAPTION,
         grantLabel: grantLabel(type),
@@ -1377,7 +1382,7 @@ export function ConsentPromptOverlay({ data, onDismiss }) {
       // does not go through can be sent again without typing it twice.
     }
     await answer('grant', () => consentApi.grant(
-      {consent_type: card.consentType, scope: card.scope}), true);
+      {consent_type: card.consentType, scope: card.scope, ...askId()}), true);
   };
   // The ask's own agent: a no to one agent's ask leaves the others open.
   const decline = async () => {
@@ -1385,8 +1390,13 @@ export function ConsentPromptOverlay({ data, onDismiss }) {
     setBusy('decline');
     await answer('decline', () => consentApi.decline({
       consent_type: card.consentType, scope: card.scope, agent_id: card.agentId,
+      ...askId(),
     }), false);
   };
+  // Which ask the answer is for, when the card knows it (a phone's ask).
+  function askId() {
+    return card.requestId ? {request_id: card.requestId} : {};
+  }
   // Send one answer.  Written: the card closes.  Not written: the card stays
   // with the reason and the buttons back, so the owner can answer again.
   const answer = async (what, send, approved) => {

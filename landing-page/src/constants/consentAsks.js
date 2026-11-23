@@ -260,9 +260,16 @@ export function saysWhoAsks(data) {
 
 // The card's title.  A phone's name is what the phone said about itself,
 // so it is quoted as a claim, never stated.
-export function askTitle(consentType, requesterName) {
+export function askTitle(consentType, requesterName, switching = false) {
   if (!isPerRequester(consentType)) return 'Permission needed';
   const who = String(requesterName || '').trim();
+  // A phone already allowed here as another account (HARTOS
+  // requester_switch_from, #306): the same phone switching, never a new one.
+  if (switching) {
+    return who
+      ? `A phone you allowed, calling itself "${who}", asks to switch accounts`
+      : 'A phone you allowed asks to switch accounts';
+  }
   return who ? `A phone calling itself "${who}"` : 'An unnamed phone';
 }
 

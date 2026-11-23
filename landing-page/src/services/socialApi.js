@@ -353,12 +353,15 @@ export const bleEncounterApi = {
 // pre-dates 'cloud_capability'.  Only `/api/social/consent` is correct.
 export const consentApi = {
   // POST /api/social/consent — APPEND a new row (grant)
-  grant: ({consent_type, scope, agent_id, metadata}) =>
+  // request_id: the ask the answer is for (a phone's card, HARTOS #306), so
+  // the yes binds the account that card showed.
+  grant: ({consent_type, scope, agent_id, metadata, request_id}) =>
     socialApi.post('/consent', {
       consent_type,
       scope,
       agent_id,
       metadata,
+      request_id,
     }),
 
   // POST /api/social/consent/revoke — set revoked_at on the active row
@@ -372,11 +375,12 @@ export const consentApi = {
   // POST /api/social/consent/decline — say no to a pending ask (the
   // consent card's "Don't allow").  agent_id is the ask's agent, so a no
   // to one agent's ask leaves other agents' asks open.
-  decline: ({consent_type, scope, agent_id}) =>
+  decline: ({consent_type, scope, agent_id, request_id}) =>
     socialApi.post('/consent/decline', {
       consent_type,
       scope,
       agent_id,
+      request_id,
     }),
 
   // POST /api/social/consent/reopen — take a no back: the (type, scope) is
