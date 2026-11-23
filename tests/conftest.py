@@ -63,9 +63,66 @@ def _private_tts_state_file(tmp_path, monkeypatch):
 # main.app is used once HARTOS has finished booting it, as a person would.
 # ---------------------------------------------------------------------------
 
-#: How long one session waits for HARTOS's social tables, once.
+#: How long one session waits for HARTOS's social tables, in all.
 _HARTOS_SOCIAL_DB_WAIT_S = 180
-_hartos_social_db_waited = False
+_hartos_social_db_wait_left = _HARTOS_SOCIAL_DB_WAIT_S
+_hartos_social_db_settled = False
+
+
+#: _item_timeout's answer when pytest-timeout is loaded but its settings for
+#: an item cannot be read: a timer may be running, of unknown length.
+_UNKNOWN_TIMEOUT = object()
+
+#: When each test's runtest protocol, and so pytest-timeout's timer, began.
+_PROTOCOL_STARTED = pytest.StashKey[float]()
+
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_protocol(item, nextitem):
+    """Note when this test's timed span began.  pytest-timeout starts its
+    timer in its own wrapper of this hook, before setup; tryfirst puts this
+    wrapper outside it, so this time is at or before the timer's."""
+    item.stash[_PROTOCOL_STARTED] = time.monotonic()
+    yield
+
+
+def _setup_wait_seconds(budget_left, timeout, func_only, spent=0.0):
+    """How long one test's setup may still wait, out of `budget_left`.
+
+    pytest-timeout times a test's setup with the test unless func_only, and
+    timeout_method=thread ends the PROCESS when the time runs out
+    (os._exit(1)).  A 180 s wait inside one test's 60 s therefore killed the
+    whole session, not the test (review of f6514a7e, 2026-11-23).  A setup
+    ends by its timeout less a quarter of it, up to 15 s, left to the test.
+    `spent` is the time this test's timer has already run: a module fixture
+    set up first in the same setup (a cold `import main`, 15.1 s measured)
+    counts against it (review of 76a696a6).  No timeout (None or 0) or
+    func_only: setup is not timed.  _UNKNOWN_TIMEOUT: no wait.
+    """
+    if timeout is _UNKNOWN_TIMEOUT:
+        return 0
+    if not timeout or func_only:
+        return budget_left
+    left_to_test = min(15.0, timeout / 4)
+    return max(0, min(budget_left, timeout - left_to_test - spent))
+
+
+def _item_timeout(item):
+    """(timeout, func_only) that pytest-timeout applies to `item`.
+
+    pytest-timeout not loaded: (None, False), nothing is timed.  Loaded but
+    its per-item settings unreadable (its private _get_item_settings gone or
+    changed): _UNKNOWN_TIMEOUT, since a marker, --timeout or PYTEST_TIMEOUT
+    may set a timer this cannot see.
+    """
+    if not item.config.pluginmanager.hasplugin('timeout'):
+        return None, False
+    try:
+        from pytest_timeout import _get_item_settings
+        settings = _get_item_settings(item)
+        return settings.timeout, settings.func_only
+    except Exception:  # noqa: BLE001 - any failure: the timer is unknown
+        return _UNKNOWN_TIMEOUT, False
 
 
 def _hartos_social_api_ready() -> bool:
@@ -88,9 +145,9 @@ def _hartos_social_api_ready() -> bool:
 
 
 @pytest.fixture(autouse=True)
-def _hartos_social_db_ready():
-    """Wait (once per session) until the HARTOS boot that ``import main``
-    starts has created the social tables.
+def _hartos_social_db_ready(request):
+    """Wait until the HARTOS boot that ``import main`` starts has created the
+    social tables, for up to _HARTOS_SOCIAL_DB_WAIT_S in all.
 
     The bootstrap thread registers the social routes at steps 2-3 and creates
     their tables at step 6 (hartos_bootstrap._run_bootstrap: init_db +
@@ -102,21 +159,37 @@ def _hartos_social_db_ready():
     (agent engine, supervisors) are not waited for.
 
     Acts only once something has started that thread (a fixture imported
-    main), and stops waiting when the thread ends, whatever it managed.
+    main), and stops waiting for good once the tables exist, the thread ends
+    (whatever it managed) or the budget is spent.  One setup waits only what
+    still fits inside its own test's timeout, counted from when that test's
+    timer started (_setup_wait_seconds, pytest_runtest_protocol); the next test's
+    setup carries on from there.
     """
-    global _hartos_social_db_waited
-    if _hartos_social_db_waited:
+    global _hartos_social_db_wait_left, _hartos_social_db_settled
+    if _hartos_social_db_settled:
         return
     boot = sys.modules.get('hartos.hartos_bootstrap')
     thread = boot.get_bootstrap_thread() if boot else None
     if thread is None:
         return
-    _hartos_social_db_waited = True
-    deadline = time.monotonic() + _HARTOS_SOCIAL_DB_WAIT_S
-    while thread.is_alive() and time.monotonic() < deadline:
-        if _hartos_social_api_ready():
-            return
-        time.sleep(0.5)
+    timeout, func_only = _item_timeout(request.node)
+    started = time.monotonic()
+    timer_started = request.node.stash.get(_PROTOCOL_STARTED, started)
+    deadline = started + _setup_wait_seconds(
+        _hartos_social_db_wait_left, timeout, func_only,
+        spent=started - timer_started)
+    try:
+        while True:
+            if not thread.is_alive() or _hartos_social_api_ready():
+                _hartos_social_db_settled = True
+                return
+            if time.monotonic() >= deadline:
+                return
+            time.sleep(0.5)
+    finally:
+        _hartos_social_db_wait_left -= time.monotonic() - started
+        if _hartos_social_db_wait_left <= 0:
+            _hartos_social_db_settled = True
 
 
 @pytest.fixture
