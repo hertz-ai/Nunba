@@ -6673,27 +6673,37 @@ def start_background_services():
                     break
                 time.sleep(0.5)
 
-            # Pre-load F5 on GPU AFTER llama-server is ready.
+            # Pre-load the voices AFTER llama-server is ready.
             # Wait for llama-server to finish loading so VRAM settles.
-            # Then force F5 model load via a test synthesis.
+            # Then force each voice's model load via a test synthesis.
             # The _synth_lock serializes with chat threads (no race condition).
-            # The 60s idle timer will unload F5 if no real TTS comes.
-            logging.info("TTS warm-up: waiting for llama-server to settle before F5 pre-load...")
+            # The port is the one this node's llama config names (its
+            # server_port; 8082 on the owner's desktop).  A fixed :8080 found
+            # no llama-server there, so this waited out all 90 s (walk
+            # 2026-11-23).
+            from llama.llama_config import get_llama_endpoint
+            _llm_health = f"{get_llama_endpoint()}/health"
+            logging.info(f"TTS warm-up: waiting for llama-server ({_llm_health}) "
+                         f"to settle before the voice pre-load...")
             for _llm_wait in range(30):  # up to 90s
                 try:
                     import urllib.request as _ur
-                    _h = _ur.urlopen('http://127.0.0.1:8080/health', timeout=2)
+                    _h = _ur.urlopen(_llm_health, timeout=2)
                     _status = _h.read()
                     _h.close()
                     if b'"ok"' in _status:
-                        logging.info("TTS warm-up: llama-server ready, pre-loading F5...")
+                        logging.info("TTS warm-up: llama-server ready, pre-loading voices...")
                         break
                 except Exception:
                     pass
                 time.sleep(3)
 
-            # Pre-load F5 only if enough VRAM (model 1.3GB + buffers = need 2.5GB free).
-            # If VRAM is too tight (llama took most of it), skip — first chat uses Piper.
+            # A voice that needs the GPU is pre-loaded only with enough VRAM
+            # (F5: model 1.3GB + buffers = need 2.5GB free).  A voice the
+            # engine registry says runs on the CPU is pre-loaded either way:
+            # it then runs on the CPU, as a reply would (tts_engine
+            # _runs_on_cpu).  The GPU check alone skipped every pre-load on
+            # the owner's desktop (1.4GB free, walk 2026-11-23).
             #
             # #218 — also defer pre-load when the user is actively
             # chatting.  Live evidence 2026-05-20 18:12-18:13 showed
@@ -6705,50 +6715,73 @@ def start_background_services():
             # timer will unload anything we DO load; the next chat
             # uses Piper CPU (instant fallback) until the next
             # idle-window warmup fires.
-            _can_preload = False
+            _gpu_room = False
             try:
                 from integrations.service_tools.vram_manager import vram_manager
                 _free = vram_manager.get_free_vram()
-                _can_preload = _free >= 3.0  # need headroom above 2.5 for model + inference
-                if not _can_preload:
-                    logging.info(f"TTS warm-up: only {_free:.1f}GB VRAM free — skipping F5 pre-load")
+                _gpu_room = _free >= 3.0  # need headroom above 2.5 for model + inference
+                if not _gpu_room:
+                    logging.info(f"TTS warm-up: only {_free:.1f}GB VRAM free — "
+                                 f"pre-loading only voices that run on the CPU")
             except Exception:
                 pass
             # #218 — user-priority gate (#123).  Skip user-blocking
             # warmup steps when user is actively chatting.
-            if _can_preload:
-                try:
-                    from integrations.agent_engine.dispatch import is_user_recently_active
-                    if is_user_recently_active():
-                        _can_preload = False
-                        logging.info(
-                            "TTS warm-up: user is actively chatting — "
-                            "deferring F5 pre-load (next idle window "
-                            "will retry).  Honors user-priority gate "
-                            "(#123) so the user's chat turn gets the "
-                            "VRAM/CPU.")
-                except Exception:
-                    pass  # gate not importable — fall through
+            _can_preload = True
+            try:
+                from integrations.agent_engine.dispatch import is_user_recently_active
+                if is_user_recently_active():
+                    _can_preload = False
+                    logging.info(
+                        "TTS warm-up: user is actively chatting — "
+                        "deferring voice pre-load (next idle window "
+                        "will retry).  Honors user-priority gate "
+                        "(#123) so the user's chat turn gets the "
+                        "VRAM/CPU.")
+            except Exception:
+                pass  # gate not importable — fall through
 
+            # The voices to warm: the person's language, then the languages
+            # lines were last spoken in (tts_state.json, newest last).  A
+            # language in both keeps its newest place, so the voice spoken
+            # last is warmed last and stays the active voice, the one
+            # set_language pins against the idle sweep (J214).  Only the
+            # person's language was warmed before, so a Tamil-speaking
+            # agent's first reply started its voice cold: 60 s (walk
+            # 2026-11-23).
+            _order = [preferred_lang] + engine.last_spoken_languages()
+            _warm_langs = [_lg for _i, _lg in enumerate(_order)
+                           if _lg not in _order[_i + 1:]]
             if _can_preload:
                 import tempfile as _tf
+                from tts.tts_engine import _runs_on_cpu
+                from tts.verified_synth import _pick_test_phrase
                 _test_path = os.path.join(_tf.gettempdir(), '_nunba_tts_warmup.wav')
-                # Universal warmup: the `language=` parameter drives model
-                # selection (engine picks the right phoneme set per that code).
-                # The TEXT just needs to be tokenizer-safe across all languages.
-                # "." is a single sentence-end token every TTS tokenizer accepts
-                # — primes weights, produces ~200ms silence, works for every
-                # language without a per-language phrase dict.
-                try:
-                    engine.synthesize(".", output_path=_test_path, language=preferred_lang)
-                    if os.path.exists(_test_path):
-                        os.unlink(_test_path)
-                    logging.info(f"TTS warm-up: engine pre-loaded (lang={preferred_lang})")
-                except Exception as _se:
-                    logging.info(f"TTS warm-up: pre-load skipped ({_se}) — first response uses Piper")
+                for _lang in _warm_langs:
+                    engine.set_language(_lang)
+                    for _wait in range(20):
+                        if not getattr(engine, '_pending_backend', None):
+                            break
+                        time.sleep(0.5)
+                    _backend = engine.backend
+                    if not (_gpu_room or _runs_on_cpu(_backend)):
+                        logging.info(f"TTS warm-up: {_backend} ({_lang}) needs "
+                                     f"the GPU — not pre-loaded")
+                        continue
+                    # A line in the language's own script, the greeting the
+                    # verified_synth handshake speaks: the engine picks the
+                    # voice by the text's script, so "." was spoken by the
+                    # English voice whatever language was asked for.
+                    try:
+                        engine.synthesize(_pick_test_phrase(_backend, _lang),
+                                          output_path=_test_path, language=_lang)
+                        if os.path.exists(_test_path):
+                            os.unlink(_test_path)
+                        logging.info(f"TTS warm-up: engine pre-loaded (lang={_lang})")
+                    except Exception as _se:
+                        logging.info(f"TTS warm-up: pre-load skipped ({_se}) — first response uses Piper")
 
-            backend = engine.get_info().get('active_backend', 'unknown')
-            logging.info(f"TTS engine warmed up: {backend} (language={preferred_lang})")
+            logging.info(f"TTS engine warmed up: {engine.backend} (languages={_warm_langs})")
         except Exception as e:
             logging.warning(f"TTS warm-up failed (non-blocking): {e}")
     # WARMUP_TIMEOUT (seconds) is declared at the top of this scope,

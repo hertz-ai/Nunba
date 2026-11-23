@@ -77,6 +77,11 @@ BACKEND_NONE = "none"
 # previously-demoted engine gives it a fresh chance).
 _TTS_STATE_SCHEMA = 1
 _DEMOTION_TTL_SECONDS = 7 * 86400
+# The same file keeps the languages lines were last spoken in
+# ('spoken_languages', newest last), so the boot warm-up (main.py
+# _warmup_tts) starts those voices before anyone speaks.  This many are
+# kept: each is a voice the warm-up starts.
+_SPOKEN_LANGUAGES_KEPT = 3
 
 
 def _get_tts_state_path() -> str:
@@ -1532,6 +1537,7 @@ class TTSEngine:
         instance._vram_manager = None
         instance._language = 'en'
         instance._install_threads = {}
+        instance._spoken_languages = []
         return instance
 
     def __init__(self,
@@ -2341,8 +2347,9 @@ class TTSEngine:
 
     # ── Persisted demotion cache (cross-boot negative findings) ─────
     # See module-level docstring above ``_TTS_STATE_SCHEMA`` for the
-    # full design rationale. These three helpers are the ONLY code
-    # that touches ``tts_state.json`` — selection is intentionally
+    # full design rationale. These helpers are the ONLY code that
+    # touches ``tts_state.json`` (the save also carries the spoken
+    # languages, _record_spoken_language) — selection is intentionally
     # unaware of persistence (Gate 4: no parallel selection paths).
 
     def _load_persisted_demotions(self) -> None:
@@ -2377,6 +2384,12 @@ class TTSEngine:
                 f"demotions on hydrate"
             )
             return
+
+        spoken = data.get('spoken_languages')
+        if isinstance(spoken, list):
+            self._spoken_languages = [
+                lang for lang in spoken if isinstance(lang, str) and lang
+            ][-_SPOKEN_LANGUAGES_KEPT:]
 
         persisted = data.get('demoted')
         if not isinstance(persisted, dict):
@@ -2461,6 +2474,7 @@ class TTSEngine:
             'schema': _TTS_STATE_SCHEMA,
             'updated_at': now,
             'demoted': demoted_payload,
+            'spoken_languages': list(self._spoken_languages),
         }
 
         try:
@@ -2492,6 +2506,27 @@ class TTSEngine:
                 raise
         except OSError as e:
             logger.warning(f"Failed to persist TTS demotion state: {e}")
+
+    def _record_spoken_language(self, language: str | None) -> None:
+        """A line was just spoken in ``language``: it becomes the newest of
+        ``spoken_languages`` in ``tts_state.json``, so the next boot's
+        warm-up starts its voice (main.py _warmup_tts).  The language is the
+        one the voice spoke, the reply's own script, not the person's UI
+        setting: on the 23 Nov walk the speech agent's Tamil replies came in
+        labelled 'en'.  The file is written only when the newest language
+        changes."""
+        lang = _normalize_lang(language)
+        if self._spoken_languages[-1:] == [lang]:
+            return
+        self._spoken_languages = (
+            [s for s in self._spoken_languages if s != lang] + [lang]
+        )[-_SPOKEN_LANGUAGES_KEPT:]
+        self._save_persisted_demotions()
+
+    def last_spoken_languages(self) -> list[str]:
+        """The languages lines were last spoken in, newest last (this run
+        and the runs before it, from ``tts_state.json``)."""
+        return list(self._spoken_languages)
 
     @classmethod
     def restore_voices_waiting_for(cls, key_name: str) -> list[str]:
@@ -3299,8 +3334,11 @@ class TTSEngine:
 
         # The selected engine speaks the segment through the same path as a
         # whole line in synthesize().
-        return self._speak_with_active_engine(
+        spoken = self._speak_with_active_engine(
             text, out_path, kwargs.pop('voice', None), lang, **kwargs)
+        if spoken:
+            self._record_spoken_language(lang)
+        return spoken
 
     def _synth_media_segment(self, modality, text, out_path,
                               genre='', duration=30, **kwargs):
@@ -3601,8 +3639,12 @@ class TTSEngine:
                     inst = self._backends.get(self._active_backend)
                     if inst:
                         break
-        return self._speak_with_active_engine(
-            text, output_path, voice, self._language, speed=speed, **kwargs)
+        language = self._language
+        spoken = self._speak_with_active_engine(
+            text, output_path, voice, language, speed=speed, **kwargs)
+        if spoken:
+            self._record_spoken_language(language)
+        return spoken
 
     def _speak_with_active_engine(self, text, output_path, voice, language,
                                   speed=None, **kwargs):
