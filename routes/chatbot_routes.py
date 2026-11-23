@@ -2367,25 +2367,33 @@ def _cloud_turn_can_reach_central(agent_config, online):
     for their LLM provider (desktop/ai_key_vault.py), which central cannot
     take; a phone's device token only this desktop proves (central answers
     it 401, measured 2026-11-23 on the Cafe agent 344), so it never leaves
-    the node.  ``authorization`` is the header to send, None with ``miss``
+    the node.  A phone's turn goes instead as the phone's account, on that
+    account's credits, with the login this desktop holds for it
+    (sync_engine.central_login_for; owner rule: a central agent runs on
+    central, as the account), else it is a miss.  A caller with no
+    Authorization gets no stored login: desktop /chat is reachable on the
+    LAN (#52), and a body's user_id is not who the caller is.  Waits on
+    #306: verify_device_jwt must hold a phone's token to the account it was
+    paired as.  ``authorization`` is the header to send, None with ``miss``
     the reason when the turn cannot go.  The cheap misses come before
-    HARTOS's rule is imported, so a turn that needs no bearer never depends
-    on it (app.py --validate holds a bundle to having it).  The reason names
-    what about the endpoint is not a central's (HARTOS's sync_engine.
-    central_origin_mismatch: its host, scheme, port, userinfo or
-    characters) and the endpoint's host, never a bearer.
+    HARTOS's rules are imported, so a turn that needs no bearer never
+    depends on them (app.py --validate holds a bundle to having them).  The
+    reason names what about the endpoint is not a central's (HARTOS's
+    sync_engine.central_origin_mismatch: its host, scheme, port, userinfo
+    or characters) and the endpoint's host, never a bearer.
     """
     endpoint = ((agent_config or {}).get('cloud_endpoint')
                 or CLOUD_API_CONFIG['chat_endpoint'])
     authorization = request.headers.get('Authorization')
+    phone = is_admitted_device()
     if not online:
         return endpoint, None, 'no internet'
-    if is_admitted_device():
-        return (endpoint, None,
-                'this desktop cannot act for this phone on central yet')
-    if not authorization:
+    if not phone and not authorization:
         return endpoint, None, 'not signed in'
-    from integrations.social.sync_engine import central_origin_mismatch
+    from integrations.social.sync_engine import (
+        central_login_for,
+        central_origin_mismatch,
+    )
     mismatch = central_origin_mismatch(endpoint)
     if mismatch:
         from urllib.parse import urlsplit
@@ -2396,6 +2404,12 @@ def _cloud_turn_can_reach_central(agent_config, online):
         return (endpoint, None,
                 f'endpoint is not a known central: its {mismatch} '
                 f'(host {host!r})')
+    if phone:
+        account = admitted_device_user()
+        login = central_login_for(account, endpoint) if account else ''
+        if not login:
+            return endpoint, None, 'not signed in on this desktop'
+        authorization = f'Bearer {login}'
     return endpoint, authorization, ''
 
 
@@ -3177,7 +3191,9 @@ def _run_chat_turn(data):
         if auth_header:
             payload = {
                 'text': text,
-                'user_id': user_id,
+                # A phone acts as its token's account only, never as a
+                # user_id its body names.
+                'user_id': admitted_device_user() or user_id,
                 'teacher_avatar_id': teacher_avatar_id or 1,
                 'request_id': request_id,
                 'video_req': video_req

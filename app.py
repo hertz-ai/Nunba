@@ -2640,6 +2640,9 @@ if getattr(args, 'validate', False):
             ('central_origin_mismatch', callable,
              'bundled HARTOS has no central_origin_mismatch: every '
              'signed-in cloud-agent turn would fail'),
+            ('central_login_for', callable,
+             'bundled HARTOS has no central_login_for: every phone turn '
+             'for a cloud agent would fail'),
         ],
     }
 
