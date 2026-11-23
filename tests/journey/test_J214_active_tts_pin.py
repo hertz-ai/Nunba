@@ -46,14 +46,15 @@ pytestmark = pytest.mark.journey
 
 
 # ────────────────────────────────────────────────────────────────────
-# Helper — returns the tool name a given backend maps to via the
-# canonical ``TTSEngine._get_vram_tool_name``.
+# Helper — returns the name a given backend is pinned under:
+# ``TTSEngine._get_lifecycle_name``, the catalog id the lifecycle
+# tracks the voice by (not its VRAM budget name, which nothing tracks).
 # ────────────────────────────────────────────────────────────────────
 
 
 def _tool_name(backend: str) -> str | None:
     from tts.tts_engine import TTSEngine
-    return TTSEngine._get_vram_tool_name(backend)
+    return TTSEngine._get_lifecycle_name(backend)
 
 
 @pytest.fixture
@@ -127,11 +128,11 @@ def test_j214_set_language_pins_new_backend(
     mgr = fresh_lifecycle_manager
     engine = tts_engine_under_test
 
-    # Sanity — indic_parler must map to a real VRAM tool name
-    # (it does; "tts_indic_parler" per ENGINE_REGISTRY).
+    # Sanity — indic_parler must map to the name the lifecycle tracks
+    # it by ("tts-indic-parler", its catalog id).
     from tts.tts_engine import BACKEND_INDIC_PARLER
     indic_tool = _tool_name(BACKEND_INDIC_PARLER)
-    assert indic_tool == "tts_indic_parler", (
+    assert indic_tool == "tts-indic-parler", (
         f"Gate 1 caller audit guard: if this changes the pin logic "
         f"must track.  Got: {indic_tool!r}"
     )
@@ -261,18 +262,20 @@ def test_j214_cpu_only_backend_noop(
     # prev-side either.
     engine._active_backend = None
 
+    # A fresh lifecycle mgr can carry unrelated hints from the
+    # persisted-state file left by a prior boot / other test suites —
+    # we only guard against phantom TTS hints injected by THIS
+    # set_language call.
+    with mgr._lock:
+        before = {k: dict(v) for k, v in mgr._persisted_hints.items()}
+
     # Must not raise.
     engine.set_language("zu")  # Zulu — not in any ladder
 
-    # No NEW hints for any TTS tool should have been staged by the
-    # Piper-only path.  (A fresh lifecycle mgr can carry unrelated
-    # hints from the persisted-state file left by a prior boot /
-    # other test suites — we only guard against phantom TTS hints
-    # injected by THIS set_language call.)
     with mgr._lock:
         tts_hints = {
             k: v for k, v in mgr._persisted_hints.items()
-            if k.startswith("tts_")
+            if k.startswith(("tts_", "tts-")) and before.get(k) != v
         }
         assert not tts_hints, (
             f"Piper path staged phantom TTS hints: {tts_hints!r}"

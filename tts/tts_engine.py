@@ -1696,6 +1696,20 @@ class TTSEngine:
         return spec.vram_key if spec else None
 
     @classmethod
+    def _get_lifecycle_name(cls, backend: str) -> str | None:
+        """Nunba backend constant → the name HARTOS's ModelLifecycleManager
+        tracks its model under, which the J214 pin must use: the catalog
+        id, by tts_router's one rule (_engine_id_to_catalog_id), the id the
+        orchestrator registers the voice by and gpu_worker's idle timer
+        looks its pin up by.  The VRAM tool name ('tts_mms_tts') named a
+        model nobody tracks, so the pin never held.  None for a backend
+        with no worker to keep (no VRAM budget: Piper)."""
+        if not cls._get_vram_tool_name(backend):
+            return None
+        from integrations.channels.media.tts_router import _engine_id_to_catalog_id
+        return _engine_id_to_catalog_id(_BACKEND_TO_REGISTRY_KEY[backend])
+
+    @classmethod
     def _get_required_package(cls, backend: str) -> str | None:
         """Nunba backend constant → pip package required for in-process run.
 
@@ -2977,7 +2991,7 @@ class TTSEngine:
             return
 
         if prev_backend:
-            prev_tool = self._get_vram_tool_name(prev_backend)
+            prev_tool = self._get_lifecycle_name(prev_backend)
             if prev_tool:
                 try:
                     mgr.set_pressure_evict_only(prev_tool, False)
@@ -2987,7 +3001,7 @@ class TTSEngine:
                 except Exception as e:
                     logger.warning(f"J214: unpin {prev_tool!r} failed: {e}")
 
-        new_tool = self._get_vram_tool_name(new_backend)
+        new_tool = self._get_lifecycle_name(new_backend)
         if new_tool:
             try:
                 result = mgr.set_pressure_evict_only(new_tool, True)
