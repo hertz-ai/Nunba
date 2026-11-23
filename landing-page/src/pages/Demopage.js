@@ -28,12 +28,12 @@ import { WAMP_LOCAL_URL, WAMP_CLOUD_URL, SOCIAL_API_URL } from '../config/apiBas
 import { selectPdf, selectImage } from '../utils/attachmentUpload';
 import { isLocalBackendHost, localWampUrl } from '../utils/backendHost';
 import { rememberServerPromptId } from '../utils/promptId';
-import { CHAT_BUBBLE_PRIORITY, CHAT_ACTION_THINKING, CHAT_ACTION_STATUS, isOtherTurnEnvelope } from '../constants/chatBubble';
+import { CHAT_BUBBLE_PRIORITY, CHAT_ACTION_THINKING, CHAT_ACTION_STATUS, isOtherTurnEnvelope, isShownInTurn, turnIdOf } from '../constants/chatBubble';
 import {animateScroll as scrollLibrary} from 'react-scroll';
 
 import autobahn from 'autobahn';
 import { classifyError, getBackoff, startTurn, MAX_RETRIES, turnHasReply, EMPTY_REPLY_REASON, PUSHED_REPLY_MISSING_REASON } from '../utils/chatRetry';
-import { shouldSpeakLocalReply, isDraftReply, hasServerAudioPayload, shouldPlayPushedClip, initialTtsEnabled } from '../utils/ttsGuards';
+import { shouldSpeakLocalReply, isDraftReply, hasServerAudioPayload, shouldPlayPushedClip, initialTtsEnabled, shouldSpeakPushedText, claimLocalReplySpeech } from '../utils/ttsGuards';
 import { mergeRestoredMessages } from '../utils/mergeRestoredMessages';
 import { normalizeRestoredMessages } from '../utils/normalizeRestoredMessages';
 import { holdsAgentChat, isSetupCard, restoreServerHistory } from '../utils/serverChatHistory';
@@ -2062,6 +2062,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       return;
     }
     const el = getTtsAudioElement();
+    // The clip's turn goes with it: a turn whose reply this page already
+    // spoke itself is not said again (services/ttsClipPlayer).
     const outcome = playTtsClip(el, data.generated_audio_url, {
       onStart: () => {
         // Wire to audioRef so VoiceVisualizer can animate
@@ -2078,7 +2080,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         };
         document.addEventListener('click', resumeAudio, { once: true });
       },
-    });
+    }, Date.now(), turnIdOf(data.request_id));
     console.log('[TTS] Clip', outcome + ':', data.generated_audio_url);
   }, []);
 
@@ -2466,6 +2468,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         setThinkingStartTime(null);
       }
 
+      // The turn a pushed line belongs to (chatBubble.turnIdOf): a line this
+      // turn already shows (its HTTP reply, or the same send delivered
+      // again) is not shown twice (chatBubble.isShownInTurn).
+      const pushedTurnId = turnIdOf(parsed.request_id);
+
       if (isTextMode) {
         if (extractedText) {
           const assistantMessage = {
@@ -2474,8 +2481,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             source: parsed.source || 'cloud',
             servedBy: parsed.served_by,
             nodeTier: parsed.node_tier,
+            turnId: pushedTurnId,
           };
           setMessages((prev) => {
+            if (isShownInTurn(prev, assistantMessage)) return prev;
             const newMessages = [...prev, assistantMessage];
             setAnimatingMessageIndex(null);
             setShouldScroll(true);
@@ -2502,9 +2511,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           source: parsed.source || 'cloud',
           servedBy: parsed.served_by,
           nodeTier: parsed.node_tier,
+          turnId: pushedTurnId,
         };
 
         setMessages((prev) => {
+          if (isShownInTurn(prev, assistantMessage)) return prev;
           const newMessages = [...prev, assistantMessage];
           setAnimatingMessageIndex(newMessages.length - 1);
           setShouldScroll(true);
@@ -2523,10 +2534,18 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           };
           // Race: audio arrival vs 5s timeout
           const timeout = setTimeout(startTypewriter, 5000);
-          tts.speak(extractedText).then(() => {
+          // Not a line the turn's clip says (a send during a person's turn):
+          // spoken here as well, it was heard twice (utils/ttsGuards
+          // .shouldSpeakPushedText).  Such a line types out now.
+          if (shouldSpeakPushedText(parsed)) {
+            tts.speak(extractedText).then(() => {
+              clearTimeout(timeout);
+              startTypewriter();
+            });
+          } else {
             clearTimeout(timeout);
             startTypewriter();
-          });
+          }
         }
 
         setWaitingText(null);
@@ -2548,8 +2567,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             source: parsed.source,
             servedBy: parsed.served_by,
             nodeTier: parsed.node_tier,
+            turnId: pushedTurnId,
           };
           setMessages((prev) => {
+            if (isShownInTurn(prev, assistantMessage)) return prev;
             const newMessages = [...prev, assistantMessage];
             setAnimatingMessageIndex(newMessages.length - 1);
             setShouldScroll(true);
@@ -4541,6 +4562,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                   speculationId: resultData.speculation_id,
                   isDraft: true,
                 }),
+                // This turn's: a send of the turn pushed with the same words
+                // is shown once, whichever lands first (chatBubble.isShownInTurn).
+                turnId: msgId,
               };
               setMessages((prev) => {
                 const updated = [...prev];
@@ -4567,6 +4591,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                     }
                   }
                 }
+                if (isShownInTurn(updated, assistantMessage)) return updated;
                 return [...updated, assistantMessage];
               });
               setShouldScroll(true);
@@ -4609,7 +4634,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                 // disconnected-fallback only.  Prevents the double
                 // playback seen at frozen_debug.log 19:30:00 + 19:30:12.
                 realtimeConnected: realtimeService.connected,
-              })) {
+              }) && claimLocalReplySpeech(msgId)) {
+                // claimLocalReplySpeech: not when a clip of this turn already
+                // played here; a clip of it landing later is then not played.
                 tts.speak(responseText).catch((err) => {
                   logger.warn('[TTS] local-reply speak failed:', err?.message || err);
                 });
