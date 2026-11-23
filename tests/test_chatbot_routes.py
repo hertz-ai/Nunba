@@ -286,11 +286,13 @@ class TestAgentRouting:
     @pytest.fixture
     def node(self, tmp_path, monkeypatch):
         (tmp_path / '54.json').write_text('{}')     # a placeholder recipe
-        state = {'online': True, 'cloud_status': 200, 'cloud': [], 'hartos': []}
+        state = {'online': True, 'cloud_status': 200, 'cloud': [], 'hartos': [],
+                 'sent': []}
         monkeypatch.delenv('HEVOLVE_LLM_API_KEY', raising=False)
 
         def cloud_post(url, json=None, headers=None, **_kw):
             state['cloud'].append(json)
+            state['sent'].append({'url': url, 'headers': dict(headers or {})})
             if isinstance(state['cloud_status'], Exception):
                 raise state['cloud_status']
             return MagicMock(status_code=state['cloud_status'],
@@ -447,6 +449,145 @@ class TestAgentRouting:
                               goal_tags=['reel_studio'])
         assert body['text'] == 'cloud says hi' and node['hartos'] == []
         assert 'RuntimeError' in caplog.text and 'rule bug' in caplog.text
+
+    # ── a cloud turn's bearer goes only to a central (2026-11-23) ────────
+    # Measured live: a tablet's turn for the Cafe agent (344, central only)
+    # carried the phone's device token, Nunba forwarded it to azurekong,
+    # central answered 401 and local_assistant answered instead.  Every
+    # bearer (the page's own login, the node's HEVOLVE_LLM_API_KEY) goes
+    # only to an endpoint whose ORIGIN is a known central (HARTOS's
+    # sync_engine.is_central_origin, imported from the HARTOS tree this
+    # test process runs), and a phone's device token never leaves the node.
+    # The values are fake; no log line at any level may carry one.
+
+    PAGE_LOGIN = 'fake-page-login-7f3a'
+    NODE_KEY = 'fake-node-api-key-91c2'
+    DEVICE_TOKEN = 'fake-device-token-c0de'
+    CENTRAL = 'https://azurekong.hertzai.com/chat/custom_gpt'
+
+    @staticmethod
+    def _as_phone(flask_app, user_id='10202'):
+        """What HARTOS's API gate leaves on a request from a phone the
+        owner allowed (security.middleware._admit_owner_allowed_device)."""
+        from flask import g
+
+        @flask_app.before_request
+        def _the_gate_admitted_a_phone():
+            g.auth_source = 'device'
+            g.device_public_key = 'fake-device-public-key'
+            g.jwt_payload = {'user_id': user_id}
+
+    def _turn(self, client, caplog, authorization=None, **body):
+        import logging
+        caplog.set_level(logging.DEBUG)
+        headers = {'Authorization': authorization} if authorization else {}
+        return client.post('/chat', headers=headers, json={
+            'text': 'hi', 'user_id': '10202', 'preferred_lang': 'en',
+            'media_mode': 'text', 'prompt_id': 344, **body}).get_json()
+
+    def _no_bearer_logged(self, caplog):
+        for secret in (self.PAGE_LOGIN, self.NODE_KEY, self.DEVICE_TOKEN):
+            assert secret not in caplog.text, f'{secret} reached the log'
+
+    @staticmethod
+    def _miss(caplog):
+        return next(r.getMessage() for r in caplog.records
+                    if 'not answered by the cloud' in r.getMessage())
+
+    @pytest.mark.parametrize('node_key', [False, True])
+    def test_a_phones_device_token_never_leaves_the_node(
+            self, flask_app, client, node, caplog, monkeypatch, node_key):
+        if node_key:
+            monkeypatch.setenv('HEVOLVE_LLM_API_KEY', self.NODE_KEY)
+        self._as_phone(flask_app)
+        body = self._turn(client, caplog, f'Bearer {self.DEVICE_TOKEN}')
+        assert node['sent'] == [], 'a phone turn was sent off the node'
+        assert body['text'] == 'local says hi'
+        assert body['agent_id'] == 'local_assistant'
+        assert ('(this desktop cannot act for this phone on central yet)'
+                in self._miss(caplog))
+        self._no_bearer_logged(caplog)
+
+    def test_a_caller_with_no_authorization_is_not_signed_in(
+            self, client, node, caplog):
+        body = self._turn(client, caplog)
+        assert node['sent'] == [] and body['text'] == 'local says hi'
+        assert '(not signed in)' in self._miss(caplog)
+
+    @pytest.mark.parametrize('node_key', [False, True])
+    def test_the_pages_own_login_still_goes_to_central(
+            self, client, node, caplog, monkeypatch, node_key):
+        if node_key:
+            monkeypatch.setenv('HEVOLVE_LLM_API_KEY', self.NODE_KEY)
+        body = self._turn(client, caplog, f'Bearer {self.PAGE_LOGIN}')
+        assert body['text'] == 'cloud says hi'
+        assert [s['url'] for s in node['sent']] == [self.CENTRAL]
+        assert node['sent'][0]['headers']['Authorization'] == \
+            f'Bearer {self.PAGE_LOGIN}'
+        self._no_bearer_logged(caplog)
+
+    def test_an_api_key_only_node_still_sends_its_key_to_central(
+            self, client, node, caplog, monkeypatch):
+        monkeypatch.setenv('HEVOLVE_LLM_API_KEY', self.NODE_KEY)
+        body = self._turn(client, caplog)
+        assert body['text'] == 'cloud says hi'
+        assert [s['url'] for s in node['sent']] == [self.CENTRAL]
+        assert node['sent'][0]['headers']['Authorization'] == \
+            f'Bearer {self.NODE_KEY}'
+        self._no_bearer_logged(caplog)
+
+    @staticmethod
+    def _agent_with_endpoint(endpoint):
+        import routes.chatbot_routes as cr
+        return patch.object(cr, 'CLOUD_AGENTS', [{
+            'id': 'cloud_radha', 'name': 'Radha', 'type': 'cloud',
+            'cloud_endpoint': endpoint}])
+
+    @pytest.mark.parametrize('source', ['page login', 'node key'])
+    @pytest.mark.parametrize('endpoint', [
+        'https://cloud.example.com/chat/custom_gpt',
+        'https://azurekong.hertzai.com.evil/chat/custom_gpt',
+        'https://azurekong.hertzai.com@evil.com/chat/custom_gpt',
+        'https://evil.com/azurekong.hertzai.com/chat/custom_gpt',
+        'http://azurekong.hertzai.com/chat/custom_gpt',
+        'https://azurekong.hertzai.com:8443/chat/custom_gpt',
+    ])
+    def test_an_agent_endpoint_that_is_no_central_gets_no_authorization(
+            self, client, node, caplog, monkeypatch, source, endpoint):
+        authorization = None
+        if source == 'page login':
+            authorization = f'Bearer {self.PAGE_LOGIN}'
+        else:
+            monkeypatch.setenv('HEVOLVE_LLM_API_KEY', self.NODE_KEY)
+        with self._agent_with_endpoint(endpoint):
+            self._turn(client, caplog, authorization, prompt_id=None,
+                       agent_id='cloud_radha')
+        assert [s['url'] for s in node['sent']] == [endpoint]
+        assert 'Authorization' not in node['sent'][0]['headers']
+        assert any('is not a known central' in r.getMessage()
+                   for r in caplog.records)
+        self._no_bearer_logged(caplog)
+
+    def test_the_default_endpoint_is_held_to_the_same_rule(
+            self, client, node, caplog):
+        import routes.chatbot_routes as cr
+        elsewhere = 'https://chat.example.net/chat/custom_gpt'
+        with patch.dict(cr.CLOUD_API_CONFIG, {'chat_endpoint': elsewhere}):
+            self._turn(client, caplog, f'Bearer {self.PAGE_LOGIN}')
+        assert [s['url'] for s in node['sent']] == [elsewhere]
+        assert 'Authorization' not in node['sent'][0]['headers']
+        self._no_bearer_logged(caplog)
+
+    def test_a_central_agent_endpoint_written_differently_keeps_its_bearer(
+            self, client, node, caplog):
+        endpoint = 'https://AzureKong.HertzAI.com:443/chat/teachme2'
+        with self._agent_with_endpoint(endpoint):
+            self._turn(client, caplog, f'Bearer {self.PAGE_LOGIN}',
+                       prompt_id=None, agent_id='cloud_radha')
+        assert [s['url'] for s in node['sent']] == [endpoint]
+        assert node['sent'][0]['headers']['Authorization'] == \
+            f'Bearer {self.PAGE_LOGIN}'
+        self._no_bearer_logged(caplog)
 
 
 

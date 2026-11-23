@@ -31,7 +31,11 @@ logger = logging.getLogger(__name__)
 
 # Auth decorator — single source of truth in routes/auth.py
 from routes.auth import require_local_or_token as _require_local_or_token
-from routes.auth import admitted_device_user, require_local_token_or_device
+from routes.auth import (
+    admitted_device_user,
+    is_admitted_device,
+    require_local_token_or_device,
+)
 
 # ============== Nunba-layer TTS (works on ALL tiers) ==============
 
@@ -3113,18 +3117,32 @@ def _run_chat_turn(data):
     # A cloud agent's turn goes to the cloud.  When the cloud does not answer
     # it (offline, not signed in, an error), local_assistant answers it here:
     # no turn is refused.
+    #
+    # Its bearer is a person's credential, so it goes only to a central:
+    # the page's own login (the inbound Authorization), else this node's
+    # HEVOLVE_LLM_API_KEY, and either only when the ORIGIN of the endpoint
+    # actually called is a known central (HARTOS's one rule, sync_engine.
+    # is_central_origin), whichever config named that endpoint.  A phone the
+    # owner allowed carries its device token, which only this desktop
+    # proves: that token is never sent off the node (central refuses it,
+    # 401, measured 2026-11-23 on the Cafe agent 344), and no other
+    # credential stands in for the phone yet, so its turn is a miss.  No
+    # bearer is ever logged, only the reason.
     if agent_type == 'cloud':
         logger.info(f'Chat with CLOUD agent: {agent_id}')
+        from integrations.social.sync_engine import is_central_origin
+        cloud_endpoint = CLOUD_API_CONFIG['chat_endpoint']
+        if agent_config and agent_config.get('cloud_endpoint'):
+            cloud_endpoint = agent_config['cloud_endpoint']
         auth_header = request.headers.get('Authorization')
         api_key = os.environ.get('HEVOLVE_LLM_API_KEY')
         if not check_internet_connection():
             _cloud_miss = 'no internet'
+        elif is_admitted_device():
+            _cloud_miss = 'this desktop cannot act for this phone on central yet'
         elif not auth_header and not api_key:
             _cloud_miss = 'not signed in'
         else:
-            cloud_endpoint = CLOUD_API_CONFIG['chat_endpoint']
-            if agent_config and agent_config.get('cloud_endpoint'):
-                cloud_endpoint = agent_config['cloud_endpoint']
             payload = {
                 'text': text,
                 'user_id': user_id,
@@ -3137,9 +3155,13 @@ def _run_chat_turn(data):
             if prompt_id:
                 payload['prompt_id'] = prompt_id
             cloud_headers = {'Content-Type': 'application/json'}
-            if auth_header:
+            if not is_central_origin(cloud_endpoint):
+                logger.warning(
+                    'Cloud agent %s: its endpoint is not a known central; '
+                    'the turn goes with no Authorization', agent_id)
+            elif auth_header:
                 cloud_headers['Authorization'] = auth_header
-            if api_key and 'Authorization' not in cloud_headers:
+            elif api_key:
                 cloud_headers['Authorization'] = f'Bearer {api_key}'
             try:
                 response = requests.post(
