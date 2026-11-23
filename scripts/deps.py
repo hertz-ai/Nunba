@@ -263,6 +263,32 @@ EMBED_DEPS = {
     # its own.  Version matches HARTOS requirements.txt.  It installs as
     # `dns`, see _EMBED_DIR_EXCEPTIONS.
     "dnspython": "2.7.0",
+    # botbuilder (Microsoft Bot Framework SDK): HARTOS's Teams channel adapter
+    # (integrations/channels/extensions/teams_adapter.py) imports
+    # botbuilder.core, botbuilder.schema and botbuilder.core.teams in the
+    # HARTOS main process.  Without them every Teams connect ends
+    # "register_channel returned False": HARTOS review of 0d51bd263
+    # (2026-11-23) found it in no build, the installed Nunba included.  Here
+    # for the dnspython reason above.  The rest is botbuilder-core's closure
+    # that this bundle had nowhere, pinned so the --no-deps installs and
+    # Gate B cover it; requests, PyJWT, cryptography and aiohttp (which
+    # botframework-connector imports through msrest without declaring it)
+    # are lib/'s.  Versions match HARTOS requirements.txt.  Measured
+    # 2026-11-23 in a Python 3.12 venv holding this bundle's requests
+    # 2.32.5, PyJWT 2.14.0, cryptography 46.0.5 and aiohttp 3.13.3: HARTOS's
+    # create_teams_adapter built a TeamsAdapter, and pip check found nothing
+    # broken.  Four install into namespace folders, see _EMBED_DIR_EXCEPTIONS.
+    "botbuilder-core": "4.17.1",
+    "botbuilder-schema": "4.17.1",
+    "botframework-connector": "4.17.1",
+    "botframework-streaming": "4.17.1",
+    "msrest": "0.7.1",
+    "msal": "1.39.0",
+    "azure-core": "1.41.0",
+    "isodate": "0.7.2",
+    "jsonpickle": "3.4.2",
+    "requests-oauthlib": "2.0.0",
+    "oauthlib": "4.0.1",
     # NOTE: descript-audio-codec (dac) is NOT here — it pulls a massive
     # transitive tree (descript-audiotools → librosa → scipy → matplotlib).
     # It's installed at RUNTIME by install_backend_full('indic_parler')
@@ -538,6 +564,14 @@ _EMBED_DIR_EXCEPTIONS = {
     'livekit': 'livekit/rtc',
     'livekit-api': 'livekit/api',
     'livekit-protocol': 'livekit/protocol',
+    # The Bot Framework distributions share the `botbuilder` and
+    # `botframework` namespace directories, and azure-core lives in
+    # `azure`'s, so each is present when ITS subpackage is.
+    'botbuilder-core': 'botbuilder/core',
+    'botbuilder-schema': 'botbuilder/schema',
+    'botframework-connector': 'botframework/connector',
+    'botframework-streaming': 'botframework/streaming',
+    'azure-core': 'azure/core',
     # descript-audio-codec → 'dac' mapping not needed in EMBED_DEPS
     # (installed at runtime by install_backend_full, not build-time)
 }
