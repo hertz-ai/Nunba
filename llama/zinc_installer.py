@@ -43,7 +43,9 @@ class ZincInstaller:
     """Install and manage the zinc inference server for AMD GPUs."""
 
     def __init__(self, install_dir: str | None = None):
-        home = Path.home()
+        # One owner of the home lookup (a test run gets a private one).
+        from llama.llama_installer import home_dir
+        home = home_dir()
         self.install_dir = Path(install_dir) if install_dir else home / '.nunba' / 'zinc'
         self.binary_path = self.install_dir / 'zig-out' / 'bin' / 'zinc'
 

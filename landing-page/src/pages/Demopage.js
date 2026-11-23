@@ -3789,8 +3789,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     const userId = effectiveUserId || localStorage.getItem('guest_user_id') || 'guest';
 
     const startStreaming = async () => {
+      // This visit's camera, so that every way out below can free it.
+      let stream = null;
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
+        stream = await navigator.mediaDevices.getUserMedia({
           video: { width: 640, height: 480, frameRate: 5 },
         });
         if (cancelled) { stream.getTracks().forEach(t => t.stop()); return; }
@@ -3800,6 +3802,14 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         video.srcObject = stream;
         video.muted = true;
         await video.play();
+        // Video mode may have ended (another mode, another page, another
+        // user) while the camera started.  That cleanup had nothing to stop
+        // yet, so the camera is freed here; before, its LED stayed on.
+        if (cancelled) {
+          stream.getTracks().forEach(t => t.stop());
+          video.srcObject = null;
+          return;
+        }
 
         const canvas = document.createElement('canvas');
         canvas.width = 640;
@@ -3914,6 +3924,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         }
       } catch (err) {
         console.warn('[VIDEO] getUserMedia/streaming setup failed:', err.name, err.message);
+        // A camera that opened but would not play is freed, not left on.
+        if (stream) stream.getTracks().forEach(t => t.stop());
+        // Video mode is over: no camera, native or not, starts for it.
+        if (cancelled) return;
         // Native camera fallback — WKWebView (macOS) routes camera access
         // through its OWN TCC identity. If that identity's camera grant
         // was never made (or got reset), getUserMedia rejects silently
@@ -3927,11 +3941,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           window.pywebview.api.native_camera_start(userId).then((result) => {
             if (result === 'ok') {
               console.log('[VIDEO] native camera capture started');
-              frameStreamRef.current = {
-                stop: () => {
-                  window.pywebview.api.native_camera_stop().catch(() => {});
-                },
+              const stopNative = () => {
+                window.pywebview.api.native_camera_stop().catch(() => {});
               };
+              // Video mode ended while the native camera started.
+              if (cancelled) { stopNative(); return; }
+              frameStreamRef.current = { stop: stopNative };
             } else {
               console.warn('[VIDEO] native_camera_start failed:', result);
             }
@@ -3961,8 +3976,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
   // ── Camera capture — snap frame, send as image ──
   const handleCameraCapture = async () => {
+    let stream = null;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      stream = await navigator.mediaDevices.getUserMedia({ video: true });
       const video = document.createElement('video');
       video.srcObject = stream;
       await video.play();
@@ -3975,6 +3991,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       setUserImage(dataUrl);
       pushNotification({ type: 'success', message: 'Photo captured' });
     } catch {
+      // A camera that opened but gave no photo is freed too.
+      if (stream) stream.getTracks().forEach(t => t.stop());
       pushNotification({ type: 'warning', message: 'Camera not available' });
     }
   };

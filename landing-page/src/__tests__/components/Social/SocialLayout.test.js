@@ -18,7 +18,10 @@ jest.mock('../../../services/routePrefetcher', () => ({
   prefetchRoute: jest.fn(),
 }));
 
+// Only useRoleAccess is stubbed; the tier table and levelOf stay real, so the
+// sidebar's visibility rule is the one the route guards use.
 jest.mock('../../../components/RoleGuard', () => ({
+  ...jest.requireActual('../../../components/RoleGuard'),
   useRoleAccess: () => ({canWrite: true}),
 }));
 
@@ -203,6 +206,32 @@ describe('SocialLayout navigation', () => {
 
     it('hides Admin below the regional tier', () => {
       renderAs('flat');
+      expect(nav().queryByRole('link', {name: 'Admin'})).toBeNull();
+    });
+
+    // Owner, 2026-11-21: /auth/me answered role "student" (the Hevolve
+    // account's role, copied by profile_sync).  The sidebar's own tier table
+    // read it as level 0 and hid every member entry from a signed-in owner.
+    it('shows member entries to a signed-in person whose role is no access level', () => {
+      renderWithProviders(
+        <SocialLayout>
+          <div data-testid="page-body">Body</div>
+        </SocialLayout>,
+        {
+          socialContextValue: {
+            accessTier: 'student',
+            isAuthenticated: true,
+            currentUser: {id: '10202', username: 'owner', role: 'student'},
+            resonance: {level: 0},
+          },
+        }
+      );
+      for (const [label, href] of MEMBER_DESTINATIONS) {
+        expect(nav().getByRole('link', {name: label})).toHaveAttribute(
+          'href',
+          href
+        );
+      }
       expect(nav().queryByRole('link', {name: 'Admin'})).toBeNull();
     });
 

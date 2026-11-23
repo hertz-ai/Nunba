@@ -36,7 +36,9 @@ jest.mock('react-router-dom', () => ({
   ...jest.requireActual('react-router-dom'),
   useNavigate: () => mockNavigate,
 }));
-jest.mock('axios', () => ({post: jest.fn(), get: jest.fn()}));
+jest.mock('axios', () =>
+  jest.requireActual('../../testSupport/axiosWire').wireAxios()
+);
 jest.mock('uuid', () => ({v4: () => '11111111-2222-3333-4444-555555555555'}));
 jest.mock('react-ga', () => ({event: jest.fn()}));
 jest.mock('../../components/navbar', () => () => null);
