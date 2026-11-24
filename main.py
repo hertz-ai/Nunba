@@ -2975,12 +2975,14 @@ def _gguf_install_files(repo_files, requested_file: str = '',
         projector_bytes = float(file_sizes.get(projector, 0) or 0)
         required_disk = size + projector_bytes
         try:
-            import shutil
             from pathlib import Path
 
+            from core.platform_paths import free_bytes
             from llama.llama_installer import LlamaInstaller
             target_storage = Path(target_dir).expanduser().resolve() if target_dir else LlamaInstaller().models_dir
-            if shutil.disk_usage(target_storage).free < required_disk:
+            # free_bytes measures the folder's nearest existing parent: the
+            # models folder is made by the download, not before it.
+            if free_bytes(target_storage) < required_disk:
                 return False
         except Exception as exc:
             raise ValueError(
