@@ -755,11 +755,14 @@ def _runs_on_cpu(backend: str) -> bool:
     CPU: device GPU_PREFERRED ("CPU works, GPU faster") or CPU_ONLY.  Free
     VRAM then decides where such an engine runs, never whether it speaks.
     A GPU-only engine, or one the registry does not name, answers False and
-    keeps every VRAM check.  Piper, bundled and CPU-only, answers True."""
+    keeps every VRAM check.  Piper, bundled and CPU-only, answers True: it has
+    no entry in _BACKEND_TO_REGISTRY_KEY (no worker), so the registry is read
+    by the backend's own name, and its CPU_ONLY device answers (rv_tts nit on
+    a6e9106e: the registry, not a name literal)."""
     key = _BACKEND_TO_REGISTRY_KEY.get(backend)
-    spec = _get_engine_registry().get(key) if key else None
+    spec = _get_engine_registry().get(key or backend)
     if spec is None:
-        return backend == BACKEND_PIPER
+        return False
     try:
         from integrations.channels.media.tts_router import TTSDevice
     except Exception:
@@ -3097,12 +3100,15 @@ class TTSEngine:
         An engine set_backend cannot bring up yields None, so another
         engine's audio never passes that engine's handshake.  Afterwards
         set_backend is called with the engine active before the probe.
+        The probe is not a language the person spoke, so it is not recorded
+        (warm_up; rv_tts nit on a6e9106e).
         """
         prev = self._active_backend
         try:
             if not self.set_backend(backend):
                 return None
-            return self.synthesize(text, output_path, language=language)
+            return self.synthesize(text, output_path, language=language,
+                                   warm_up=True)
         finally:
             if prev:
                 self.set_backend(prev)

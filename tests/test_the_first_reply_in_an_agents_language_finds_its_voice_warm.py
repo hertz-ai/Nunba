@@ -419,3 +419,60 @@ def test_piper_is_warmed_as_a_cpu_voice_on_a_full_gpu(speech, boot, caplog):
     gpu_lines = [r.getMessage() for r in caplog.records
                  if 'needs the GPU' in r.getMessage()]
     assert not gpu_lines, gpu_lines
+
+
+# ── A probe or warm-up line is not a spoken language (rv_tts nits, a6e9106e) ──
+
+def test_a_warm_up_mixed_line_through_the_segment_path_is_not_on_file(speech, tmp_path):
+    """A mixed-script line goes through _synthesize_multilingual and
+    _synth_speech_segment; warm_up must reach that path too (the commit's own
+    file only tested the whole-line path)."""
+    out = speech.eng.synthesize(f'{ENGLISH} {TAMIL}',
+                                output_path=str(tmp_path / 'warm.wav'),
+                                language='en', warm_up=True)
+    assert out
+    assert {lang for _eng, lang in speech.said} == {'en', 'ta'}, speech.said
+    assert speech.eng.last_spoken_languages() == []
+    assert not speech.on_file()
+
+
+def test_the_engines_voice_probe_is_not_on_file(speech, tmp_path, monkeypatch):
+    """verified_synth probes an engine through verify_synth_via_backend; that
+    probe line is nobody's speech."""
+    monkeypatch.setattr(speech.eng, 'set_backend', lambda backend: True)
+    path = speech.eng.verify_synth_via_backend(
+        speech.mod.BACKEND_MMS_TTS, TAMIL, str(tmp_path / 'probe.wav'),
+        language='ta')
+    assert path
+    assert speech.eng.last_spoken_languages() == []
+    assert not speech.on_file()
+
+
+def test_the_handshakes_kept_sample_is_not_on_file(speech, monkeypatch):
+    """After a passing check the handshake speaks its phrase again to keep
+    the bytes for playback; that line is not the person's language either."""
+    from tts import tts_handshake as hs
+    from tts import verified_synth as vs
+    monkeypatch.setattr(speech.eng, 'set_backend', lambda backend: True)
+    monkeypatch.setattr(
+        vs, 'verify_backend_synth',
+        lambda *a, **k: vs.Result(ok=True, n_bytes=48000, err='', elapsed_s=0.1))
+    with hs._cache_lock:
+        hs._cache.clear()
+    hs.run_handshake(speech.eng, speech.mod.BACKEND_MMS_TTS, lang='ta',
+                     broadcast=False, play_audio=False)
+    assert speech.said, 'the handshake never spoke its sample'
+    assert speech.eng.last_spoken_languages() == []
+    assert not speech.on_file()
+
+
+def test_piper_runs_on_the_cpu_because_the_registry_says_so(monkeypatch):
+    """_runs_on_cpu reads the registry for Piper by its own name, not a
+    literal: a registry without Piper gives no CPU pass."""
+    from tts import tts_engine as mod
+    from integrations.channels.media.tts_router import TTSDevice
+    spec = type('Spec', (), {'device': TTSDevice.CPU_ONLY})()
+    monkeypatch.setattr(mod, '_get_engine_registry', lambda: {'piper': spec})
+    assert mod._runs_on_cpu(mod.BACKEND_PIPER) is True
+    monkeypatch.setattr(mod, '_get_engine_registry', lambda: {})
+    assert mod._runs_on_cpu(mod.BACKEND_PIPER) is False

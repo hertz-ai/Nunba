@@ -340,7 +340,9 @@ def run_handshake(engine, backend: str,
                 prev = None
         else:
             prev = None
-        engine.synthesize(phrase, tmp_path, language=lang_used)
+        # A probe nobody asked for is not a language the person spoke
+        # (rv_tts nit on a6e9106e): warm_up keeps it out of the record.
+        engine.synthesize(phrase, tmp_path, language=lang_used, warm_up=True)
         if prev and hasattr(engine, "set_backend"):
             try:
                 engine.set_backend(prev)
