@@ -109,6 +109,25 @@ export function isTurnVoicedHere(requestId, currentRequestId,
   return turn === currentRequestId || Boolean(sentHere && sentHere.has(turn));
 }
 
+/**
+ * Whether this page speaks a message pushed as text alone (Demopage's
+ * text-only branch, which synthesises it here).  A person's turn follows
+ * isTurnVoicedHere: only the device used speaks it.  A message of no person's
+ * turn, a background agent's or a scheduled run's ('daemon_<goal>'), is
+ * spoken as before that rule: the owner's 2026-11-23 ruling leaves proactive
+ * speech unchanged until a "surface used last" signal exists, and the page
+ * spoke such text before 5c8ee27d (rv_5c8e, Finding 1: with the device rule
+ * alone no device spoke a reminder at all; the tablet plays clips only).  A
+ * clip of a background turn still never plays (shouldPlayPushedClip), as
+ * before.
+ */
+export function speaksPushedText(requestId, currentRequestId,
+  sentHere = turnsStartedHere(), lastHere = lastTurnStartedHere()) {
+  const turn = clipTurnOf(requestId);
+  if (turn && isBackgroundRequest(turn)) return true;
+  return isTurnVoicedHere(requestId, currentRequestId, sentHere, lastHere);
+}
+
 // What a missing id reads as once a producer wrote it out: Python's
 // str(None), JSON's null, JavaScript's undefined (RN ChatBubble.NO_ID_WORDS).
 const NO_ID_WORDS = new Set(['none', 'null', 'undefined']);

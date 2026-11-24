@@ -40,7 +40,7 @@ function page({currentTurn = null, ttsEnabled = true} = {}) {
   const spoken = [];
   const shown = [];
   const scope = {
-    isTurnVoicedHere: guards.isTurnVoicedHere,
+    speaksPushedText: guards.speaksPushedText,
     ttsEnabled,
     tts: {isAvailable: true, speak: (text) => { spoken.push(text); return Promise.resolve(); }},
     requestIdRef: {current: currentTurn},
@@ -105,20 +105,39 @@ describe("a text-only agent message is spoken only where its turn started", () =
     desktop.receive('desk-turn-3-intermediate-1', 'Hi');
     expect(desktop.spoken).toEqual([]);
   });
+
+  test("a background agent's message is spoken as before (proactive speech unchanged)", () => {
+    // rv_5c8e Finding 1: with the device rule alone no device spoke a
+    // reminder at all (the tablet plays clips only).  The owner, 2026-11-23:
+    // proactive speech with no person's turn is unchanged.
+    rememberOwnTurn('desk-turn-5');
+    for (const current of [null, 'desk-turn-5']) {
+      const desktop = page({currentTurn: current});
+      desktop.receive('daemon_goal_7', 'Time for your practice!');
+      desktop.receive('daemon_goal_7-intermediate-2', 'Shall we start?');
+      expect(desktop.spoken).toEqual(['Time for your practice!', 'Shall we start?']);
+    }
+  });
 });
 
 describe('one rule for both kinds of voice', () => {
-  test('a pushed clip and a text-only message of the same turn get the same answer', () => {
+  test("a pushed clip and a text-only message of a person's turn get the same answer", () => {
     rememberOwnTurn('desk-turn-4');
     for (const [id, current] of [
       [`${TABLET_TURN}-intermediate-1`, null],
       [`${TABLET_TURN}-intermediate-1`, 'desk-turn-4'],
       ['desk-turn-4-intermediate-2', 'desk-turn-4'],
-      ['daemon_goal_7', 'desk-turn-4'],
       ['', null],
     ]) {
       const clip = guards.shouldPlayPushedClip({generated_audio_url: '/tts/audio/x.wav', request_id: id}, current, true);
-      expect(guards.isTurnVoicedHere(id, current)).toBe(clip);
+      expect(guards.speaksPushedText(id, current)).toBe(clip);
     }
+  });
+
+  test("a background turn's clip still never plays; its text is spoken, both as before", () => {
+    const clip = guards.shouldPlayPushedClip(
+      {generated_audio_url: '/tts/audio/x.wav', request_id: 'daemon_goal_7'}, 'desk-turn-4', true);
+    expect(clip).toBe(false);
+    expect(guards.speaksPushedText('daemon_goal_7', 'desk-turn-4')).toBe(true);
   });
 });
