@@ -67,7 +67,7 @@ import {getStableDeviceIdOnce} from '../utils/deviceId';
 import {useTTS} from '../hooks/useTTS';
 // ── Camera frames, streamed while the owner's camera consent is on file ──
 import {useConsentedCameraStream} from '../hooks/useCameraConsent';
-import {sttConfigMessage, startContinuousRecognition, addressedToNunba, micTurnText, OPEN_MIC_CUE} from '../hooks/useSpeechRecognition';
+import {sttConfigMessage, startContinuousRecognition, addressedToNunba, micTurnText, OPEN_MIC_CUE, MIC_STOPPED_CUE, openSttLink} from '../hooks/useSpeechRecognition';
 import {getTtsAudioElement} from '../services/ttsAudioElement';
 import {playTtsClip} from '../services/ttsClipPlayer';
 
@@ -3433,22 +3433,31 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           },
         });
 
-        // Connect WebSocket
-        const ws = new WebSocket(wsUrl);
-        let wsReady = false;
         let autoSendTimer = null;
         let fullText = '';
-
-        ws.onopen = () => {
-          wsReady = true;
-          // No pinned language: Whisper detects what was spoken, so the
-          // person can talk in any language.  (This used to pin
-          // hart_language "so Whisper doesn't auto-detect"; on an 'en' box
-          // that decoded every other language as English.)  Same message the
-          // canonical hook sends -- useSpeechRecognition.sttConfigMessage.
-          ws.send(JSON.stringify(sttConfigMessage()));
+        // The audio nodes, made below; the link's give-up tears them down.
+        let audioCtx = null;
+        let source = null;
+        let processor = null;
+        const stopAudio = () => {
+          try { if (processor) processor.disconnect(); } catch { /* gone */ }
+          try { if (source) source.disconnect(); } catch { /* gone */ }
+          try { if (audioCtx) audioCtx.close(); } catch { /* gone */ }
+          stream.getTracks().forEach(t => t.stop());
         };
-        ws.onmessage = (evt) => {
+        // A signed-in person's id labels their voice window on the server
+        // (whisper_tool: which voice said each final); it never authorizes
+        // anything.  The same id this page's chat request sends.
+        const sttUrl = effectiveUserId && effectiveUserId !== 'guest'
+          ? `${wsUrl}${wsUrl.includes('?') ? '&' : '?'}user_id=${encodeURIComponent(effectiveUserId)}`
+          : wsUrl;
+
+        // One speech socket kept open for as long as the mic is: it
+        // reconnects, holding what is said meanwhile, and says so when it
+        // cannot (useSpeechRecognition.openSttLink, shared with the hook).
+        // Owner 2026-11-24: this mic's socket died at 14:39, the button kept
+        // showing Stop, and nothing said from 15:00 to 15:06 was heard.
+        const onMessage = (evt) => {
           try {
             const data = JSON.parse(evt.data);
             if (data.text?.trim()) {
@@ -3476,21 +3485,42 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             }
           } catch { /* ignore malformed messages */ }
         };
-        ws.onerror = () => { wsReady = false; };
+        const onGiveUp = () => {
+          stopAudio();
+          clearTimeout(autoSendTimer);
+          if (fullText.trim() && handleSendRef.current) {
+            handleSendRef.current();
+            fullText = '';
+          }
+          recognitionRef.current = null;
+          setIsRecording(false);
+          micBusyRef.current = false;
+          pushNotification({ type: 'warning', message: MIC_STOPPED_CUE });
+        };
+        const link = openSttLink(sttUrl, {
+          // No pinned language: Whisper detects what was spoken, so the
+          // person can talk in any language.  (This used to pin
+          // hart_language "so Whisper doesn't auto-detect"; on an 'en' box
+          // that decoded every other language as English.)  A mic the page
+          // opened by itself stays open, so the server ends each utterance
+          // at a pause (it has no release to wait for).
+          config: sttConfigMessage(undefined, { continuous: unprompted }),
+          onMessage,
+          onGiveUp,
+        });
 
         // Record audio and send chunks over WebSocket
         // Use AudioWorklet or ScriptProcessor to get raw PCM
         // Note: WKWebView on macOS may ignore sampleRate constraint and
         // give hardware rate (48kHz). We resample to 16kHz before sending.
         const TARGET_RATE = 16000;
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: TARGET_RATE });
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: TARGET_RATE });
         const actualRate = audioCtx.sampleRate;
         const needsResample = actualRate !== TARGET_RATE;
-        const source = audioCtx.createMediaStreamSource(stream);
-        const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+        source = audioCtx.createMediaStreamSource(stream);
+        processor = audioCtx.createScriptProcessor(4096, 1, 1);
 
         processor.onaudioprocess = (e) => {
-          if (!wsReady) return;
           // Echo cancellation: don't send mic audio while TTS is playing
           // (prevents the agent from hearing its own voice).
           //
@@ -3522,7 +3552,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           for (let i = 0; i < float32.length; i++) {
             pcm16[i] = Math.max(-32768, Math.min(32767, Math.round(float32[i] * 32767)));
           }
-          ws.send(pcm16.buffer);
+          // While the socket is down the link holds the frame and sends it
+          // once it is back.
+          link.send(pcm16.buffer);
         };
 
         source.connect(processor);
@@ -3530,24 +3562,17 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
         recognitionRef.current = {
           stop: () => {
-            // Send final control message
-            if (wsReady) {
-              try { ws.send(JSON.stringify({ control: 'final' })); } catch {}
-            }
-            processor.disconnect();
-            source.disconnect();
-            audioCtx.close();
-            stream.getTracks().forEach(t => t.stop());
-            // Wait briefly for final transcription, then close
-            setTimeout(() => {
-              ws.close();
+            // Ask for the last words, wait briefly for them, then close.
+            // finish() also ends any reconnect in progress.
+            link.finish(500, () => {
               clearTimeout(autoSendTimer);
               if (fullText.trim() && handleSendRef.current) {
                 handleSendRef.current();
                 fullText = '';
               }
               setIsRecording(false);
-            }, 500);
+            });
+            stopAudio();
           },
           _type: 'whisper-stream',
         };

@@ -52,8 +52,142 @@ const SpeechRecognitionAPI =
 // The streaming server's per-connection config: {type:'config', language}
 // pins the language; the same message without `language` leaves Whisper to
 // detect it per utterance (whisper_tool._stt_stream_handler).
-export function sttConfigMessage(language) {
-  return language ? {type: 'config', language} : {type: 'config'};
+//
+// `continuous` says the mic stays open (the chat page opened it by itself):
+// nobody releases it, so the server ends each utterance at a pause instead of
+// waiting for {control:'final'} (whisper_tool._stt_stream_handler; owner
+// 2026-11-24: an open mic's words otherwise waited for the 30 s flush).
+export function sttConfigMessage(language, {continuous = false} = {}) {
+  const message = language ? {type: 'config', language} : {type: 'config'};
+  if (continuous) message.continuous = true;
+  return message;
+}
+
+// How long a mic waits before each try to get its speech socket back.  After
+// the last one it gives up and says so.  Owner 2026-11-24: the chat mic's
+// socket died at 14:39, the button kept showing Stop, nothing reconnected, and
+// everything said from 15:00 to 15:06 was lost.
+export const STT_RECONNECT_DELAYS_MS = [500, 1000, 2000, 4000, 8000];
+// Audio held while the socket is down: 30 s of 16 kHz PCM16, the server's
+// own longest utterance.  The oldest frames go first.
+export const STT_HELD_AUDIO_BYTES = 16000 * 2 * 30;
+// A socket that stayed open this long earns a fresh set of retries.
+const STT_STEADY_MS = 5000;
+
+// One speech socket for a mic, kept open for as long as the mic is: every mic
+// that streams to the local Whisper uses this (the chat page's own mic and
+// useSpeechRecognition below), so reconnecting lives in one place.
+//
+//   send(frame)   streams a PCM frame; while the socket is down the frame is
+//                 held and sent, in order, once it is back
+//   finish(waitMs, then)  ends the stream: asks for the last words
+//                 ({control:'final'}), closes after waitMs, then calls `then`
+//
+// A socket that never opened is not retried (the caller falls back at once);
+// one that was working is retried on STT_RECONNECT_DELAYS_MS, the config sent
+// again each time.  onGiveUp() runs when it does not come back.
+export function openSttLink(url, {config, onMessage, onOpen, onGiveUp} = {}) {
+  let ws = null;
+  let finished = false;
+  let opened = false;
+  let openedAt = 0;
+  let failures = 0;
+  let retry = null;
+  const held = [];
+  let heldBytes = 0;
+
+  const isOpen = () => !!ws && ws.readyState === WebSocket.OPEN;
+
+  const flush = () => {
+    while (held.length && isOpen()) {
+      const frame = held.shift();
+      heldBytes -= frame.byteLength;
+      ws.send(frame);
+    }
+  };
+
+  const giveUp = (why) => {
+    finished = true;
+    console.warn(`[STT] the speech socket is gone (${why}); the mic stopped`);
+    if (onGiveUp) onGiveUp();
+  };
+
+  const connect = () => {
+    const sock = new WebSocket(url);
+    ws = sock;
+    sock.onopen = () => {
+      if (ws !== sock || finished) return;
+      opened = true;
+      openedAt = Date.now();
+      sock.send(JSON.stringify(config || {type: 'config'}));
+      flush();
+      if (onOpen) onOpen();
+    };
+    sock.onmessage = (event) => { if (ws === sock && onMessage) onMessage(event); };
+    // A socket that never opened gives up on its error, so the caller falls
+    // back at once; for one that was working the close that follows decides.
+    sock.onerror = () => {
+      if (ws === sock && !opened && !finished) giveUp('it never opened');
+    };
+    sock.onclose = (event) => {
+      if (ws !== sock || finished) return;
+      const code = event && event.code;
+      const reason = (event && event.reason) || '';
+      if (!opened) {
+        giveUp(`it never opened, code ${code}`);
+        return;
+      }
+      if (openedAt && Date.now() - openedAt >= STT_STEADY_MS) failures = 0;
+      openedAt = 0;
+      if (failures >= STT_RECONNECT_DELAYS_MS.length) {
+        giveUp(`closed with code ${code}${reason ? ` (${reason})` : ''} and did not come back`);
+        return;
+      }
+      const delay = STT_RECONNECT_DELAYS_MS[failures];
+      failures += 1;
+      console.warn(`[STT] the speech socket closed (code ${code}${reason ? `, ${reason}` : ''}); `
+        + `reconnecting in ${delay} ms`);
+      retry = setTimeout(() => { retry = null; if (!finished) connect(); }, delay);
+    };
+  };
+
+  connect();
+  return {
+    send(frame) {
+      if (finished) return;
+      if (isOpen() && !held.length) {
+        ws.send(frame);
+        return;
+      }
+      held.push(frame);
+      heldBytes += frame.byteLength;
+      while (heldBytes > STT_HELD_AUDIO_BYTES && held.length) heldBytes -= held.shift().byteLength;
+      flush();
+    },
+    isOpen,
+    // Drop the stream without asking for its last words (unmount, a page
+    // that went away): no final, no reconnect.
+    close() {
+      finished = true;
+      if (retry) { clearTimeout(retry); retry = null; }
+      try { if (ws) ws.close(); } catch (_) { /* already closed */ }
+    },
+    finish(waitMs = 600, then) {
+      finished = true;
+      if (retry) { clearTimeout(retry); retry = null; }
+      const sock = ws;
+      if (sock && sock.readyState === WebSocket.OPEN) {
+        try { sock.send(JSON.stringify({control: 'final'})); } catch (_) { /* closing anyway */ }
+        setTimeout(() => {
+          try { sock.close(); } catch (_) { /* already closed */ }
+          if (then) then();
+        }, waitMs);
+      } else {
+        try { if (sock) sock.close(); } catch (_) { /* already closed */ }
+        if (then) then();
+      }
+    },
+  };
 }
 
 // A browser recognizer that keeps listening: it restarts on every end
@@ -109,6 +243,11 @@ export function micTurnText(said, unprompted) {
 // dropped words left only a console line.
 export const OPEN_MIC_CUE = 'I\'m listening. Start with "Nunba" to talk to me.';
 
+// What the person is told when a mic's speech socket did not come back, so the
+// button never shows a mic that hears nothing (owner 2026-11-24, "I see stop
+// which means nunba is still listening isnt").
+export const MIC_STOPPED_CUE = 'The microphone stopped because the speech service did not come back. Click the mic to start it again.';
+
 export default function useSpeechRecognition(config = {}) {
   const {
     language: defaultLanguage = null,
@@ -160,71 +299,18 @@ export default function useSpeechRecognition(config = {}) {
       }
       mediaStreamRef.current = stream;
 
-      const ws = new WebSocket(url);
-      wsRef.current = ws;
-
       return new Promise((resolve) => {
+        // `settled` is the first open (or the 3 s give-up); a reconnect's
+        // open finds the audio already flowing into the same link.
+        let settled = false;
         const timeout = setTimeout(() => {
-          ws.close();
+          if (settled) return;
+          settled = true;
+          link.close();
           resolve(false);
         }, 3000);
 
-        ws.onopen = () => {
-          clearTimeout(timeout);
-          // Send config message (no language = Whisper detects per utterance)
-          ws.send(JSON.stringify(sttConfigMessage(lang)));
-
-          // Set up audio streaming via AudioContext + ScriptProcessor
-          // Note: WKWebView may ignore sampleRate and give hardware rate
-          const TARGET_RATE = 16000;
-          const audioCtx = new (window.AudioContext || window.webkitAudioContext)({
-            sampleRate: TARGET_RATE,
-          });
-          const actualRate = audioCtx.sampleRate;
-          const needsResample = actualRate !== TARGET_RATE;
-          const source = audioCtx.createMediaStreamSource(stream);
-          // ScriptProcessor is deprecated but widely supported; AudioWorklet
-          // requires a separate file which complicates bundling
-          const processor = audioCtx.createScriptProcessor(4096, 1, 1);
-
-          processor.onaudioprocess = (e) => {
-            if (ws.readyState === WebSocket.OPEN) {
-              let inputData = e.inputBuffer.getChannelData(0);
-              // Resample to 16kHz if AudioContext gave a different rate
-              if (needsResample) {
-                const ratio = actualRate / TARGET_RATE;
-                const newLen = Math.round(inputData.length / ratio);
-                const resampled = new Float32Array(newLen);
-                for (let i = 0; i < newLen; i++) {
-                  resampled[i] = inputData[Math.round(i * ratio)];
-                }
-                inputData = resampled;
-              }
-              // Convert float32 to int16 PCM
-              const pcm16 = new Int16Array(inputData.length);
-              for (let i = 0; i < inputData.length; i++) {
-                const s = Math.max(-1, Math.min(1, inputData[i]));
-                pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-              }
-              ws.send(pcm16.buffer);
-            }
-          };
-
-          source.connect(processor);
-          processor.connect(audioCtx.destination);
-
-          audioCtxRef.current = audioCtx;
-          processorRef.current = processor;
-
-          if (mountedRef.current) {
-            activeMethodRef.current = 'ws';
-            setActiveMethod('ws');
-            setIsListening(true);
-          }
-          resolve(true);
-        };
-
-        ws.onmessage = (event) => {
+        const onMessage = (event) => {
           if (!mountedRef.current) return;
           try {
             const data = JSON.parse(event.data);
@@ -244,16 +330,98 @@ export default function useSpeechRecognition(config = {}) {
           } catch (_) {}
         };
 
-        ws.onerror = () => {
-          clearTimeout(timeout);
-          resolve(false);
+        // The socket did not come back: say so and stop the mic, so the
+        // button never shows a mic that hears nothing.  Before the first
+        // open this is the caller's fallback instead.
+        const onGiveUp = () => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timeout);
+            resolve(false);
+            return;
+          }
+          if (wsRef.current !== link) return;
+          wsRef.current = null;
+          if (processorRef.current) {
+            try { processorRef.current.disconnect(); } catch (_) {}
+            processorRef.current = null;
+          }
+          if (audioCtxRef.current) {
+            try { audioCtxRef.current.close(); } catch (_) {}
+            audioCtxRef.current = null;
+          }
+          if (mediaStreamRef.current) {
+            mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+            mediaStreamRef.current = null;
+          }
+          if (mountedRef.current && activeMethodRef.current === 'ws') {
+            activeMethodRef.current = null;
+            setActiveMethod(null);
+            setIsListening(false);
+            setError(MIC_STOPPED_CUE);
+          }
+          if (onErrorRef.current) onErrorRef.current(MIC_STOPPED_CUE);
         };
 
-        ws.onclose = () => {
-          if (mountedRef.current && activeMethodRef.current === 'ws') {
-            setIsListening(false);
+        const onOpen = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+
+          // Set up audio streaming via AudioContext + ScriptProcessor
+          // Note: WKWebView may ignore sampleRate and give hardware rate
+          const TARGET_RATE = 16000;
+          const audioCtx = new (window.AudioContext || window.webkitAudioContext)({
+            sampleRate: TARGET_RATE,
+          });
+          const actualRate = audioCtx.sampleRate;
+          const needsResample = actualRate !== TARGET_RATE;
+          const source = audioCtx.createMediaStreamSource(stream);
+          // ScriptProcessor is deprecated but widely supported; AudioWorklet
+          // requires a separate file which complicates bundling
+          const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+
+          // Every frame goes to the link: while its socket is down the link
+          // holds the frame and sends it once the socket is back.
+          processor.onaudioprocess = (e) => {
+            let inputData = e.inputBuffer.getChannelData(0);
+            // Resample to 16kHz if AudioContext gave a different rate
+            if (needsResample) {
+              const ratio = actualRate / TARGET_RATE;
+              const newLen = Math.round(inputData.length / ratio);
+              const resampled = new Float32Array(newLen);
+              for (let i = 0; i < newLen; i++) {
+                resampled[i] = inputData[Math.round(i * ratio)];
+              }
+              inputData = resampled;
+            }
+            // Convert float32 to int16 PCM
+            const pcm16 = new Int16Array(inputData.length);
+            for (let i = 0; i < inputData.length; i++) {
+              const s = Math.max(-1, Math.min(1, inputData[i]));
+              pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+            }
+            link.send(pcm16.buffer);
+          };
+
+          source.connect(processor);
+          processor.connect(audioCtx.destination);
+
+          audioCtxRef.current = audioCtx;
+          processorRef.current = processor;
+
+          if (mountedRef.current) {
+            activeMethodRef.current = 'ws';
+            setActiveMethod('ws');
+            setIsListening(true);
           }
+          resolve(true);
         };
+
+        // No language = Whisper detects per utterance.
+        const link = openSttLink(url, {
+          config: sttConfigMessage(lang), onMessage, onOpen, onGiveUp});
+        wsRef.current = link;
       });
     } catch (err) {
       return false;
@@ -373,22 +541,11 @@ export default function useSpeechRecognition(config = {}) {
     // {control:'final'} (or at the 30s max-buffer). Closing the socket without
     // it means the trailing audio is never transcribed and onResult NEVER
     // fires: every short utterance looked "broken". Send the flush, keep the
-    // socket open briefly so the final reply (handled in ws.onmessage above)
-    // arrives, then close.
-    const ws = wsRef.current;
+    // socket open briefly so the final reply (handled by the link's onMessage
+    // above) arrives, then close.  finish() also stops any reconnect.
+    const link = wsRef.current;
     wsRef.current = null;
-    if (ws) {
-      try {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({control: 'final'}));
-          setTimeout(() => { try { ws.close(); } catch (_) {} }, 600);
-        } else {
-          ws.close();
-        }
-      } catch (_) {
-        try { ws.close(); } catch (_) {}
-      }
-    }
+    if (link) link.finish(600);
 
     // Stop browser SpeechRecognition
     if (recognitionRef.current) {
@@ -416,7 +573,7 @@ export default function useSpeechRecognition(config = {}) {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      if (wsRef.current) try { wsRef.current.close(); } catch (_) {}
+      if (wsRef.current) wsRef.current.close();
       if (processorRef.current) try { processorRef.current.disconnect(); } catch (_) {}
       if (audioCtxRef.current) try { audioCtxRef.current.close(); } catch (_) {}
       if (mediaStreamRef.current) mediaStreamRef.current.getTracks().forEach((t) => t.stop());

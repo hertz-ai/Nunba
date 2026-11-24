@@ -132,11 +132,13 @@ const tierArgs = (page, unprompted) => [micTurnText, unprompted, page.notAddress
 // Tier 1: the streaming-Whisper socket's onmessage.
 function whisperMic(unprompted) {
   const tier = cut(SRC, 'const _useStreamingWhisper = async () => {', 'const _useWebSpeech = () => {');
-  const handler = cut(tier, 'ws.onmessage = (evt) => {', '\n        ws.onerror');
+  // The socket's message handler, handed to the shared speech link
+  // (openSttLink) since 2026-11-24.
+  const handler = cut(tier, 'const onMessage = (evt) => {', '\n        const onGiveUp');
   const page = pageStubs();
   // eslint-disable-next-line no-new-func
   const onmessage = new Function(...TIER_ARGS,
-    `let fullText = ''; let autoSendTimer = null; const ws = {};\n${handler}\nreturn ws.onmessage;`,
+    `let fullText = ''; let autoSendTimer = null;\n${handler}\nreturn onMessage;`,
   )(...tierArgs(page, unprompted));
   page.hear = (...msgs) => {
     msgs.forEach(([text, isFinal]) => onmessage({ data: JSON.stringify({ text, is_final: isFinal }) }));
