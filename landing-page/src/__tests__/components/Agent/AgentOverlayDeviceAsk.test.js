@@ -61,10 +61,12 @@ const OWNERS_ACCOUNT = {
   agent_id: null,
   requester_name: 'Pixel',
   requester_fingerprint: FINGERPRINT,
+  // The key's fingerprint rides beside the words (requester_fingerprint),
+  // never in them: the card shows it once (rv_2c18).
   reason:
-    `A phone (it says its name is "Pixel") with key ${FINGERPRINT} wants to ` +
-    "use this computer's agents. This phone says it is signed in as " +
-    'Sathish (10202). Allow only if this is your own phone.',
+    'A phone (it says its name is "Pixel") wants to use this computer\'s ' +
+    'agents. This phone says it is signed in as Sathish (10202). Allow only ' +
+    'if this is your own phone.',
 };
 
 // The same phone, allowed as 10202, now signed in as another account.
@@ -74,10 +76,23 @@ const SWITCH = {
   request_id: 'row-22',
   requester_switch_from: '10202',
   reason:
-    `This phone (it says its name is "Pixel") with key ${FINGERPRINT} is ` +
-    'allowed on this computer as Sathish (10202). It now says it is signed ' +
-    'in as account 40021 and asks to switch. Allow only if this is your own ' +
-    'phone: once allowed, Sathish (10202) stops working on this phone.',
+    'This phone (it says its name is "Pixel") is allowed on this computer as ' +
+    'Sathish (10202). It now says it is signed in as account 40021 and asks ' +
+    'to switch. Allow only if this is your own phone: once allowed, Sathish ' +
+    '(10202) stops working on this phone.',
+};
+
+// A phone allowed before HARTOS kept a phone's account (v60): the owner is
+// asked to confirm it, not to allow a new phone.
+const RECONFIRM = {
+  ...OWNERS_ACCOUNT,
+  msg_id: 'consent.request:row-24',
+  request_id: 'row-24',
+  requester_reconfirm: true,
+  reason:
+    'This phone (it says its name is "Pixel") was allowed on this computer ' +
+    'before. It says it is signed in as Sathish (10202); confirm it as that ' +
+    'account. Allow only if this is your own phone.',
 };
 
 function mountOverlay() {
@@ -154,6 +169,24 @@ describe('AgentOverlay: a phone asking for this desktop', () => {
         request_id: 'row-22',
       });
     });
+  });
+
+  test('a phone allowed before is asked to be confirmed, the code shown once', async () => {
+    const send = mountOverlay();
+    send(RECONFIRM);
+    expect(await screen.findByText(RECONFIRM.reason)).toBeInTheDocument();
+    expect(
+      screen.getByText('A phone you allowed, calling itself "Pixel", asks you to confirm it'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('A phone calling itself "Pixel"')).toBeNull();
+    expect(screen.getAllByText(new RegExp(FINGERPRINT))).toHaveLength(1);
+  });
+
+  test('every phone card shows the code to match exactly once', async () => {
+    const send = mountOverlay();
+    send(OWNERS_ACCOUNT);
+    await screen.findByText(OWNERS_ACCOUNT.reason);
+    expect(screen.getAllByText(new RegExp(FINGERPRINT))).toHaveLength(1);
   });
 
   test('an ask with no reason still says what the phone asks for', async () => {

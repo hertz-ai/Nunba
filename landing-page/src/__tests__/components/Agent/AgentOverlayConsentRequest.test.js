@@ -446,10 +446,11 @@ describe('AgentOverlay consent.request — a device ask (#111)', () => {
     requester_name: 'Giri',
     requester_fingerprint: FINGERPRINT,
     // The server's sentence (HARTOS auth._device_ask_reason, #306): the
-    // name as the phone's claim, the key, the account it says it is in.
-    reason: `A phone (it says its name is "Giri") with key ${FINGERPRINT} ` +
-            "wants to use this computer's agents. This phone says it is " +
-            'signed in as account 40021. Allow it only if the phone is yours.',
+    // name as the phone's claim and the account it says it is in; the key
+    // rides beside it (requester_fingerprint), shown once.
+    reason: 'A phone (it says its name is "Giri") wants to use this ' +
+            "computer's agents. This phone says it is signed in as account " +
+            '40021. Allow it only if the phone is yours.',
   };
 
   test('names the phone as a claim, shows the code to match, grants that one phone', async () => {

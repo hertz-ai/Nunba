@@ -1478,8 +1478,9 @@ function consentCardFor(data) {
     // server's reason is the body: it says the name as the phone's claim
     // and which account the phone says it is signed in as, the account a
     // yes admits it as (HARTOS #306), or that a phone already allowed is
-    // switching accounts (requester_switch_from).  The fingerprint of the
-    // phone's key is what the owner matches against the phone.  The answer
+    // switching accounts (requester_switch_from) or is to be confirmed
+    // (requester_reconfirm).  The fingerprint of the phone's key, shown
+    // once in its own block, is what the owner matches against the phone.  The answer
     // names the ask (request_id), so it binds the account this card showed.
     if (isPerRequester(type)) {
       return {
@@ -1487,7 +1488,9 @@ function consentCardFor(data) {
         scope: data.scope || '*',
         agentId: data.agent_id || null,
         requestId: data.request_id || null,
-        title: askTitle(type, data.requester_name, Boolean(data.requester_switch_from)),
+        title: askTitle(type, data.requester_name,
+          data.requester_switch_from ? 'switch'
+            : data.requester_reconfirm ? 'reconfirm' : null),
         text: String(data.reason || '').trim()
           || `This phone asks to ${consentAskText(type)}.`,
         fingerprint: data.requester_fingerprint || deviceFingerprint(data.scope),
