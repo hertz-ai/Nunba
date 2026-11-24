@@ -792,6 +792,34 @@ def test_a_runner_that_sets_the_variable_itself_keeps_llama_out_of_the_home(
     assert json.loads(cfg.config_file.read_text())['server_port'] == 8083
 
 
+def test_a_second_install_inside_a_test_that_moved_home_keeps_the_runs_pair(
+        tmp_path, monkeypatch):
+    """rv_6d01 (Medium on 6d01bd6b): install() re-paired a pair it had
+    settled on itself whenever HOME had moved since.  A test that moves HOME
+    and calls install() again then got the private folder instead of its
+    moved home, and once the test put HOME back the leftover pair gave the
+    REAL home for the rest of the run.  Homes here are stand-ins."""
+    person, private, moved = (tmp_path / n for n in ('person', 'private', 'moved'))
+    for folder in (person, private, moved):
+        folder.mkdir()
+    monkeypatch.setenv('USERPROFILE', str(person))
+    monkeypatch.setenv('HOME', str(person))
+    monkeypatch.setenv('NUNBA_TEST_HOME', os.pathsep.join([str(person), str(private)]))
+    _hermetic_run().install()
+    pair = os.environ['NUNBA_TEST_HOME']
+    assert Path(_home_dir()) == private
+
+    monkeypatch.setenv('USERPROFILE', str(moved))
+    monkeypatch.setenv('HOME', str(moved))
+    _hermetic_run().install()
+    assert os.environ['NUNBA_TEST_HOME'] == pair
+    assert Path(_home_dir()) == moved, 'the moved home lost to the private folder'
+
+    monkeypatch.setenv('USERPROFILE', str(person))
+    monkeypatch.setenv('HOME', str(person))
+    assert Path(_home_dir()) == private, 'the run went back to the real home'
+
+
 def test_with_no_test_variable_the_config_is_the_homes_own(tmp_path, monkeypatch, no_gpu_probe):
     """Every run that is not a test: no NUNBA_TEST_HOME, and llama reads and
     writes ~/.nunba/llama_config.json, as it always has."""

@@ -329,8 +329,17 @@ def install():
     # here by the same rule home_dir uses.  On 24 Nov 2026 a direct-call
     # driver set it to its folder alone, this kept it as it was, and llama
     # saved server_port 8083 into the owner's real ~/.nunba/llama_config.json.
+    #
+    # A value this process already settled on is left as it is.  A later
+    # install(), say one inside a test that moved HOME, would otherwise
+    # re-pair it with the moved home: home_dir then gives the private folder
+    # while the test runs, and the REAL home once the test puts HOME back
+    # (rv_6d01, 24 Nov 2026).  The values are kept on the subprocess module
+    # for the reason the audit-hook mark is: a second import of this file
+    # must see them.
     value = os.environ.get('NUNBA_TEST_HOME', '')
-    if not _home_pair_rule()(value, os.path.expanduser('~')):
+    settled = subprocess.__dict__.setdefault('nunba_test_homes_settled', set())
+    if value not in settled and not _home_pair_rule()(value, os.path.expanduser('~')):
         person, sep, private_home = value.partition(os.pathsep)
         private_home = private_home or ('' if sep else person)
         if private_home:
@@ -341,3 +350,4 @@ def install():
             atexit.register(shutil.rmtree, private_home, ignore_errors=True)
         os.environ['NUNBA_TEST_HOME'] = os.pathsep.join(
             [os.path.expanduser('~'), private_home])
+    settled.add(os.environ['NUNBA_TEST_HOME'])
