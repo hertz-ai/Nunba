@@ -21,6 +21,10 @@ const installBaselineStubs = () => {
   cy.intercept('GET', '**/api/social/encounters/suggestions', {statusCode: 200, body: {success: true, data: []}});
   cy.intercept('GET', '**/backend/health', {statusCode: 200, body: {healthy: true, local: {available: true}, loading: false}});
   cy.intercept('GET', '**/api/guest-id', {statusCode: 200, body: {guest_id: 'g_a11y_fixture'}});
+  // These tests are about the chat page, which a visitor reaches once their
+  // HART is sealed; unsealed, /local is the onboarding ceremony (seen on
+  // windows-latest: "What language feels like home?", and no chat text).
+  cy.sealHart();
 };
 
 describe('a11y: keyboard navigation + focus management', () => {

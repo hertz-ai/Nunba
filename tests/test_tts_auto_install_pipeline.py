@@ -146,7 +146,10 @@ def test_try_auto_install_skips_when_probe_says_runnable(monkeypatch):
 
     with patch('tts._torch_probe.check_backend_runnable', return_value=True), \
          patch('threading.Thread', side_effect=_fake_thread):
-        result = engine._try_auto_install_backend('indic_parler')
+        # chatterbox_multilingual: main-interpreter backend, whose probe is the
+        # patched check_backend_runnable (venv backends such as indic_parler
+        # ask backend_venv.is_venv_healthy instead).
+        result = engine._try_auto_install_backend('chatterbox_multilingual')
 
     assert result is True, "Should return True when backend already runnable"
     assert not bg_install_called['flag'], "Must NOT spawn install thread when already runnable"
@@ -188,7 +191,10 @@ def test_install_backend_packages_triggers_cuda_torch_when_missing(monkeypatch):
                         lambda *a, **kw: (True, 'ok'))
     monkeypatch.setattr(package_installer, '_invalidate_import_cache', lambda: None)
 
-    ok, _msg = package_installer.install_backend_packages('indic_parler')
+    # chatterbox_multilingual: a GPU backend whose HARTOS install_target is 'main'.
+    # indic_parler installs into its own venv now (the venv path has no
+    # main-interpreter CUDA-torch gate), so it no longer reaches this code.
+    ok, _msg = package_installer.install_backend_packages('chatterbox_multilingual')
 
     assert ok, "install should succeed in this scenario"
     assert install_gpu_called['flag'], (

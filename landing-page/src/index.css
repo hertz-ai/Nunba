@@ -69,6 +69,12 @@
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    /* Delays too: a staggered fade-in ("hart-fade-up ... ${0.1 + i*0.05}s
+       both", the first-run language buttons) kept each element at its
+       first keyframe, opacity 0, until its delay ran out, ~2 s for the last
+       of 40, even with the duration cut to nothing. */
+    animation-delay: 0s !important;
+    transition-delay: 0s !important;
     scroll-behavior: auto !important;
   }
 }

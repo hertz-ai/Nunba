@@ -322,7 +322,16 @@ export default function FeedPage() {
       {/* ── Tab Bar ── */}
       <Tabs
         value={tab}
-        onChange={(e, v) => setTab(v)}
+        onChange={(e, v) => {
+          setTab(v);
+          // The URL carries the tab (the effect above reads ?tab=), so going
+          // back from a post lands on the tab it was opened from; without
+          // it the feed remounted on "For You".  replace: a tab switch is
+          // not a page of its own in the history.
+          const p = new URLSearchParams(location.search);
+          p.set('tab', FEED_TYPES[v].key);
+          navigate({search: `?${p.toString()}`}, {replace: true});
+        }}
         variant="fullWidth"
         sx={{
           ...animSlideInUp(50),

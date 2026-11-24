@@ -271,8 +271,8 @@ class TestTheRealStoreAndTheDispatcher:
     reading of the phone admission."""
 
     def test_the_real_frame_store_keeps_the_phones_frame_and_who_sent_it(self, setup, monkeypatch):
-        from integrations.vision.frame_store import FrameStore
         import core.ai_sensing as ai_sensing
+        from integrations.vision.frame_store import FrameStore
         monkeypatch.setattr(ai_sensing, 'allowed', lambda sensor: True)
         client, gate, _ = setup
         real = FrameStore()

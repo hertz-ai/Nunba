@@ -7,7 +7,7 @@
  * reconnection behavior, and polling fallback.
  */
 
-const API_BASE = 'http://localhost:5000';
+const API_BASE = `${Cypress.env('apiUrl')}`;
 
 describe('Realtime Events — SSE Connection', () => {
   before(() => {
@@ -19,7 +19,7 @@ describe('Realtime Events — SSE Connection', () => {
     cy.intercept('GET', '**/api/social/events/stream**').as('sseConnect');
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(3000);
 
     // SSE endpoint may have been called (depends on auth state)
@@ -29,22 +29,30 @@ describe('Realtime Events — SSE Connection', () => {
     });
   });
 
-  it('should have SSE endpoint accessible on the backend', () => {
+  // The backend's own stream, not cypress/support/e2e.js's stub.
+  it('should have SSE endpoint accessible on the backend', {env: {realEventStream: true}}, () => {
     const token = Cypress.env('socialToken');
-    if (!token) {
-      cy.log('Skipping: No auth token available');
-      return;
-    }
+    expect(token, 'cy.socialAuth() token').to.be.a('string').and.not.be.empty;
 
-    cy.request({
-      method: 'GET',
-      url: `${API_BASE}/api/social/events/stream?token=${token}`,
-      failOnStatusCode: false,
-      // SSE returns text/event-stream, don't try to parse as JSON
-      headers: {Accept: 'text/event-stream'},
-    }).then((res) => {
-      // Endpoint should respond (200 for SSE stream, or 401/404 if not configured)
-      expect(res.status).to.be.oneOf([200, 401, 403, 404, 500, 503]);
+    // fetch, not cy.request: an SSE response never ends, and cy.request
+    // waits for the whole body (it timed out at 60 s).  Read the status and
+    // content type, then close our side (the server holds the stream until
+    // its 300 s cap).
+    cy.wrap(
+      (async () => {
+        const ctl = new AbortController();
+        const res = await fetch(`${API_BASE}/api/social/events/stream?token=${token}`, {
+          headers: {Accept: 'text/event-stream'},
+          signal: ctl.signal,
+        });
+        const out = {status: res.status, type: res.headers.get('content-type') || ''};
+        ctl.abort();
+        return out;
+      })(),
+      {timeout: 30000}
+    ).then(({status, type}) => {
+      expect(status).to.eq(200);
+      expect(type).to.include('text/event-stream');
     });
   });
 });
@@ -56,7 +64,7 @@ describe('Realtime Events — Notification Badge Updates', () => {
 
   it('should display notification badge when notifications exist', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(3000);
 
     // Look for notification icon with badge
@@ -92,7 +100,7 @@ describe('Realtime Events — Notification Badge Updates', () => {
     }).as('notifCheck');
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(3000);
 
     // The unread count should reflect the intercepted response
@@ -116,7 +124,7 @@ describe('Realtime Events — SSE Reconnection', () => {
     }).as('sseFail');
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(3000);
 
     // App should still be functional (SSE failure shouldn't crash the UI)
@@ -126,9 +134,14 @@ describe('Realtime Events — SSE Reconnection', () => {
   });
 
   it('should fall back to polling when SSE is unavailable', () => {
-    // Block SSE endpoint entirely
+    // SSE unavailable: a 503, answered here.  forceNetworkError (as this
+    // was) still sends the request on to the server, which opens a real
+    // stream each time realtimeService reopens it (see the note in
+    // cypress/support/e2e.js).  The page sees an EventSource error either
+    // way, so the polling fallback is exercised the same.
     cy.intercept('GET', '**/api/social/events/stream**', {
-      forceNetworkError: true,
+      statusCode: 503,
+      body: '',
     }).as('sseBlocked');
 
     // Allow notification polling through
@@ -138,7 +151,7 @@ describe('Realtime Events — SSE Reconnection', () => {
     }).as('notifPoll');
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
 
     // Wait for polling fallback to kick in (SocialContext polls every 30s)
     cy.wait(5000);
@@ -158,7 +171,7 @@ describe('Realtime Events — Event-Driven Toast Notifications', () => {
     // First, trigger an achievement by completing an action
     // (Posting, commenting, etc. may earn achievements)
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // Create a post which may trigger an achievement
@@ -178,7 +191,7 @@ describe('Realtime Events — Event-Driven Toast Notifications', () => {
 
   it('should render Snackbar-based toasts at the top of the page', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // Snackbar elements from MUI should be accessible via theme overrides
@@ -191,7 +204,8 @@ describe('Realtime Events — Event-Driven Toast Notifications', () => {
   });
 });
 
-describe('Realtime Events — Backend Event Broadcasting', () => {
+// The backend's own stream, not cypress/support/e2e.js's stub.
+describe('Realtime Events — Backend Event Broadcasting', {env: {realEventStream: true}}, () => {
   it('should have the SSE stream endpoint registered', () => {
     // Use fetch() via cy.wrap to gracefully handle connection-refused
     // (cy.request throws on network errors, but fetch just rejects the promise)
@@ -202,7 +216,7 @@ describe('Realtime Events — Backend Event Broadcasting', () => {
       })
         .then((res) => ({status: res.status, ok: true}))
         .catch(() => ({status: 0, ok: false})),
-      {timeout: 300000}
+      {timeout: 30000}
     ).then((result) => {
       if (result.ok) {
         // Endpoint should respond (not 404)

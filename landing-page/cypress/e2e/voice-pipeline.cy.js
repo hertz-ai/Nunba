@@ -30,7 +30,7 @@
  * 90 tests across 8 sections.
  */
 describe('Voice Pipeline E2E', () => {
-  const FLASK = 'http://localhost:5000';
+  const FLASK = `${Cypress.env('apiUrl')}`;
   const TTS_BASE = `${FLASK}/tts`;
 
   // ── Fixtures ──────────────────────────────────────────────────────────
@@ -126,6 +126,23 @@ describe('Voice Pipeline E2E', () => {
       statusCode: 200,
       body: {online: true},
     }).as('networkStatus');
+  }
+
+  /**
+   * Make sure win.navigator.mediaDevices is there for cy.stub.  Chrome's
+   * navigator.mediaDevices is a getter with no setter, so the spec's old
+   * `win.navigator.mediaDevices = win.navigator.mediaDevices || {}` threw
+   * "Cannot set property mediaDevices of [object Navigator] which has only
+   * a getter" in onBeforeLoad (the nunba-chat-mic failure, 9e33a0f5).  On
+   * localhost it exists; only where it does not is a plain object defined.
+   */
+  function ensureMediaDevices(win) {
+    if (!win.navigator.mediaDevices) {
+      Object.defineProperty(win.navigator, 'mediaDevices', {
+        configurable: true,
+        value: {},
+      });
+    }
   }
 
   /**
@@ -244,7 +261,7 @@ describe('Voice Pipeline E2E', () => {
       }).catch(() => {
         /* OK if offline */
       }),
-      {timeout: 300000}
+      {timeout: 30000}
     );
   });
 
@@ -261,14 +278,14 @@ describe('Voice Pipeline E2E', () => {
         cy.visit('/', {
           timeout: 60000,
           onBeforeLoad(win) {
-            win.navigator.mediaDevices = win.navigator.mediaDevices || {};
+            ensureMediaDevices(win);
             cy.stub(win.navigator.mediaDevices, 'getUserMedia').callsFake(
               getUserMediaStub
             );
           },
         });
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
         cy.wait(1500);
 
         // Look for mic button (Mic icon) and click it
@@ -296,14 +313,14 @@ describe('Voice Pipeline E2E', () => {
         cy.visit('/', {
           timeout: 60000,
           onBeforeLoad(win) {
-            win.navigator.mediaDevices = win.navigator.mediaDevices || {};
+            ensureMediaDevices(win);
             cy.stub(win.navigator.mediaDevices, 'getUserMedia').rejects(
               new DOMException('Permission denied', 'NotAllowedError')
             );
           },
         });
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
         cy.wait(1000);
 
         // Page should still be usable — no crash
@@ -318,14 +335,14 @@ describe('Voice Pipeline E2E', () => {
         cy.visit('/', {
           timeout: 60000,
           onBeforeLoad(win) {
-            win.navigator.mediaDevices = win.navigator.mediaDevices || {};
+            ensureMediaDevices(win);
             cy.stub(win.navigator.mediaDevices, 'getUserMedia').rejects(
               new DOMException('Requested device not found', 'NotFoundError')
             );
           },
         });
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
         cy.wait(1000);
 
         // Page should not crash
@@ -339,14 +356,14 @@ describe('Voice Pipeline E2E', () => {
         cy.visit('/', {
           timeout: 60000,
           onBeforeLoad(win) {
-            win.navigator.mediaDevices = win.navigator.mediaDevices || {};
+            ensureMediaDevices(win);
             cy.stub(win.navigator.mediaDevices, 'getUserMedia').resolves(
               mockStream
             );
           },
         });
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
 
         // Validate mock stream structure (contract check)
         expect(mockStream.getAudioTracks()).to.have.length(1);
@@ -379,7 +396,7 @@ describe('Voice Pipeline E2E', () => {
           },
         });
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
 
         // Contract: AudioContext constructor should be available for VAD
         cy.window().then((win) => {
@@ -430,7 +447,7 @@ describe('Voice Pipeline E2E', () => {
           },
         });
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
 
         // Page should not crash
         cy.get('body').should('exist');
@@ -443,7 +460,7 @@ describe('Voice Pipeline E2E', () => {
         setupBaseIntercepts();
         cy.visit('/', {timeout: 60000, failOnStatusCode: false});
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
         cy.wait(1000);
 
         // No recording indicator should be visible
@@ -457,7 +474,7 @@ describe('Voice Pipeline E2E', () => {
         cy.visit('/', {
           timeout: 60000,
           onBeforeLoad(win) {
-            win.navigator.mediaDevices = win.navigator.mediaDevices || {};
+            ensureMediaDevices(win);
             cy.stub(win.navigator.mediaDevices, 'getUserMedia').resolves(
               mockStream
             );
@@ -466,7 +483,7 @@ describe('Voice Pipeline E2E', () => {
           },
         });
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
         cy.wait(1500);
 
         // Find mic button and click it
@@ -673,7 +690,7 @@ describe('Voice Pipeline E2E', () => {
           },
         });
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
 
         cy.window().then((win) => {
           expect(win.SpeechRecognition).to.exist;
@@ -691,7 +708,7 @@ describe('Voice Pipeline E2E', () => {
           },
         });
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
 
         cy.window().then((win) => {
           const SR = win.SpeechRecognition || win.webkitSpeechRecognition;
@@ -868,7 +885,7 @@ describe('Voice Pipeline E2E', () => {
           },
         });
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
 
         // Contract: without SpeechRecognition, server STT should be used
         cy.window().then((win) => {
@@ -1049,7 +1066,7 @@ describe('Voice Pipeline E2E', () => {
 
         cy.visit('/', {timeout: 60000, failOnStatusCode: false});
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
         cy.wait(1000);
 
         // Page should still be interactive
@@ -1133,7 +1150,7 @@ describe('Voice Pipeline E2E', () => {
 
         cy.visit('/', {timeout: 60000, failOnStatusCode: false});
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
         cy.wait(2000);
 
         // When browser PocketTTS is ready AND text is English:
@@ -1193,7 +1210,7 @@ describe('Voice Pipeline E2E', () => {
 
         cy.visit('/', {timeout: 60000, failOnStatusCode: false});
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
         cy.wait(2000);
 
         // After page load with browser TTS ready + English text:
@@ -1311,7 +1328,7 @@ describe('Voice Pipeline E2E', () => {
         cy.visit('/', {
           timeout: 60000,
           onBeforeLoad(win) {
-            win.navigator.mediaDevices = win.navigator.mediaDevices || {};
+            ensureMediaDevices(win);
             cy.stub(win.navigator.mediaDevices, 'getUserMedia').resolves(
               mockStream
             );
@@ -1320,7 +1337,7 @@ describe('Voice Pipeline E2E', () => {
           },
         });
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
         cy.wait(2000);
 
         // Pipeline contract validated: all stubs in place
@@ -1436,7 +1453,7 @@ describe('Voice Pipeline E2E', () => {
 
         cy.visit('/', {timeout: 60000, failOnStatusCode: false});
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
         cy.wait(1000);
 
         // Page should still be interactive after chat error
@@ -1457,7 +1474,7 @@ describe('Voice Pipeline E2E', () => {
 
         cy.visit('/', {timeout: 60000, failOnStatusCode: false});
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
 
         // Contract: chat response text is displayed even when TTS fails
         cy.log('Text response displayed regardless of TTS availability');
@@ -1472,7 +1489,7 @@ describe('Voice Pipeline E2E', () => {
         cy.visit('/', {
           timeout: 60000,
           onBeforeLoad(win) {
-            win.navigator.mediaDevices = win.navigator.mediaDevices || {};
+            ensureMediaDevices(win);
             cy.stub(win.navigator.mediaDevices, 'getUserMedia').resolves(
               mockStream
             );
@@ -1481,7 +1498,7 @@ describe('Voice Pipeline E2E', () => {
           },
         });
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
         cy.wait(2000);
 
         // Verify page loaded and is interactive
@@ -1493,7 +1510,7 @@ describe('Voice Pipeline E2E', () => {
         setupBaseIntercepts();
         cy.visit('/', {timeout: 60000, failOnStatusCode: false});
         seedGuestAuth();
-        cy.wait('@getPrompts', {timeout: 300000});
+        cy.wait('@getPrompts', {timeout: 30000});
         cy.wait(1000);
 
         // Initially, no recording indicator
@@ -1523,15 +1540,11 @@ describe('Voice Pipeline E2E', () => {
       });
 
       it('7.1.2 MiniCPM VLM port 9891 — HTTP endpoint', () => {
-        /* REAL — probe MiniCPM sidecar */
-        cy.request({
-          method: 'GET',
-          url: 'http://localhost:9891/',
-          failOnStatusCode: false,
-          timeout: 300000,
-        }).then((res) => {
-          // May not be running — that's OK, just probe
-          cy.log(`MiniCPM probe: status ${res.status}`);
+        /* REAL: probe MiniCPM sidecar.  May not be running, which is OK:
+           httpStatus answers null for a closed port, where cy.request
+           failed the test at the network level. */
+        cy.task('httpStatus', {url: 'http://localhost:9891/'}).then((s) => {
+          cy.log(`MiniCPM probe: status ${s === null ? 'not running' : s}`);
         });
       });
 
@@ -1550,29 +1563,20 @@ describe('Voice Pipeline E2E', () => {
       });
 
       it('7.1.4 LangChain service port 6777 health', () => {
-        /* REAL */
-        cy.request({
-          method: 'GET',
-          url: 'http://localhost:6777/',
-          failOnStatusCode: false,
-          timeout: 300000,
-        }).then((res) => {
-          cy.log(`LangChain service probe: status ${res.status}`);
+        /* REAL: may not be running; null when the port is closed. */
+        cy.task('httpStatus', {url: 'http://localhost:6777/'}).then((s) => {
+          cy.log(`LangChain service probe: status ${s === null ? 'not running' : s}`);
         });
       });
     });
 
     describe('7.2 SSE (Server-Sent Events)', () => {
       it('7.2.1 SSE /api/social/events/stream opens connection', () => {
-        /* REAL */
-        cy.request({
-          method: 'GET',
-          url: `${FLASK}/api/social/events/stream`,
-          failOnStatusCode: false,
-          timeout: 300000,
-        }).then((res) => {
+        /* REAL: the status line only.  An accepted stream never ends, so
+           cy.request (which waits for the whole body) timed out on it. */
+        cy.task('httpStatus', {url: `${FLASK}/api/social/events/stream`}).then((s) => {
           // SSE endpoint without auth should be rejected or return event stream
-          expect(res.status).to.be.oneOf([200, 401, 403, 404, 500, 503]);
+          expect(s).to.be.oneOf([200, 401, 403, 404, 500, 503]);
         });
       });
 
@@ -1585,16 +1589,11 @@ describe('Voice Pipeline E2E', () => {
       });
 
       it('7.2.3 SSE rejects without JWT', () => {
-        /* REAL */
-        cy.request({
-          method: 'GET',
-          url: `${FLASK}/api/social/events/stream`,
-          failOnStatusCode: false,
-          timeout: 300000,
-        }).then((res) => {
+        /* REAL: the status line only (see 7.2.1). */
+        cy.task('httpStatus', {url: `${FLASK}/api/social/events/stream`}).then((s) => {
           // Without token, should be rejected or return empty stream
-          expect(res.status).to.be.oneOf([200, 401, 403, 404, 500, 503]);
-          cy.log(`SSE without auth: ${res.status}`);
+          expect(s).to.be.oneOf([200, 401, 403, 404, 500, 503]);
+          cy.log(`SSE without auth: ${s}`);
         });
       });
     });

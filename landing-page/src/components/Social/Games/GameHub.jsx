@@ -103,8 +103,11 @@ export default function GameHub() {
   const fetchLobbies = useCallback(async () => {
     try {
       setLobbiesLoading(true);
+      // gamesApi resolves to the response BODY ({success, data: [...]},
+      // services/axiosFactory); `res.data?.data` was `.data` of the lobby
+      // array, so no lobby ever showed (__tests__/GameHub.lobbies.test.js).
       const res = await gamesApi.list({status: 'waiting'});
-      setLobbies(res.data?.data || []);
+      setLobbies(Array.isArray(res?.data) ? res.data : []);
     } catch {
       // silent — non-critical
     } finally {

@@ -78,10 +78,16 @@ def _install_synthetic_cuda(monkeypatch) -> None:
         import torch  # type: ignore
     except ImportError:
         # No torch at all — create a minimal stub module so importers don't crash.
+        # Through monkeypatch so teardown takes the stub back out of
+        # sys.modules: written directly it outlived the test, and once
+        # monkeypatch removed the is_available it had added, every later
+        # `import torch` got a torch.cuda with no is_available (CI's
+        # python-quality job installs no torch; test_get_tts_status_returns_dict
+        # died on it in tts_engine._can_run_backend).
         torch = types.ModuleType("torch")
         torch.cuda = types.ModuleType("torch.cuda")  # type: ignore[attr-defined]
-        sys.modules["torch"] = torch
-        sys.modules["torch.cuda"] = torch.cuda  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "torch", torch)
+        monkeypatch.setitem(sys.modules, "torch.cuda", torch.cuda)  # type: ignore[attr-defined]
 
     cuda = torch.cuda
 

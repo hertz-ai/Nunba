@@ -14,8 +14,9 @@
  *   The full path (HARTOS agent_ui_update → WAMP/SSE → realtimeService →
  *   AgentOverlay → DOM) is too heavy for unit tests but trivial in
  *   Cypress: load the React app, inject a synthetic event through the
- *   dev-mode `window.__realtimeService` handle (added 2026-05-14 in
- *   src/services/realtimeService.js), then assert DOM + URL.
+ *   `window.__realtimeService` test handle (dev builds, and any build
+ *   inside a Cypress run; src/services/realtimeService.js), then assert
+ *   DOM + URL.
  *
  * This is the live verification the goal-hook ("all agentic liquid ui
  * in nunba shd work and should be verified") demands — distinct from
@@ -76,15 +77,11 @@ describe('AgentOverlay agent.ui.update — live substrate', () => {
       win.localStorage.setItem('guest_mode', 'true');
     });
 
-    // Stub the SSE + WAMP boot so realtimeService doesn't try to
-    // reach a real Flask backend.  Cypress doesn't natively stub
-    // EventSource, so we just let it fail silently — the dev-mode
-    // window.__realtimeService handle bypasses transport entirely.
+    // Stub the WAMP boot so realtimeService doesn't try to reach a real
+    // Flask backend; cypress/support/e2e.js closes the event stream.  The
+    // window.__realtimeService test handle bypasses transport entirely.
     cy.intercept('GET', '/api/wamp/ticket', {
       statusCode: 200, body: {ticket: 'cypress-overlay-ticket'},
-    });
-    cy.intercept('GET', '/api/social/events/stream*', {
-      statusCode: 204, body: '',
     });
     cy.intercept('GET', '/api/agent-engine/ledger/tasks*', {
       statusCode: 200,
@@ -138,7 +135,7 @@ describe('AgentOverlay agent.ui.update — live substrate', () => {
   };
 
   it('notification with navigate action renders + click changes URL', () => {
-    cy.visit('/', {failOnStatusCode: false});
+    cy.visit('/local', {failOnStatusCode: false});
     emitWhenReady(NOTIFICATION_PAYLOAD);
 
     // Overlay text from the synthetic event must appear in the DOM.
@@ -174,7 +171,7 @@ describe('AgentOverlay agent.ui.update — live substrate', () => {
   });
 
   it('toast and oauth_link route through NotificationCard (no JSON blob)', () => {
-    cy.visit('/', {failOnStatusCode: false});
+    cy.visit('/local', {failOnStatusCode: false});
 
     // Toast → renders title + message via NotificationCard
     emitWhenReady(TOAST_PAYLOAD);
@@ -193,7 +190,7 @@ describe('AgentOverlay agent.ui.update — live substrate', () => {
   });
 
   it('notification without actions stays back-compat', () => {
-    cy.visit('/', {failOnStatusCode: false});
+    cy.visit('/local', {failOnStatusCode: false});
 
     emitWhenReady({
       type: 'notification',

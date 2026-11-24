@@ -18,7 +18,7 @@
  *   - All cy.request() use failOnStatusCode: false.
  */
 
-const API = 'http://localhost:5000';
+const API = `${Cypress.env('apiUrl')}`;
 const DISTRIBUTED = `${API}/api/distributed`;
 
 describe('Distributed Goal Notifications E2E', () => {
@@ -80,7 +80,7 @@ describe('Distributed Goal Notifications E2E', () => {
         method: 'GET',
         url: `${DISTRIBUTED}/hosts`,
         failOnStatusCode: false,
-        timeout: 300000,
+        timeout: 30000,
       }).then((res) => {
         // 401 = blueprint is registered and auth is enforced
         // 404 = blueprint not registered (failure)
@@ -102,8 +102,12 @@ describe('Distributed Goal Notifications E2E', () => {
     it('1.3 POST /api/distributed/goals responds with auth token', () => {
       cy.socialRequest('POST', `${DISTRIBUTED}/goals`, {
         objective: 'Test goal from Cypress',
+        // A fresh task id per run: the ledger keeps tasks, and a task id it
+        // already holds is refused with 409 (submit_goal: "the client's id"),
+        // so a fixed 'test_task_1' failed every run after the first on the
+        // same server.
         tasks: [
-          {task_id: 'test_task_1', description: 'Test task', capabilities: []},
+          {task_id: `cypress_task_${Date.now()}`, description: 'Test task', capabilities: []},
         ],
         context: {source: 'cypress_test'},
       }).then((res) => {
@@ -112,19 +116,27 @@ describe('Distributed Goal Notifications E2E', () => {
       });
     });
 
-    it('1.4 POST /api/distributed/tasks/claim responds with auth token', () => {
+    it('1.4 POST /api/distributed/tasks/claim refuses to claim as another agent', () => {
+      // A signed-in non-admin naming another agent is refused with 403
+      // "Cannot act as another agent" (HARTOS distributed_agent/api.py
+      // claim_task), so nothing is claimed on the server.  A real claim
+      // (no agent_id) would take a PENDING task, possibly a real user's.
+      // 503/404/401: no coordinator, no blueprint, sign-in refused.
       cy.socialRequest('POST', `${DISTRIBUTED}/tasks/claim`, {
         agent_id: 'cypress-agent',
         capabilities: ['testing'],
       }).then((res) => {
-        expect(res.status).to.be.oneOf([200, 401, 404, 500, 503]);
+        expect(res.status).to.be.oneOf([401, 403, 404, 503]);
+        if (res.status === 403) {
+          expect(res.body.error).to.eq('Cannot act as another agent');
+        }
       });
     });
 
     it('1.5 POST /api/distributed/hosts/register responds with auth token', () => {
       cy.socialRequest('POST', `${DISTRIBUTED}/hosts/register`, {
         host_id: 'cypress-host',
-        host_url: 'http://localhost:5000',
+        host_url: `${Cypress.env('apiUrl')}`,
         capabilities: ['testing', 'coding'],
         compute_budget: {max_tasks: 5},
       }).then((res) => {
@@ -217,118 +229,67 @@ describe('Distributed Goal Notifications E2E', () => {
 
   // =========================================================================
   // 3. NotificationsPage UI with Goal Notifications (Stubbed)
-  //    Each test stubs /auth/me so SocialContext sees an authenticated user
-  //    and RoleGuard allows access to /social/notifications (minRole=flat).
+  //    The page is opened as the user cy.socialAuth() signed in (a real
+  //    token), so RoleGuard (minRole=flat) admits it; only the notification
+  //    list is stubbed.  A made-up token is no longer accepted by the auth
+  //    hydration, so RoleGuard sent the old version back to /social as a
+  //    guest and the list was never on screen.
   // =========================================================================
   describe('3. NotificationsPage UI', () => {
-    // Helper: visit /social/notifications with full SocialContext stubs
-    // so RoleGuard sees an authenticated flat-tier user.
+    // The page's own list call (NotificationsPage asks for ?limit=10 once
+    // RoleGuard lets it mount).  The unread-count call SocialContext makes
+    // (?unread=true&limit=1) is stubbed separately and never satisfies the
+    // wait, so a page that was sent away fails at the wait, not 30 s later
+    // at the text.
+    function stubNotifications(data) {
+      cy.intercept(
+        {method: 'GET', pathname: '/api/social/notifications', query: {unread: 'true'}},
+        {statusCode: 200, body: {success: true, data: []}},
+      );
+      cy.intercept(
+        {method: 'GET', pathname: '/api/social/notifications', query: {limit: '10'}},
+        {statusCode: 200, body: {success: true, data}},
+      ).as('getNotifications');
+    }
+
     function visitNotificationsPage() {
-      // Stub /auth/me so SocialContext sets accessTier='flat'
-      cy.intercept('GET', '**/api/social/auth/me', {
-        statusCode: 200,
-        body: {
-          success: true,
-          data: {
-            id: 'test-user',
-            username: 'cypress_test',
-            role: 'flat',
-          },
-        },
-      }).as('authMe');
-
-      // Stub resonance/onboarding calls that SocialContext makes on init
-      cy.intercept('GET', '**/api/social/resonance/**', {
-        statusCode: 200,
-        body: {success: true, data: null},
-      });
-      cy.intercept('GET', '**/api/social/onboarding/**', {
-        statusCode: 200,
-        body: {success: true, data: null},
-      });
-      // Stub feed endpoint in case redirect happens (prevents hanging requests)
-      cy.intercept('GET', '**/api/social/feed/**', {
-        statusCode: 200,
-        body: {success: true, data: []},
-      });
-
-      cy.visit('/social/notifications', {
-        timeout: 60000,
-        onBeforeLoad(win) {
-          // Set a token so SocialContext's useEffect enters the auth branch
-          win.localStorage.setItem(
-            'access_token',
-            'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6InRlc3QtdXNlciIsInJvbGUiOiJmbGF0In0.stub'
-          );
-          win.localStorage.setItem('social_user_id', 'test-user');
-          win.localStorage.setItem('social_username', 'cypress_test');
-        },
-      });
-
-      // Wait for the auth/me intercept to fire and SocialContext to resolve
-      cy.wait('@authMe');
+      cy.socialVisit('/social/notifications');
+      cy.wait('@getNotifications', {timeout: 30000});
+      cy.location('pathname').should('eq', '/social/notifications');
     }
 
     it('3.1 goal_contribution notification renders on /social/notifications', () => {
-      cy.intercept('GET', '**/api/social/notifications*', {
-        statusCode: 200,
-        body: {
-          success: true,
-          data: [goalContributionNotification, regularNotification],
-        },
-      }).as('getNotifications');
+      stubNotifications([goalContributionNotification, regularNotification]);
 
       visitNotificationsPage();
-      cy.contains('contributed to', {timeout: 300000}).should('be.visible');
-      cy.contains('Invent a better search engine', {timeout: 300000}).should(
+      cy.contains('contributed to', {timeout: 30000}).should('be.visible');
+      cy.contains('Invent a better search engine', {timeout: 30000}).should(
         'be.visible'
       );
     });
 
     it('3.2 goal_verified notification renders correctly', () => {
-      cy.intercept('GET', '**/api/social/notifications*', {
-        statusCode: 200,
-        body: {
-          success: true,
-          data: [goalVerifiedNotification],
-        },
-      }).as('getNotifications');
+      stubNotifications([goalVerifiedNotification]);
 
       visitNotificationsPage();
-      cy.contains('verified by peer consensus', {timeout: 300000}).should(
+      cy.contains('verified by peer consensus', {timeout: 30000}).should(
         'be.visible'
       );
     });
 
     it('3.3 Both notification types render together', () => {
-      cy.intercept('GET', '**/api/social/notifications*', {
-        statusCode: 200,
-        body: {
-          success: true,
-          data: [
-            goalContributionNotification,
-            goalVerifiedNotification,
-            regularNotification,
-          ],
-        },
-      }).as('getNotifications');
+      stubNotifications([goalContributionNotification, goalVerifiedNotification, regularNotification]);
 
       visitNotificationsPage();
-      cy.contains('contributed to', {timeout: 300000}).should('be.visible');
-      cy.contains('verified by peer consensus', {timeout: 300000}).should(
+      cy.contains('contributed to', {timeout: 30000}).should('be.visible');
+      cy.contains('verified by peer consensus', {timeout: 30000}).should(
         'be.visible'
       );
-      cy.contains('Alice commented', {timeout: 300000}).should('be.visible');
+      cy.contains('Alice commented', {timeout: 30000}).should('be.visible');
     });
 
     it('3.4 Mark all read works for goal notifications', () => {
-      cy.intercept('GET', '**/api/social/notifications*', {
-        statusCode: 200,
-        body: {
-          success: true,
-          data: [goalContributionNotification, goalVerifiedNotification],
-        },
-      }).as('getNotifications');
+      stubNotifications([goalContributionNotification, goalVerifiedNotification]);
 
       cy.intercept('POST', '**/api/social/notifications/read-all', {
         statusCode: 200,
@@ -336,35 +297,23 @@ describe('Distributed Goal Notifications E2E', () => {
       }).as('markAllRead');
 
       visitNotificationsPage();
-      cy.contains('contributed to', {timeout: 300000}).should('be.visible');
-      cy.contains(/mark all/i, {timeout: 300000}).click({force: true});
+      cy.contains('contributed to', {timeout: 30000}).should('be.visible');
+      cy.contains(/mark all/i, {timeout: 30000}).click({force: true});
       cy.wait('@markAllRead');
     });
 
     it('3.5 Unread goal notifications show unread indicator', () => {
-      cy.intercept('GET', '**/api/social/notifications*', {
-        statusCode: 200,
-        body: {
-          success: true,
-          data: [goalContributionNotification], // is_read: false
-        },
-      }).as('getNotifications');
+      stubNotifications([goalContributionNotification]);
 
       visitNotificationsPage();
-      cy.contains('contributed to', {timeout: 300000}).should('be.visible');
+      cy.contains('contributed to', {timeout: 30000}).should('be.visible');
     });
 
     it('3.6 Empty state shows when no notifications', () => {
-      cy.intercept('GET', '**/api/social/notifications*', {
-        statusCode: 200,
-        body: {
-          success: true,
-          data: [],
-        },
-      }).as('getNotifications');
+      stubNotifications([]);
 
       visitNotificationsPage();
-      cy.contains(/no notification/i, {timeout: 300000}).should('be.visible');
+      cy.contains(/no notification/i, {timeout: 30000}).should('be.visible');
     });
   });
 

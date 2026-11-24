@@ -12,7 +12,7 @@
  * 6. Notification toast system
  */
 
-const API = Cypress.config('baseUrl') || 'http://localhost:5000';
+const API = Cypress.config('baseUrl') || `${Cypress.env('apiUrl')}`;
 
 describe('Habit Features', () => {
 
@@ -53,9 +53,10 @@ describe('Habit Features', () => {
       }).then((res) => {
         // May return 200 with empty array or 503 if memory module not installed
         expect(res.status).to.be.oneOf([200, 400, 404, 500, 503]);
+        // memory_recent (routes/chatbot_routes.py) answers a bare list,
+        // which is what MemoryPanel.jsx reads.
         if (res.status === 200) {
-          expect(res.body).to.have.property('memories');
-          expect(res.body.memories).to.be.an('array');
+          expect(res.body).to.be.an('array');
         }
       });
     });
@@ -67,8 +68,9 @@ describe('Habit Features', () => {
         failOnStatusCode: false,
       }).then((res) => {
         expect(res.status).to.be.oneOf([200, 400, 404, 500, 503]);
+        // memory_search answers a bare list of matches, as MemoryPanel reads.
         if (res.status === 200) {
-          expect(res.body).to.have.property('results');
+          expect(res.body).to.be.an('array');
         }
       });
     });
@@ -89,27 +91,27 @@ describe('Habit Features', () => {
     });
 
     it('has mic button (voice input)', () => {
-      cy.get('button[title="Voice input"], button svg.lucide-mic', { timeout: 300000 })
+      cy.get('button[title="Voice input"], button svg.lucide-mic', { timeout: 30000 })
         .should('exist');
     });
 
     it('has clipboard paste button', () => {
-      cy.get('button[title="Paste from clipboard"]', { timeout: 300000 })
+      cy.get('button[title="Paste from clipboard"]', { timeout: 30000 })
         .should('exist');
     });
 
     it('has camera capture button', () => {
-      cy.get('button[title="Take photo"]', { timeout: 300000 })
+      cy.get('button[title="Take photo"]', { timeout: 30000 })
         .should('exist');
     });
 
     it('has memory panel button', () => {
-      cy.get('button[title="Memories"]', { timeout: 300000 })
+      cy.get('button[title="Memories"]', { timeout: 30000 })
         .should('exist');
     });
 
     it('has wake word toggle button', () => {
-      cy.get('button[title*="Hey Nunba"], button[title*="listening"]', { timeout: 300000 })
+      cy.get('button[title*="Hey Nunba"], button[title*="listening"]', { timeout: 30000 })
         .should('exist');
     });
   });
@@ -154,14 +156,17 @@ describe('Habit Features', () => {
   });
 
   describe('6. Health & Chat', () => {
-    it('backend health returns healthy', () => {
+    it('backend health reports operational', () => {
       cy.request({
         url: `${API}/backend/health`,
         failOnStatusCode: false,
-        timeout: 300000,
+        timeout: 30000,
       }).then((res) => {
         expect(res.status).to.eq(200);
-        expect(res.body.healthy).to.eq(true);
+        // main.py backend_health, the GPU-tier classifier the chat badge
+        // polls; the `healthy` field came from a chatbot_routes handler that
+        // is registered on the same rule after it and never served.
+        expect(res.body.status).to.eq('operational');
       });
     });
 

@@ -20,7 +20,7 @@
  * "too big".
  */
 
-const APP = Cypress.env('APP_URL') || 'http://localhost:5000';
+const APP = Cypress.env('APP_URL') || `${Cypress.env('apiUrl')}`;
 
 const LANDSCAPE = {w: 1920, h: 1080};
 const PORTRAIT = {w: 646, h: 1327};   // the user's live window, from the screenshot

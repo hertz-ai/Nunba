@@ -8,10 +8,11 @@ Every `agent_ui_update(...)` emit type in HARTOS/Nunba must be both:
 Wires the `scripts/probe_liquid_ui_audit.py` walker into pytest so
 regression-by-typo or regression-by-missing-renderer is caught at PR.
 
-The one allowed exception is the intentional negative test in
-`tests/unit/test_liquid_ui_meet_copilot.py` which emits a typo'd
-`'meet_copliot'` to verify HARTOS rejects it.  That emit is whitelisted
-below.
+The walker skips test suites (`tests/` in either repo): their emits are
+fixtures on purpose, such as the typo'd `'meet_copliot'` in HARTOS's
+`tests/unit/test_liquid_ui_meet_copilot.py`, which checks that HARTOS
+rejects it.  Before the walker found the real trees, those had to be
+whitelisted here by name.
 
 Captured 2026-05-14 after the audit found 4 substrate bugs that
 shipped silently (qr_pair / oauth_link / toast / meet_copliot).
@@ -27,17 +28,10 @@ sys.path.insert(0, str(_REPO / 'scripts'))
 
 import probe_liquid_ui_audit as audit  # noqa: E402
 
-# Intentional negative-test emits — these are SUPPOSED to fail HARTOS
-# allowlist validation, so they don't count as substrate drift.
-_NEGATIVE_TESTS = {
-    'meet_copliot',  # tests/unit/test_liquid_ui_meet_copilot.py — typo
-}
-
 
 def _gather():
-    hart = pathlib.Path('C:/Users/sathi/PycharmProjects/HARTOS')
-    nunba = pathlib.Path(
-        'C:/Users/sathi/PycharmProjects/Nunba-HART-Companion')
+    hart = audit.HARTOS_ROOT
+    nunba = audit.NUNBA_ROOT
     sites = audit.scan_emit_sites(hart) + audit.scan_emit_sites(nunba)
     emitted = {ty for _, ty in sites}
     allowlist = audit.parse_component_types(
@@ -50,7 +44,7 @@ def _gather():
 
 def test_every_emit_type_is_allowlisted():
     _, emitted, allowlist, _ = _gather()
-    not_allowed = (emitted - allowlist) - _NEGATIVE_TESTS
+    not_allowed = emitted - allowlist
     assert not not_allowed, (
         "Liquid UI emits would be rejected by HARTOS allowlist: "
         f"{sorted(not_allowed)}.  Add them to COMPONENT_TYPES in "
@@ -60,7 +54,7 @@ def test_every_emit_type_is_allowlisted():
 
 def test_every_emit_type_has_web_renderer():
     _, emitted, _, switch = _gather()
-    no_renderer = (emitted - switch) - _NEGATIVE_TESTS
+    no_renderer = emitted - switch
     assert not no_renderer, (
         "Liquid UI emits have no web renderer (will show JSON blob): "
         f"{sorted(no_renderer)}.  Add a case to OverlayContent in "

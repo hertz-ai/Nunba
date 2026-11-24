@@ -30,7 +30,7 @@ describe('J16: federation / hive join + gossip', () => {
   it('GET /api/admin/hive/status returns hive info envelope', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/admin/hive/status',
+      url: `${Cypress.env('apiUrl')}/api/admin/hive/status`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 404, 503]);
@@ -40,7 +40,7 @@ describe('J16: federation / hive join + gossip', () => {
   it('POST /api/admin/hive/register with empty body returns 400', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/admin/hive/register',
+      url: `${Cypress.env('apiUrl')}/api/admin/hive/register`,
       body: {},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -51,7 +51,7 @@ describe('J16: federation / hive join + gossip', () => {
   it('GET /api/social/peers returns peer list envelope', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/social/peers',
+      url: `${Cypress.env('apiUrl')}/api/social/peers`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 404, 503]);
@@ -114,7 +114,7 @@ describe('J18: channel adapter registry + admin CRUD', () => {
   it('GET /api/admin/channels returns channel list envelope', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/admin/channels',
+      url: `${Cypress.env('apiUrl')}/api/admin/channels`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 503]);
@@ -124,7 +124,7 @@ describe('J18: channel adapter registry + admin CRUD', () => {
   it('POST /api/admin/channels with missing type returns 400', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/admin/channels',
+      url: `${Cypress.env('apiUrl')}/api/admin/channels`,
       body: {},
       failOnStatusCode: false,
     }).then((resp) => {
@@ -135,7 +135,7 @@ describe('J18: channel adapter registry + admin CRUD', () => {
   it('GET /api/admin/channels/registry returns adapter-type list', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/admin/channels/registry',
+      url: `${Cypress.env('apiUrl')}/api/admin/channels/registry`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 404, 503]);
@@ -155,7 +155,7 @@ describe('J19: cloud provider gateway fallback', () => {
   it('GET /api/admin/providers returns provider list', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/admin/providers',
+      url: `${Cypress.env('apiUrl')}/api/admin/providers`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 503]);
@@ -165,7 +165,7 @@ describe('J19: cloud provider gateway fallback', () => {
   it('GET /api/admin/providers/gateway/stats returns aggregate', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/admin/providers/gateway/stats',
+      url: `${Cypress.env('apiUrl')}/api/admin/providers/gateway/stats`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 503]);
@@ -175,7 +175,7 @@ describe('J19: cloud provider gateway fallback', () => {
   it('GET /api/admin/providers/capabilities returns capability summary', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/admin/providers/capabilities',
+      url: `${Cypress.env('apiUrl')}/api/admin/providers/capabilities`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 503]);
@@ -185,7 +185,7 @@ describe('J19: cloud provider gateway fallback', () => {
   it('GET /api/admin/providers/efficiency/leaderboard returns ranked entries', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/admin/providers/efficiency/leaderboard',
+      url: `${Cypress.env('apiUrl')}/api/admin/providers/efficiency/leaderboard`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 503]);
@@ -205,7 +205,7 @@ describe('J20: disk-full / OOM graceful degradation', () => {
   it('/api/admin/diag/degradations reports registered import failures', () => {
     cy.request({
       method: 'GET',
-      url: 'http://localhost:5000/api/admin/diag/degradations',
+      url: `${Cypress.env('apiUrl')}/api/admin/diag/degradations`,
       failOnStatusCode: false,
     }).then((resp) => {
       expect(resp.status).to.be.oneOf([200, 401, 403, 500, 503]);
@@ -217,13 +217,19 @@ describe('J20: disk-full / OOM graceful degradation', () => {
   });
 
   it('/api/admin/diag/thread-dump returns dump envelope', () => {
+    // The route is POST-only (main.py admin_diag_thread_dump); a GET got 405.
     cy.request({
-      method: 'GET',
-      url: 'http://localhost:5000/api/admin/diag/thread-dump',
+      method: 'POST',
+      url: `${Cypress.env('apiUrl')}/api/admin/diag/thread-dump`,
+      body: {reason: 'cypress J20'},
       failOnStatusCode: false,
     }).then((resp) => {
       // Admin-guarded endpoint — gated by require_local_or_token.
       expect(resp.status).to.be.oneOf([200, 401, 403, 500, 503]);
+      if (resp.status === 200) {
+        expect(resp.body).to.include({success: true, reason: 'cypress J20'});
+        expect(resp.body.threads_dumped).to.be.a('number');
+      }
     });
   });
 
@@ -241,9 +247,12 @@ describe('J20: disk-full / OOM graceful degradation', () => {
       statusCode: 200,
       body: {text: 'I can still chat in text-only mode.', source: 'local-text-only', degraded: true},
     }).as('degradedChat');
-    cy.visit('/local', {failOnStatusCode: false});
-    cy.contains(/chat|say something|type a message/i, {timeout: 10000});
-    cy.get('textarea, input[type="text"]').first().type('hello{enter}', {force: true});
+    // cy.openLocalChat: a sealed HART, so /local shows the chat and not the
+    // first-run language picker (which has no chat text to find).
+    cy.openLocalChat();
+    cy.get('textarea, input[type="text"]', {timeout: 30000})
+      .first()
+      .type('hello{enter}', {force: true});
     cy.wait('@degradedChat').its('response.body.text').should('contain', 'text-only');
   });
 

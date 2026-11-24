@@ -93,12 +93,13 @@ describe('consentApi.list', () => {
   it('calls GET /consent with no params when no filters supplied', async () => {
     await consentApi.list();
     expect(mockAxiosInstance.get).toHaveBeenCalledTimes(1);
-    expect(mockAxiosInstance.get).toHaveBeenCalledWith('/consent', {params: {}});
+    expect(mockAxiosInstance.get).toHaveBeenCalledWith('/consent', {cache: false, params: {}});
   });
 
   it('encodes consent_type filter in query params', async () => {
     await consentApi.list({consent_type: 'cloud_capability'});
     expect(mockAxiosInstance.get).toHaveBeenCalledWith('/consent', {
+      cache: false,
       params: {consent_type: 'cloud_capability'},
     });
   });
@@ -106,6 +107,7 @@ describe('consentApi.list', () => {
   it('encodes active_only=true as the string "true"', async () => {
     await consentApi.list({active_only: true});
     expect(mockAxiosInstance.get).toHaveBeenCalledWith('/consent', {
+      cache: false,
       params: {active_only: 'true'},
     });
   });
@@ -113,6 +115,7 @@ describe('consentApi.list', () => {
   it('encodes active_only=false as the string "false"', async () => {
     await consentApi.list({active_only: false});
     expect(mockAxiosInstance.get).toHaveBeenCalledWith('/consent', {
+      cache: false,
       params: {active_only: 'false'},
     });
   });
@@ -123,7 +126,20 @@ describe('consentApi.list', () => {
       active_only: true,
     });
     expect(mockAxiosInstance.get).toHaveBeenCalledWith('/consent', {
+      cache: false,
       params: {consent_type: 'cloud_capability', active_only: 'true'},
+    });
+  });
+
+  it('is never served from the cache, whatever the caller passes', async () => {
+    // Consent answers also arrive from other windows/devices (realtime) and
+    // a revoke/reopen that 404s invalidates nothing; a cached read showed
+    // the old state for up to the 60 s TTL.
+    await consentApi.list({consent_type: 'camera'}, {silentError: [404], cache: true});
+    expect(mockAxiosInstance.get).toHaveBeenCalledWith('/consent', {
+      silentError: [404],
+      cache: false,
+      params: {consent_type: 'camera'},
     });
   });
 });

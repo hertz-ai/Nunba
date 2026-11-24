@@ -113,11 +113,18 @@ class TestRunFunction:
 
     @patch('scripts.rebuild_python_embed.subprocess.run')
     def test_run_handles_nonzero_exit(self, mock_subprocess, capsys):
+        # 3e9864c made run() raise by default ("install steps must NOT
+        # cascade silently"); check=False hands the result back instead.
+        # Either way the failure is printed.
         mock_subprocess.return_value = MagicMock(returncode=1, stderr="some error")
-        result = run(["bad_command"])
+        with pytest.raises(subprocess.CalledProcessError) as raised:
+            run(["bad_command"])
+        assert raised.value.returncode == 1
+        assert "FAILED" in capsys.readouterr().out
+
+        result = run(["bad_command"], check=False)
         assert result.returncode == 1
-        captured = capsys.readouterr()
-        assert "FAILED" in captured.out
+        assert "FAILED" in capsys.readouterr().out
 
     @patch('scripts.rebuild_python_embed.subprocess.run')
     def test_run_prints_command(self, mock_subprocess, capsys):

@@ -24,7 +24,7 @@
  *   - failOnStatusCode: false on all cy.request() calls
  *   - cy.socialAuth() in before() once per describe block
  *   - cy.socialVisit() to navigate (token set automatically)
- *   - Generous timeouts: { timeout: 300000 }
+ *   - Generous timeouts: { timeout: 30000 }
  *   - No reliance on cy.wait('@alias') for API intercepts
  */
 
@@ -36,7 +36,7 @@ describe('Social Feed UI - Feed Page Loading', () => {
   it('should load the authenticated feed page without crashing', () => {
     cy.socialVisit('/social');
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.get('#root').invoke('html').should('not.be.empty');
 
     // No crash errors in the body
@@ -46,11 +46,11 @@ describe('Social Feed UI - Feed Page Loading', () => {
   it('should show a content container even if feed is empty', () => {
     cy.socialVisit('/social');
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
 
     // The root should have rendered child elements (layout, feed area, etc.)
     cy.get('#root')
-      .children({timeout: 300000})
+      .children({timeout: 30000})
       .should('have.length.at.least', 1);
 
     // Page should have some rendered markup
@@ -62,7 +62,7 @@ describe('Social Feed UI - Feed Page Loading', () => {
   it('should display tab navigation with feed type tabs', () => {
     cy.socialVisit('/social');
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
 
     // FeedPage renders MUI Tabs with labels: Global, Trending, Agents, For You
     // Look for MUI Tab elements or role=tab
@@ -82,10 +82,10 @@ describe('Social Feed UI - Feed Page Loading', () => {
   it('should allow switching between feed tabs', () => {
     cy.socialVisit('/social');
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
 
     // Find MUI Tab elements (role="tab") and click the second one
-    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 30000}).then(($tabs) => {
       if ($tabs.length > 1) {
         cy.wrap($tabs.eq(1)).click({force: true});
         // Page should remain stable after tab switch
@@ -97,7 +97,7 @@ describe('Social Feed UI - Feed Page Loading', () => {
   it('should load the global feed page (/social)', () => {
     cy.socialVisit('/social');
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.get('#root').invoke('html').should('not.be.empty');
 
     // Page should not crash
@@ -113,9 +113,9 @@ describe('Social Feed UI - Post Creation', () => {
   it('should show a create post button or FAB for authenticated users', () => {
     cy.socialVisit('/social');
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     // Wait for React to render content
-    cy.get('#root', {timeout: 300000})
+    cy.get('#root', {timeout: 30000})
       .invoke('html')
       .should('have.length.greaterThan', 50);
 
@@ -138,7 +138,7 @@ describe('Social Feed UI - Post Creation', () => {
   it('should be able to type in a post content field if a form is available', () => {
     cy.socialVisit('/social');
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
 
     // Try to find any text input or textarea on the feed page
     cy.get('body').then(($body) => {
@@ -271,8 +271,8 @@ describe('Social Feed UI - Post Interaction', () => {
   it('should load the feed with a post card present', () => {
     cy.socialVisit('/social');
 
-    cy.get('#root', {timeout: 300000}).should('exist');
-    cy.get('#root', {timeout: 300000})
+    cy.get('#root', {timeout: 30000}).should('exist');
+    cy.get('#root', {timeout: 30000})
       .invoke('html')
       .should('have.length.greaterThan', 50);
 
@@ -293,8 +293,8 @@ describe('Social Feed UI - Post Interaction', () => {
   it('should have upvote button elements on the page', () => {
     cy.socialVisit('/social');
 
-    cy.get('#root', {timeout: 300000}).should('exist');
-    cy.get('#root', {timeout: 300000})
+    cy.get('#root', {timeout: 30000}).should('exist');
+    cy.get('#root', {timeout: 30000})
       .invoke('html')
       .should('have.length.greaterThan', 50);
 
@@ -327,8 +327,8 @@ describe('Social Feed UI - Post Interaction', () => {
   it('should have downvote button elements on the page', () => {
     cy.socialVisit('/social');
 
-    cy.get('#root', {timeout: 300000}).should('exist');
-    cy.get('#root', {timeout: 300000})
+    cy.get('#root', {timeout: 30000}).should('exist');
+    cy.get('#root', {timeout: 30000})
       .invoke('html')
       .should('have.length.greaterThan', 50);
 
@@ -352,8 +352,8 @@ describe('Social Feed UI - Post Interaction', () => {
   it('should display author info on post cards', () => {
     cy.socialVisit('/social');
 
-    cy.get('#root', {timeout: 300000}).should('exist');
-    cy.get('#root', {timeout: 300000})
+    cy.get('#root', {timeout: 30000}).should('exist');
+    cy.get('#root', {timeout: 30000})
       .invoke('html')
       .should('have.length.greaterThan', 50);
 
@@ -380,19 +380,19 @@ describe('Social Feed UI - Post Interaction', () => {
       // Navigate directly to the post detail
       cy.socialVisit(`/social/post/${postId}`);
 
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
       cy.get('#root').invoke('html').should('not.be.empty');
     } else {
       // Fallback: just verify feed page renders post cards that are clickable
       cy.socialVisit('/social');
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
 
       cy.get('body').then(($body) => {
         const cards = $body.find('[class*="MuiCard"]');
         if (cards.length > 0) {
           cy.wrap(cards.first()).click({force: true});
           // Should navigate somewhere
-          cy.get('#root', {timeout: 300000}).should('exist');
+          cy.get('#root', {timeout: 30000}).should('exist');
         } else {
           // No cards to click, feed is empty -- that is fine
           cy.get('#root').invoke('html').should('not.be.empty');
@@ -431,7 +431,7 @@ describe('Social Feed UI - Post Detail Page', () => {
     if (postId) {
       cy.socialVisit(`/social/post/${postId}`);
 
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
       cy.get('#root').invoke('html').should('not.be.empty');
 
       // Should not show a crash
@@ -439,7 +439,7 @@ describe('Social Feed UI - Post Detail Page', () => {
     } else {
       // If post creation failed (e.g. auth issues), verify the route loads at all
       cy.socialVisit('/social/post/1');
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
     }
   });
 
@@ -449,7 +449,7 @@ describe('Social Feed UI - Post Detail Page', () => {
     if (postId) {
       cy.socialVisit(`/social/post/${postId}`);
 
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
 
       // PostDetailPage shows full content via Typography elements
       // Allow time for the component to render
@@ -468,7 +468,7 @@ describe('Social Feed UI - Post Detail Page', () => {
       });
     } else {
       cy.socialVisit('/social/post/1');
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
     }
   });
 
@@ -478,7 +478,7 @@ describe('Social Feed UI - Post Detail Page', () => {
     if (postId) {
       cy.socialVisit(`/social/post/${postId}`);
 
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
 
       // PostDetailPage renders "Comments (N)" text
       cy.get('body').should(($body) => {
@@ -494,7 +494,7 @@ describe('Social Feed UI - Post Detail Page', () => {
       });
     } else {
       cy.socialVisit('/social/post/1');
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
     }
   });
 
@@ -504,7 +504,7 @@ describe('Social Feed UI - Post Detail Page', () => {
     if (postId) {
       cy.socialVisit(`/social/post/${postId}`);
 
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
 
       // CommentForm has a textarea/input with placeholder "Add a comment..."
       cy.get('body').should(($body) => {
@@ -522,7 +522,7 @@ describe('Social Feed UI - Post Detail Page', () => {
       });
     } else {
       cy.socialVisit('/social/post/1');
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
     }
   });
 
@@ -563,7 +563,7 @@ describe('Social Feed UI - Feed Tabs & Navigation', () => {
   it('should load the trending feed page', () => {
     cy.socialVisit('/social');
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.get('#root').invoke('html').should('not.be.empty');
 
     // Page should not crash
@@ -574,7 +574,7 @@ describe('Social Feed UI - Feed Tabs & Navigation', () => {
   it('should load the agents feed page', () => {
     cy.socialVisit('/social');
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.get('#root').invoke('html').should('not.be.empty');
 
     cy.get('body').should('not.contain.text', 'Cannot read properties');
@@ -585,7 +585,7 @@ describe('Social Feed UI - Feed Tabs & Navigation', () => {
 
     feedRoutes.forEach((route) => {
       cy.socialVisit(route);
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
       cy.get('#root').invoke('html').should('not.be.empty');
     });
   });
@@ -600,11 +600,11 @@ describe('Social Feed UI - Feed Tabs & Navigation', () => {
 
     feedRoutes.forEach(({route}) => {
       cy.socialVisit(route);
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
 
       // Each tab should have rendered content (posts, empty state, or loading)
       cy.get('#root')
-        .children({timeout: 300000})
+        .children({timeout: 30000})
         .should('have.length.at.least', 1);
     });
   });
@@ -612,7 +612,7 @@ describe('Social Feed UI - Feed Tabs & Navigation', () => {
   it('should handle empty feed state gracefully on all tabs', () => {
     cy.socialVisit('/social');
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
 
     // The page should display something -- either posts or an EmptyState
     cy.get('body').then(($body) => {
@@ -660,7 +660,7 @@ describe('Social Feed UI - Voting Integration', () => {
     }
 
     cy.socialVisit(`/social/post/${postId}`);
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
 
     // Wait for post to load
     cy.wait(2000);
@@ -715,7 +715,7 @@ describe('Social Feed UI - Voting Integration', () => {
     }
 
     cy.socialVisit(`/social/post/${postId}`);
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -748,7 +748,7 @@ describe('Social Feed UI - Voting Integration', () => {
     }
 
     cy.socialVisit(`/social/post/${postId}`);
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -783,7 +783,7 @@ describe('Social Feed UI - Loading States', () => {
     }).as('feedRequest');
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
 
     // Check for CircularProgress (MUI loading spinner) or loading text
     cy.get('body').should(($body) => {
@@ -800,7 +800,7 @@ describe('Social Feed UI - Loading States', () => {
 
   it('should hide loading indicator when feed loads', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
 
     // Wait for content to fully load
     cy.wait(3000);
@@ -822,11 +822,11 @@ describe('Social Feed UI - Loading States', () => {
 
   it('should show loading indicator when switching tabs', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // Click on a different tab
-    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 30000}).then(($tabs) => {
       if ($tabs.length > 1) {
         // Click second tab (Trending)
         cy.wrap($tabs.eq(1)).click({force: true});
@@ -854,7 +854,7 @@ describe('Social Feed UI - Error Handling', () => {
     }).as('feedError');
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
 
     // Page should not crash
     cy.get('body').should('not.contain.text', 'Cannot read properties');
@@ -871,7 +871,7 @@ describe('Social Feed UI - Error Handling', () => {
     }).as('networkError');
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
 
     // Page should not crash even with network error
     cy.get('body').should('not.contain.text', 'Uncaught');
@@ -886,7 +886,7 @@ describe('Social Feed UI - Error Handling', () => {
     }).as('emptyFeed');
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // Should show empty state message
@@ -910,10 +910,10 @@ describe('Social Feed UI - Tab Switching Integration', () => {
 
   it('should change content when clicking different tabs', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 30000}).then(($tabs) => {
       if ($tabs.length >= 2) {
         // Store initial tab state
         cy.get('[role="tab"][aria-selected="true"]')
@@ -934,10 +934,10 @@ describe('Social Feed UI - Tab Switching Integration', () => {
 
   it('should maintain tab selection after page reload', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 30000}).then(($tabs) => {
       if ($tabs.length >= 2) {
         // Click second tab
         cy.wrap($tabs.eq(1)).click({force: true});
@@ -967,11 +967,11 @@ describe('Social Feed UI - Tab Switching Integration', () => {
     }).as('trendingFeed');
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // Global tab is default, so global endpoint should be called
-    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 30000}).then(($tabs) => {
       if ($tabs.length >= 2) {
         // Click Trending tab
         cy.wrap($tabs.eq(1)).click({force: true});
@@ -1008,13 +1008,13 @@ describe('Social Feed UI - Post Card Interactions', () => {
     if (postId) {
       // Navigate directly to verify the post detail route works
       cy.socialVisit(`/social/post/${postId}`);
-      cy.get('#root', {timeout: 300000}).should('exist');
-      cy.url({timeout: 300000}).should('include', `/social/post/${postId}`);
+      cy.get('#root', {timeout: 30000}).should('exist');
+      cy.url({timeout: 30000}).should('include', `/social/post/${postId}`);
       cy.get('#root').invoke('html').should('not.be.empty');
     } else {
       // Fallback: verify feed page renders post cards with article role
       cy.socialVisit('/social');
-      cy.get('#root', {timeout: 300000}).should('exist');
+      cy.get('#root', {timeout: 30000}).should('exist');
       cy.wait(3000);
 
       cy.get('body').then(($body) => {
@@ -1023,7 +1023,7 @@ describe('Social Feed UI - Post Card Interactions', () => {
         const postCards = $body.find('[role="article"]');
         if (postCards.length > 0) {
           cy.wrap(postCards.first()).click({force: true});
-          cy.url({timeout: 300000}).should('include', '/social/post/');
+          cy.url({timeout: 30000}).should('include', '/social/post/');
         } else {
           // No post cards visible, just verify the page loaded
           cy.get('#root').invoke('html').should('not.be.empty');
@@ -1034,7 +1034,7 @@ describe('Social Feed UI - Post Card Interactions', () => {
 
   it('should show comment count on post cards', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -1058,7 +1058,7 @@ describe('Social Feed UI - Post Card Interactions', () => {
 
   it('should show view count on post cards', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').should(($body) => {
@@ -1077,7 +1077,7 @@ describe('Social Feed UI - Post Card Interactions', () => {
 
   it('should prevent vote buttons from triggering card navigation', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -1125,7 +1125,7 @@ describe('Social Feed UI - Comment Form Integration', () => {
     }
 
     cy.socialVisit(`/social/post/${postId}`);
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     const testComment = `Cypress test comment ${Date.now()}`;
@@ -1181,7 +1181,7 @@ describe('Social Feed UI - Comment Form Integration', () => {
     }
 
     cy.socialVisit(`/social/post/${postId}`);
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -1223,7 +1223,7 @@ describe('Social Feed UI - Comment Form Integration', () => {
     }).as('commentSubmit');
 
     cy.socialVisit(`/social/post/${postId}`);
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -1258,17 +1258,17 @@ describe('Social Feed UI - Responsive Behavior', () => {
   it('should display correctly on mobile viewport', () => {
     cy.viewport(375, 667);
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.get('#root').invoke('html').should('not.be.empty');
 
     // Tabs should still be visible
-    cy.get('[role="tab"]', {timeout: 300000}).should('have.length.at.least', 1);
+    cy.get('[role="tab"]', {timeout: 30000}).should('have.length.at.least', 1);
   });
 
   it('should display correctly on tablet viewport', () => {
     cy.viewport(768, 1024);
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.get('#root').invoke('html').should('not.be.empty');
 
     // Content should be visible
@@ -1278,7 +1278,7 @@ describe('Social Feed UI - Responsive Behavior', () => {
   it('should display FAB button on mobile for authenticated users', () => {
     cy.viewport(375, 667);
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // FAB (Floating Action Button) should be visible for creating posts
@@ -1294,7 +1294,7 @@ describe('Social Feed UI - Responsive Behavior', () => {
 
   it('should maintain functionality after viewport resize', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(1000);
 
     // Start with desktop
@@ -1307,7 +1307,7 @@ describe('Social Feed UI - Responsive Behavior', () => {
 
     // Page should still be functional
     cy.get('#root').invoke('html').should('not.be.empty');
-    cy.get('[role="tab"]', {timeout: 300000}).should('exist');
+    cy.get('[role="tab"]', {timeout: 30000}).should('exist');
   });
 });
 
@@ -1507,7 +1507,7 @@ describe('Social Feed UI - Full Auth Flow', () => {
   it('should register new user via API', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/social/auth/register',
+      url: `${Cypress.env('apiUrl')}/api/social/auth/register`,
       body: flowUser,
       failOnStatusCode: false,
     }).then((res) => {
@@ -1520,7 +1520,7 @@ describe('Social Feed UI - Full Auth Flow', () => {
   it('should login and receive valid JWT', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/social/auth/login',
+      url: `${Cypress.env('apiUrl')}/api/social/auth/login`,
       body: {
         username: flowUser.username,
         password: flowUser.password,
@@ -1552,7 +1552,7 @@ describe('Social Feed UI - Full Auth Flow', () => {
       },
     });
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.get('#root').invoke('html').should('not.be.empty');
 
     // Should see feed content, not login prompt
@@ -1566,7 +1566,7 @@ describe('Social Feed UI - Full Auth Flow', () => {
 
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/social/posts',
+      url: `${Cypress.env('apiUrl')}/api/social/posts`,
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',

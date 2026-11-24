@@ -9,7 +9,7 @@ describe('Demopage - Agent Loading E2E', () => {
   it('loads the demopage and fetches agents from backend', () => {
     cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
-    cy.wait('@getPrompts', {timeout: 300000}).then((interception) => {
+    cy.wait('@getPrompts', {timeout: 30000}).then((interception) => {
       // Assert backend returned correct format
       expect(interception.response.statusCode).to.eq(200);
       expect(interception.response.body).to.have.property('prompts');
@@ -19,9 +19,12 @@ describe('Demopage - Agent Loading E2E', () => {
   });
 
   it('renders agent names from API response in the UI', () => {
-    cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
+    // The agents show in the chat, which a first visit does not reach (it
+    // asks for the HART language first): open the sealed, returning-guest
+    // chat.  A plain visit only ever rendered the language picker here.
+    cy.openLocalChat();
 
-    cy.wait('@getPrompts', {timeout: 300000}).then((interception) => {
+    cy.wait('@getPrompts', {timeout: 30000}).then((interception) => {
       const agentNames = interception.response.body.prompts.map((p) => p.name);
 
       // Wait for React to render the data
@@ -42,7 +45,7 @@ describe('Demopage - Agent Loading E2E', () => {
   it('does NOT crash with .map error on prompts response', () => {
     cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
-    cy.wait('@getPrompts', {timeout: 300000});
+    cy.wait('@getPrompts', {timeout: 30000});
     cy.wait(2000);
 
     // Page should not show crash or .map error
@@ -55,10 +58,10 @@ describe('Demopage - Agent Loading E2E', () => {
   it('agent cards are interactive (buttons exist)', () => {
     cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
 
-    cy.wait('@getPrompts', {timeout: 300000});
+    cy.wait('@getPrompts', {timeout: 30000});
     cy.wait(2000);
 
     // Page should have clickable buttons for agents
-    cy.get('button', {timeout: 300000}).should('have.length.greaterThan', 0);
+    cy.get('button', {timeout: 30000}).should('have.length.greaterThan', 0);
   });
 });

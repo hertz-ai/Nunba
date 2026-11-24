@@ -365,9 +365,10 @@ describe('DiscoverableTogglePanel', () => {
 
   test('d) 429 response surfaces Snackbar + locks Switch', async () => {
     bleEncounterApi.setDiscoverable.mockImplementationOnce(() => {
-      const err = new Error('rate limited');
-      err.response = {status: 429, data: {error: 'toggle limit reached'}};
-      return Promise.reject(err);
+      // The shape the real client rejects with: setDiscoverable sets
+      // keepStatus, so axiosFactory rejects with the server's JSON plus the
+      // HTTP status (not an axios error with .response).
+      return Promise.reject({error: 'toggle limit reached', status: 429});
     });
 
     renderWithProviders(<DiscoverableTogglePanel />);
@@ -401,9 +402,7 @@ describe('DiscoverableTogglePanel', () => {
     // also shows when the user tries to enable WITHOUT the checkbox;
     // we verify the rendered hint here.
     bleEncounterApi.setDiscoverable.mockImplementationOnce(() => {
-      const err = new Error('age claim required');
-      err.response = {status: 403, data: {error: 'age_claim_18 required'}};
-      return Promise.reject(err);
+      return Promise.reject({error: 'age_claim_18 required', status: 403});
     });
 
     renderWithProviders(<DiscoverableTogglePanel />);

@@ -16,7 +16,7 @@
  *   - Channels admin: http://localhost:5000/api/admin/*
  */
 
-const API_BASE = 'http://localhost:5000';
+const API_BASE = `${Cypress.env('apiUrl')}`;
 const ADMIN_API = `${API_BASE}/api/admin`;
 
 // Helper: make raw request to channels admin API
@@ -435,9 +435,15 @@ describe('Admin API -- Metrics & Status (Channels)', () => {
     });
   });
 
+  // 501 is HARTOS's deliberate answer here (integrations/channels/admin/
+  // api.py, get_latency_metrics, since 32f0232c): the channel queue it would
+  // measure is not wired in this build, and it no longer invents numbers.
   it('should get latency metrics via GET /metrics/latency', () => {
     adminRequest('GET', '/metrics/latency').then((res) => {
-      expect(res.status).to.be.oneOf([200, 401, 403, 404, 500, 503]);
+      expect(res.status).to.be.oneOf([200, 401, 403, 404, 500, 501, 503]);
+      if (res.status === 501) {
+        expect(res.body.error).to.match(/not available/i);
+      }
     });
   });
 

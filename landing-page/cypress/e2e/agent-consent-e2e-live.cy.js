@@ -24,7 +24,7 @@
  * Storage: `_pending_contacts` dict in chatbot_routes.py:3664.
  */
 
-const NUNBA_BASE = 'http://localhost:5000';
+const NUNBA_BASE = `${Cypress.env('apiUrl')}`;
 const TARGET_USER = '10202';
 
 describe('agent consent E2E (live Nunba)', () => {

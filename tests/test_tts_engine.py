@@ -544,7 +544,11 @@ class TestGetEngineCapabilities:
         assert BACKEND_PIPER in result
 
     def test_single_backend_fallback(self):
-        result = _get_engine_capabilities(BACKEND_PIPER)
+        # The degraded-mode table is what carries 'Piper TTS (CPU)'; with the
+        # catalog (HARTOS-populated, canonical) the entry's name is 'piper'.
+        # So the fallback is exercised with the catalog unavailable.
+        with patch('models.catalog.get_catalog', side_effect=RuntimeError('no catalog')):
+            result = _get_engine_capabilities(BACKEND_PIPER)
         assert result['name'] == 'Piper TTS (CPU)'
 
     def test_unknown_backend_returns_empty(self):
@@ -871,10 +875,21 @@ class TestTTSEngineHardware:
 # ===========================================================================
 
 class TestTTSEngineSelection:
+    # PASS 2 of the selector hands every rung it cannot run to
+    # _try_auto_install_backend, which starts a REAL background install whose
+    # handshake (tts_handshake.run_handshake) caches its verdict in the
+    # process-wide tts_handshake._cache.  Unpatched, the piper-fallback test
+    # left tts-auto-install-{f5,makeittalk,neutts_air,piper} threads running;
+    # on CI they cached f5 and piper as FAILED within ~2s, so the next test's
+    # ladder skipped f5 ("handshake confirmed FAILING") and returned piper.
+    # These tests are about the selection, so the install is patched out and
+    # the handshake verdicts start empty.
+
     def test_select_backend_for_language_piper_fallback(self):
         engine = TTSEngine(auto_init=False)
         # Make all backends un-runnable
-        with patch.object(engine, '_can_run_backend', return_value=False):
+        with patch.object(engine, '_can_run_backend', return_value=False), \
+                patch.object(engine, '_try_auto_install_backend', return_value=False):
             result = engine._select_backend_for_language('en')
         assert result == BACKEND_PIPER
 
@@ -884,9 +899,11 @@ class TestTTSEngineSelection:
         def can_run(backend):
             return backend == BACKEND_F5
 
-        with patch.object(engine, '_can_run_backend', side_effect=can_run):
-            with patch.object(engine, '_ensure_hw_detected'):
-                result = engine._select_backend_for_language('en')
+        with patch.object(engine, '_can_run_backend', side_effect=can_run), \
+                patch.object(engine, '_ensure_hw_detected'), \
+                patch.object(engine, '_try_auto_install_backend', return_value=False), \
+                patch.dict('tts.tts_handshake._cache', clear=True):
+            result = engine._select_backend_for_language('en')
         assert result == BACKEND_F5
 
     def test_select_backend_delegates_to_language(self):
@@ -1224,7 +1241,14 @@ class TestTTSEngineSynthesize:
         mock_inst.synthesize.return_value = "/tmp/out.wav"
         engine._backends[BACKEND_PIPER] = mock_inst
 
-        with patch.object(engine, 'set_language') as mock_set:
+        # The segmenter reports Latin script as 'en'; a single-language segment
+        # that disagrees with the requested language is routed through the
+        # multilingual path (the "detected_lang_mismatch" branch), which is not
+        # what this test is about.  Make the detected language the requested one
+        # so the single-language path, where set_language is called, runs.
+        es_text = [{'type': 'speech', 'lang': 'es', 'text': 'hola'}]
+        with patch('tts.language_segmenter.segment', return_value=es_text), \
+                patch.object(engine, 'set_language') as mock_set:
             engine.synthesize("hola", language='es')
         mock_set.assert_called_once_with('es')
 
@@ -1314,7 +1338,11 @@ class TestTTSEngineProperties:
     def test_backend_name_from_capabilities(self):
         engine = TTSEngine(auto_init=False)
         engine._active_backend = BACKEND_PIPER
-        assert engine.backend_name == 'Piper TTS (CPU)'
+        # The property reads the capabilities' name, whatever source answers
+        # (catalog: 'piper'; degraded fallback: 'Piper TTS (CPU)').
+        assert engine.backend_name == _get_engine_capabilities(BACKEND_PIPER)['name']
+        with patch('models.catalog.get_catalog', side_effect=RuntimeError('no catalog')):
+            assert engine.backend_name == 'Piper TTS (CPU)'
 
     def test_backend_name_unknown_returns_raw(self):
         engine = TTSEngine(auto_init=False)

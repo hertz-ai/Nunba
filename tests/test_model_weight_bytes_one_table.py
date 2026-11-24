@@ -70,6 +70,7 @@ window.
 import ast
 import os
 import sys
+import textwrap
 
 import pytest
 
@@ -86,6 +87,9 @@ MEASURED_BYTES = {
     'Qwen3.5-2B-UD-Q4_K_XL.gguf':           1_339_752_704,
     'Qwen3.5-0.8B-UD-Q4_K_XL.gguf':           558_772_480,
     'Qwen3-VL-2B-Instruct-UD-Q4_K_XL.gguf': 1_129_709_248,
+    # HARTOS 64a0d090 (2026-09-22): HF Content-Length and the downloaded
+    # file's size agree; its row says 'MEASURED: ...'.
+    'Tiel-Coder-35B-A3B-MTP-UD-Q4_K_XL.gguf': 22_749_880_160,
 }
 
 # MEASURED 2026-10-15 — the vision projectors the table carries (by the local
@@ -153,8 +157,14 @@ def test_neither_repo_restates_the_duplicated_literals():
 
     import llama.llama_installer as installer_mod
 
-    hartos_ladder = inspect.getsource(ModelCatalog._populate_llm_models)
-    restated = [lit for lit in DUPLICATED_LITERALS if lit in hartos_ladder]
+    # Integer constants, like the MODEL_PRESETS half below -- not a substring
+    # search: HARTOS 64a0d090 explains the 22938 estimate in a COMMENT in
+    # this method, and prose that explains a number does not restate it.
+    hartos_ladder = ast.parse(textwrap.dedent(
+        inspect.getsource(ModelCatalog._populate_llm_models)))
+    ladder_ints = {str(n.value) for n in ast.walk(hartos_ladder)
+                   if isinstance(n, ast.Constant) and isinstance(n.value, int)}
+    restated = [lit for lit in DUPLICATED_LITERALS if lit in ladder_ints]
     assert restated == [], (
         f'HARTOS _populate_llm_models still states weight literals {restated} '
         f'instead of reading MODEL_WEIGHT_BYTES'
@@ -216,7 +226,7 @@ def test_the_two_populators_spell_the_llama_backend_the_same_way():
 
 @pytest.mark.parametrize('file_name,expected', sorted(MEASURED_BYTES.items()))
 def test_measured_rows_carry_the_files_exact_byte_count(file_name, expected):
-    """Four rows have files on this box; their size is not an estimate."""
+    """These rows were measured from their files; their size is not an estimate."""
     preset = _preset_for(file_name)
     assert preset.size_bytes == expected
 
@@ -270,7 +280,8 @@ def test_unmeasured_rows_declare_the_unit_they_were_typed_in():
         assert isinstance(nbytes, int) and nbytes > 0, file_name
         assert provenance, f'{file_name} declares no provenance'
         if file_name in measured:
-            assert provenance.startswith('measured'), file_name
+            # lower(): the Tiel-Coder MTP row spells it 'MEASURED:'.
+            assert provenance.lower().startswith('measured'), file_name
             assert nbytes == measured[file_name], file_name
         else:
             assert provenance.startswith('estimate'), file_name

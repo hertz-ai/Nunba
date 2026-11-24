@@ -167,7 +167,11 @@ class TestDepsGenerateRequirements:
             generate_requirements(tmp_path, platform="win32")
             with open(tmp_path) as f:
                 content = f.read()
-            assert "Platform: win32" in content
+            # df854e5 replaced the per-platform "# Platform: <p>" section with
+            # PEP 508 markers, so one file serves every OS.
+            assert "# Platform-conditional dependencies" in content
+            assert 'pywin32==311; sys_platform == "win32"' in content
+            assert '; sys_platform == "darwin"' in content
         finally:
             os.unlink(tmp_path)
 
@@ -256,7 +260,10 @@ class TestBuildRunCommand:
         mock_run.return_value = MagicMock(returncode=0)
         result = run_command('echo hello', check=False)
         assert result is True
-        mock_run.assert_called_once_with('echo hello', shell=True, check=False)
+        # 5dec11d added timeout_s and 0201b8e env; both are forwarded, None
+        # when the caller passes neither.
+        mock_run.assert_called_once_with('echo hello', shell=True, check=False,
+                                         timeout=None, env=None)
 
     @patch('scripts.build.subprocess.run')
     def test_run_command_failure_returns_false(self, mock_run):

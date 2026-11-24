@@ -326,6 +326,17 @@ describe('FeedPage - tabs', () => {
     });
   });
 
+  it('writes the chosen tab into the URL so going back restores it', async () => {
+    // The tab lived only in state: opening a post and coming back remounted
+    // the feed on "For You".  The URL is what back restores.
+    renderFeedPage();
+    await act(async () => {});
+    await act(async () => {
+      fireEvent.click(screen.getByText('Thought Experiments'));
+    });
+    expect(mockNavigate).toHaveBeenCalledWith({search: '?tab=all'}, {replace: true});
+  });
+
   it('switches to HARTs tab on tab click', async () => {
     renderFeedPage();
     await act(async () => {});

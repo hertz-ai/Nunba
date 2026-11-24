@@ -217,26 +217,26 @@ function visitGameHub() {
       win.localStorage.setItem('access_token', FAKE_TOKEN);
     },
   });
-  cy.get('#root', {timeout: 300000}).should('exist');
+  cy.get('#root', {timeout: 30000}).should('exist');
 }
 
-function visitGameScreen(gameId) {
-  // Stub single-game catalog lookup for the UnifiedGameScreen resolver
-  cy.intercept('GET', `**/api/social/games/catalog?id=${gameId}*`, {
-    statusCode: 200,
-    body: {
-      success: true,
-      data: [
-        MOCK_CATALOG.data.find((g) => g.id === gameId) || MOCK_CATALOG.data[0],
-      ],
-    },
-  }).as('catalogLookup');
-
+// `entry`: the catalog entry the screen should resolve; by default the
+// MOCK_CATALOG game with this id.  Registered here because a stub a test
+// set up before calling this was overridden by these (the later intercept
+// wins), so 'unknown-game' resolved to General Knowledge.
+function visitGameScreen(gameId, entry) {
+  const resolved =
+    entry || MOCK_CATALOG.data.find((g) => g.id === gameId) || MOCK_CATALOG.data[0];
   // Also intercept wildcard catalog calls that the page may issue
   cy.intercept('GET', '**/api/social/games/catalog*', {
     statusCode: 200,
-    body: MOCK_CATALOG,
+    body: entry ? {success: true, data: [entry]} : MOCK_CATALOG,
   });
+  // Single-game catalog lookup for the UnifiedGameScreen resolver
+  cy.intercept('GET', `**/api/social/games/catalog?id=${gameId}*`, {
+    statusCode: 200,
+    body: {success: true, data: [resolved]},
+  }).as('catalogLookup');
 
   cy.visit(`/social/games/${gameId}`, {
     failOnStatusCode: false,
@@ -245,7 +245,7 @@ function visitGameScreen(gameId) {
       win.localStorage.setItem('access_token', FAKE_TOKEN);
     },
   });
-  cy.get('#root', {timeout: 300000}).should('exist');
+  cy.get('#root', {timeout: 30000}).should('exist');
 }
 
 // =============================================================================
@@ -441,21 +441,24 @@ describe('Game Hub — E2E', () => {
 
     it('shows "Games" heading', () => {
       visitGameHub();
-      cy.contains('Games', {timeout: 300000}).should('be.visible');
+      // The hub's own heading (GameHub.jsx, Typography h5).  A bare
+      // contains('Games') found the sidebar's "Games" nav link first, which
+      // is not visible at this viewport.
+      cy.contains('h5', /^\s*Games\s*$/, {timeout: 30000}).should('be.visible');
     });
 
     it('renders Quick Match buttons (Trivia, Board, Arcade, Word)', () => {
       visitGameHub();
-      cy.contains(/trivia/i, {timeout: 300000}).should('be.visible');
-      cy.contains(/board/i, {timeout: 300000}).should('be.visible');
-      cy.contains(/arcade/i, {timeout: 300000}).should('be.visible');
-      cy.contains(/word/i, {timeout: 300000}).should('be.visible');
+      cy.contains(/trivia/i, {timeout: 30000}).should('be.visible');
+      cy.contains(/board/i, {timeout: 30000}).should('be.visible');
+      cy.contains(/arcade/i, {timeout: 30000}).should('be.visible');
+      cy.contains(/word/i, {timeout: 30000}).should('be.visible');
     });
 
     it('renders category tabs (All, Trivia, Board, Arcade, Word, Puzzle, Party)', () => {
       visitGameHub();
       // MUI Tabs use role="tab"
-      cy.get('[role="tab"]', {timeout: 300000}).should(
+      cy.get('[role="tab"]', {timeout: 30000}).should(
         'have.length.at.least',
         7
       );
@@ -471,7 +474,7 @@ describe('Game Hub — E2E', () => {
     it('clicking a category tab filters the display', () => {
       visitGameHub();
       // Click the Trivia tab
-      cy.contains('[role="tab"]', /trivia/i, {timeout: 300000}).click({
+      cy.contains('[role="tab"]', /trivia/i, {timeout: 30000}).click({
         force: true,
       });
       // After clicking, the tab should be selected (aria-selected)
@@ -484,7 +487,7 @@ describe('Game Hub — E2E', () => {
 
     it('search input exists and accepts text', () => {
       visitGameHub();
-      cy.get('input[placeholder*="earch"]', {timeout: 300000}).should('exist');
+      cy.get('input[placeholder*="earch"]', {timeout: 30000}).should('exist');
       cy.get('input[placeholder*="earch"]').type('snake', {force: true});
       cy.get('input[placeholder*="earch"]').should('have.value', 'snake');
     });
@@ -492,21 +495,21 @@ describe('Game Hub — E2E', () => {
     it('renders game cards with titles', () => {
       visitGameHub();
       // Wait for catalog stub to load, then check game titles from mock data
-      cy.contains('General Knowledge', {timeout: 300000}).should('be.visible');
-      cy.contains('Snake', {timeout: 300000}).should('be.visible');
-      cy.contains('Tic Tac Toe', {timeout: 300000}).should('be.visible');
+      cy.contains('General Knowledge', {timeout: 30000}).should('be.visible');
+      cy.contains('Snake', {timeout: 30000}).should('be.visible');
+      cy.contains('Tic Tac Toe', {timeout: 30000}).should('be.visible');
     });
 
     it('game cards show player count badge for multiplayer games', () => {
       visitGameHub();
       // Multiplayer games get a Chip with "min-max" like "1-8"
-      cy.contains('1-8', {timeout: 300000}).should('exist');
-      cy.contains('2-2', {timeout: 300000}).should('exist');
+      cy.contains('1-8', {timeout: 30000}).should('exist');
+      cy.contains('2-2', {timeout: 30000}).should('exist');
     });
 
     it('featured games section is visible on All tab', () => {
       visitGameHub();
-      cy.contains(/featured/i, {timeout: 300000}).should('be.visible');
+      cy.contains(/featured/i, {timeout: 30000}).should('be.visible');
     });
 
     it('clicking a game card navigates to /social/games/:gameId', () => {
@@ -518,8 +521,8 @@ describe('Game Hub — E2E', () => {
 
       visitGameHub();
       // Click the "General Knowledge" card
-      cy.contains('General Knowledge', {timeout: 300000}).click({force: true});
-      cy.url({timeout: 300000}).should(
+      cy.contains('General Knowledge', {timeout: 30000}).click({force: true});
+      cy.url({timeout: 30000}).should(
         'include',
         '/social/games/trivia-general-knowledge-classic'
       );
@@ -528,27 +531,32 @@ describe('Game Hub — E2E', () => {
     it('shows Open Lobbies section when lobbies exist', () => {
       stubBackend({lobbies: true});
       visitGameHub();
-      cy.contains(/open lobbies/i, {timeout: 300000}).should('be.visible');
-      cy.contains('Trivia Night', {timeout: 300000}).should('be.visible');
-      cy.contains('Chess Match', {timeout: 300000}).should('be.visible');
+      cy.contains(/open lobbies/i, {timeout: 30000}).should('be.visible');
+      cy.contains('Trivia Night', {timeout: 30000}).should('be.visible');
+      cy.contains('Chess Match', {timeout: 30000}).should('be.visible');
     });
 
     it('shows LIVE chip in Open Lobbies section', () => {
       stubBackend({lobbies: true});
       visitGameHub();
-      cy.contains('LIVE', {timeout: 300000}).should('be.visible');
+      cy.contains('LIVE', {timeout: 30000}).should('be.visible');
     });
 
     it('shows empty state when no games match', () => {
+      // An empty backend catalog falls back to the local one by design
+      // (hooks/useGameCatalog), so the empty state is a search that
+      // matches nothing in either.
       stubBackend({emptyGames: true});
       visitGameHub();
-      cy.contains(/no games found/i, {timeout: 300000}).should('be.visible');
+      cy.get('input[placeholder*="earch"]', {timeout: 30000})
+        .type('zz-no-such-game-zz', {force: true});
+      cy.contains(/no games found/i, {timeout: 30000}).should('be.visible');
     });
 
     it('sidebar has a "Games" entry', () => {
       visitGameHub();
       // SocialLayout sidebar nav items
-      cy.get('nav, [role="navigation"], aside', {timeout: 300000})
+      cy.get('nav, [role="navigation"], aside', {timeout: 30000})
         .first()
         .within(() => {
           cy.contains(/games/i).should('exist');
@@ -574,63 +582,53 @@ describe('Game Hub — E2E', () => {
 
     it('shows the game title after loading', () => {
       visitGameScreen('trivia-general-knowledge-classic');
-      cy.contains('General Knowledge', {timeout: 300000}).should('be.visible');
+      cy.contains('General Knowledge', {timeout: 30000}).should('be.visible');
     });
 
     it('lobby mode shows Play Solo button', () => {
       visitGameScreen('trivia-general-knowledge-classic');
-      cy.contains(/play solo/i, {timeout: 300000}).should('be.visible');
+      cy.contains(/play solo/i, {timeout: 30000}).should('be.visible');
     });
 
     it('lobby mode shows Quick Match button', () => {
       visitGameScreen('trivia-general-knowledge-classic');
-      cy.contains(/quick match/i, {timeout: 300000}).should('be.visible');
+      cy.contains(/quick match/i, {timeout: 30000}).should('be.visible');
     });
 
     it('lobby mode shows Create Room button', () => {
       visitGameScreen('trivia-general-knowledge-classic');
-      cy.contains(/create room/i, {timeout: 300000}).should('be.visible');
+      cy.contains(/create room/i, {timeout: 30000}).should('be.visible');
     });
 
     it('shows Back to Games button that navigates back', () => {
       visitGameScreen('trivia-general-knowledge-classic');
-      cy.contains(/back to games/i, {timeout: 300000}).should('be.visible');
+      cy.contains(/back to games/i, {timeout: 30000}).should('be.visible');
       cy.contains(/back to games/i).click({force: true});
-      cy.url({timeout: 300000}).should('include', '/social/games');
+      cy.url({timeout: 30000}).should('include', '/social/games');
       cy.url().should('not.include', '/trivia-general-knowledge-classic');
     });
 
     it('renders engine placeholder for unknown engine type', () => {
-      // Stub a catalog entry with an unknown engine
-      cy.intercept('GET', '**/api/social/games/catalog*', {
-        statusCode: 200,
-        body: {
-          success: true,
-          data: [
-            {
-              id: 'unknown-game',
-              title: 'Mystery Game',
-              engine: 'mystery_engine_xyz',
-              category: 'party',
-              audience: 'adult',
-              min_players: 1,
-              max_players: 1,
-              multiplayer: false,
-              featured: false,
-            },
-          ],
-        },
+      // A catalog entry with an unknown engine
+      visitGameScreen('unknown-game', {
+        id: 'unknown-game',
+        title: 'Mystery Game',
+        engine: 'mystery_engine_xyz',
+        category: 'party',
+        audience: 'adult',
+        min_players: 1,
+        max_players: 1,
+        multiplayer: false,
+        featured: false,
       });
-
-      visitGameScreen('unknown-game');
       // The lobby should still render with Play Solo
-      cy.contains(/mystery game/i, {timeout: 300000}).should('be.visible');
-      cy.contains(/play solo/i, {timeout: 300000}).should('be.visible');
+      cy.contains(/mystery game/i, {timeout: 30000}).should('be.visible');
+      cy.contains(/play solo/i, {timeout: 30000}).should('be.visible');
     });
 
     it('lobby shows Join input with room code field', () => {
       visitGameScreen('trivia-general-knowledge-classic');
-      cy.get('input[placeholder*="room code"]', {timeout: 300000}).should(
+      cy.get('input[placeholder*="room code"]', {timeout: 30000}).should(
         'exist'
       );
     });

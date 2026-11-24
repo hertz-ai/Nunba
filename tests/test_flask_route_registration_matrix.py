@@ -17,13 +17,26 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-try:
-    from main import app
-    ALL_RULES = [
+def _rules(flask_app):
+    return [
         (r.rule, sorted(r.methods - {'OPTIONS', 'HEAD'}), r.endpoint)
-        for r in app.url_map.iter_rules()
+        for r in flask_app.url_map.iter_rules()
         if r.rule != '/static/<path:filename>'
     ]
+
+
+try:
+    from main import app
+    ALL_RULES = _rules(app)
+    # What production serves is main's own routes PLUS the ones HARTOS's bootstrap
+    # registers after the import (social API, books, Nunba's consumer/upload
+    # routes).  tests/deferred_routes.py builds those on a throwaway app, so
+    # nothing is registered on main.app.  A (rule, methods) pair main already
+    # has is not counted twice.
+    from tests.deferred_routes import deferred_routes_app
+    _have = {(rule, tuple(methods)) for rule, methods, _ in ALL_RULES}
+    ALL_RULES += [t for t in _rules(deferred_routes_app())
+                  if (t[0], tuple(t[1])) not in _have]
     RULES_AVAILABLE = True
 except Exception:
     ALL_RULES = []

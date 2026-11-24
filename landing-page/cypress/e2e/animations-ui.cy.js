@@ -15,7 +15,7 @@
 describe('Animations UI — Hero Section', () => {
   it('should render the landing page hero with animation classes', () => {
     cy.visit('/', {timeout: 60000, failOnStatusCode: false});
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
 
     // Hero section should have fade-in-up animation classes on elements
     cy.get('body').should(($body) => {
@@ -32,7 +32,7 @@ describe('Animations UI — Hero Section', () => {
 
   it('should render the demo page hero with staggered entrance animations', () => {
     cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
 
     cy.get('body').should(($body) => {
       const html = $body.html();
@@ -50,7 +50,7 @@ describe('Animations UI — Hero Section', () => {
 describe('Animations UI — Chat Messages', () => {
   it('should apply slide animation classes to chat messages', () => {
     cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').should(($body) => {
@@ -67,7 +67,7 @@ describe('Animations UI — Chat Messages', () => {
 
   it('should have focus glow on chat input', () => {
     cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // Find textarea and check it has transition styles
@@ -88,7 +88,7 @@ describe('Animations UI — Chat Messages', () => {
 
   it('should have scale animation on send button', () => {
     cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').should(($body) => {
@@ -107,7 +107,7 @@ describe('Animations UI — Social Feed PostCards', () => {
 
   it('should apply transition CSS to PostCard elements', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(3000);
 
     cy.get('body').then(($body) => {
@@ -130,10 +130,10 @@ describe('Animations UI — Social Feed PostCards', () => {
 
   it('should apply will-change to card elements', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(3000);
 
-    cy.get('[class*="MuiCard"]', {timeout: 300000}).then(($cards) => {
+    cy.get('[class*="MuiCard"]', {timeout: 30000}).then(($cards) => {
       if ($cards.length > 0) {
         const style = window.getComputedStyle($cards[0]);
         // will-change should be 'transform' per theme override
@@ -151,7 +151,7 @@ describe('Animations UI — Navigation Sidebar', () => {
 
   it('should have transition on sidebar nav items', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // MUI ListItemButton has transition override
@@ -169,7 +169,7 @@ describe('Animations UI — Navigation Sidebar', () => {
   it('should have hover effect on bottom nav icons on mobile', () => {
     cy.viewport(375, 667);
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // Bottom nav should exist on mobile
@@ -185,7 +185,7 @@ describe('Animations UI — Dialogs & Modals', () => {
   it('should apply scale-in animation to dialogs', () => {
     // Visit a page and trigger a dialog (e.g., OTP or login modal)
     cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // Try to find and click a button that opens a dialog
@@ -216,12 +216,12 @@ describe('Animations UI — Dialogs & Modals', () => {
 describe('Animations UI — Buttons', () => {
   it('should have active scale transform on buttons', () => {
     cy.visit('/local', {timeout: 60000, failOnStatusCode: false});
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // The /local page (Demopage) uses Tailwind buttons, not MUI buttons.
     // Check that buttons exist and have CSS properties (transition or transform).
-    cy.get('button', {timeout: 300000}).then(($buttons) => {
+    cy.get('button', {timeout: 30000}).then(($buttons) => {
       expect($buttons.length).to.be.greaterThan(0);
 
       // Check any button for transition CSS (Tailwind applies transition classes)
@@ -246,10 +246,10 @@ describe('Animations UI — Tabs', () => {
 
   it('should have smooth tab indicator movement when switching tabs', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 30000}).then(($tabs) => {
       if ($tabs.length >= 2) {
         // Click first tab
         cy.wrap($tabs.eq(0)).click({force: true});
@@ -286,7 +286,7 @@ describe('Animations UI — FAB (Floating Action Button)', () => {
 
   it('should have entrance animation on FAB', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     cy.get('body').then(($body) => {
@@ -312,10 +312,10 @@ describe('Animations UI — IconButtons', () => {
 
   it('should have transition on icon buttons', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
-    cy.get('[class*="MuiIconButton"]', {timeout: 300000}).then(($iconBtns) => {
+    cy.get('[class*="MuiIconButton"]', {timeout: 30000}).then(($iconBtns) => {
       if ($iconBtns.length > 0) {
         const style = window.getComputedStyle($iconBtns[0]);
         const hasTransition =

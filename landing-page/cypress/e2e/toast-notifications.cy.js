@@ -18,7 +18,7 @@ describe('Toast Notifications — Via User Actions', () => {
 
   it('should have ToastProvider mounted on authenticated pages', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // The ToastProvider is a context provider — it wraps the app
@@ -29,7 +29,7 @@ describe('Toast Notifications — Via User Actions', () => {
 
   it('should show Snackbar with animation when toast is triggered', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // Trigger an action that may produce a toast (e.g., API error, rate limit)
@@ -54,7 +54,7 @@ describe('Toast Notifications — Via User Actions', () => {
 
   it('should render toast with MUI Snackbar component', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // Any active Snackbar would have MuiSnackbar class
@@ -76,7 +76,7 @@ describe('Toast Notifications — Toast Styling', () => {
 
   it('should have Snackbar with slide-up animation from theme', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // MUI Snackbar theme override applies snackSlideUp animation
@@ -94,7 +94,7 @@ describe('Toast Notifications — Toast Styling', () => {
 
   it('should have close button on toast notifications', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // If any snackbar is present, it should have a close (X) button
@@ -116,7 +116,7 @@ describe('Toast Notifications — Page Stability', () => {
 
   it('should not crash when multiple rapid actions trigger toasts', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // Rapidly perform actions that may trigger notifications
@@ -137,20 +137,20 @@ describe('Toast Notifications — Page Stability', () => {
 
   it('should handle toast display without memory leaks (page remains responsive)', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(3000);
 
     // Navigate between pages to verify toast cleanup
     cy.socialVisit('/social/notifications');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(1000);
 
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(1000);
 
     // Page should still be responsive
-    cy.get('[role="tab"]', {timeout: 300000}).then(($tabs) => {
+    cy.get('[role="tab"]', {timeout: 30000}).then(($tabs) => {
       if ($tabs.length >= 2) {
         cy.wrap($tabs.eq(1)).click({force: true});
         cy.wait(500);
@@ -168,7 +168,7 @@ describe('Toast Notifications — Auto Dismiss', () => {
 
   it('should auto-dismiss toasts after timeout', () => {
     cy.socialVisit('/social');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.wait(2000);
 
     // Count snackbars now

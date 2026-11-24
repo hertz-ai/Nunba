@@ -89,16 +89,44 @@ function realMoveTo(x, y) {
   return cdpMouse('mouseMoved', p.x, p.y, { button: 'none', buttons: 0 });
 }
 
-function countAnimationFrames(win, ms = 800) {
+/**
+ * How many frames the PAGE itself asked for in `ms`.
+ *
+ * Phaser's loop calls window.requestAnimationFrame(step) once per frame
+ * (node_modules/phaser/src/dom/RequestAnimationFrame.js, Phaser 3.90), so a
+ * running scene keeps asking.  This used to queue its OWN rAF callback and
+ * count how often the browser ran it: that measured the runner's frame rate,
+ * not the game, and a busy CI runner gave 4 frames in 800 ms (Match 3,
+ * shard 3 on 8f037c5e: "expected 4 to be above 5").  Counting the page's
+ * calls answers "is the game loop running" instead.  The bar is "more
+ * than one call": a loop that asked for a frame and then asked again is
+ * running, a stopped one asks for none, and that holds at any frame rate
+ * (this CPU-only box's headless Chrome ran ~2 frames a second).
+ */
+function countAnimationFrames(win, ms = 2000) {
   return new Cypress.Promise((resolve) => {
-    let frames = 0;
-    const stop = Date.now() + ms;
-    const tick = () => {
-      frames += 1;
-      if (Date.now() < stop) win.requestAnimationFrame(tick);
-      else resolve(frames);
+    const real = win.requestAnimationFrame;
+    let calls = 0;
+    win.requestAnimationFrame = function countingRaf(cb) {
+      calls += 1;
+      return real.call(win, cb);
     };
-    win.requestAnimationFrame(tick);
+    win.setTimeout(() => {
+      win.requestAnimationFrame = real;
+      resolve(calls);
+    }, ms);
+  });
+}
+
+/**
+ * Send one pointer event to the game canvas, if the game still has one.
+ * The run may already be over (the engine unmounts the canvas for its
+ * completion screen), and then there is nothing left to send it to.
+ */
+function pointerOnLiveCanvas(type, opts) {
+  cy.get('body').then(($b) => {
+    const $c = $b.find('canvas');
+    if ($c.length) cy.wrap($c.first()).trigger(type, opts);
   });
 }
 
@@ -192,7 +220,7 @@ describe('Arcade games — input moves the game', () => {
 
       // The scene must actually be running an animation loop.
       cy.window().then((win) => countAnimationFrames(win)).then((frames) => {
-        expect(frames, `${g.name} must be driving requestAnimationFrame`).to.be.greaterThan(5);
+        expect(frames, `${g.name} must be driving requestAnimationFrame`).to.be.greaterThan(1);
       });
 
       // Drive it with HELD keys, not taps.
@@ -267,40 +295,19 @@ describe('Arcade games — input moves the game', () => {
               });
             }
             cy.wait(1200);
-          } else if (g.id === '__never__') {
-            // 8x8 grid, centred. A move is a swap of two ADJACENT cells, so
-            // tap one cell then the one beside it. A generic centre drag is
-            // not a legal move and left the board unchanged (0.03% pixels).
-            const cell = Math.min(r.width, r.height) * 0.8 / 8;
-            cy.wrap($c)
-              .trigger('pointerdown', ptr({ clientX: cx, clientY: cy0 }))
-              .trigger('pointerup', ptr({ clientX: cx, clientY: cy0, buttons: 0 }))
-              .wait(350)
-              .trigger('pointerdown', ptr({ clientX: cx + cell, clientY: cy0 }))
-              .trigger('pointerup', ptr({ clientX: cx + cell, clientY: cy0, buttons: 0 }));
-            cy.wait(1200);
-          } else if (g.id === 'bubble-shooter') {
-            // Cannon sits at (w/2, h-40); pointermove AIMS, pointerdown FIRES.
-            // Fire twice at different angles and allow bubble travel time.
-            [-0.25, 0.2].forEach((skew) => {
-              const tx = cx + r.width * skew;
-              const ty = r.top + r.height * 0.25;
-              cy.wrap($c)
-                .trigger('pointermove', ptr({ clientX: tx, clientY: ty }))
-                .wait(250)
-                .trigger('pointerdown', ptr({ clientX: tx, clientY: ty }))
-                .trigger('pointerup', ptr({ clientX: tx, clientY: ty, buttons: 0 }));
-              cy.wait(1400); // let the bubble fly and settle
-            });
           } else {
-            cy.wrap($c)
-              .trigger('pointermove', ptr({ clientX: cx - 60, clientY: cy0 - 40 }))
-              .wait(200)
-              .trigger('pointerdown', ptr({ clientX: cx, clientY: cy0 }))
-              .wait(200)
-              .trigger('pointermove', ptr({ clientX: cx + 80, clientY: cy0 }))
-              .wait(200)
-              .trigger('pointerup', ptr({ clientX: cx + 80, clientY: cy0, buttons: 0 }));
+            // One event per step on the canvas as it is then, not a chain on
+            // the first one.  A step can end the run (a pointerdown flaps
+            // Flappy into a pipe) and the engine unmounts the canvas; the
+            // chained .trigger() after it then failed on a detached subject
+            // (shard 3 on e1df35c2: "The subject is no longer attached").
+            pointerOnLiveCanvas('pointermove', ptr({ clientX: cx - 60, clientY: cy0 - 40 }));
+            cy.wait(200);
+            pointerOnLiveCanvas('pointerdown', ptr({ clientX: cx, clientY: cy0 }));
+            cy.wait(200);
+            pointerOnLiveCanvas('pointermove', ptr({ clientX: cx + 80, clientY: cy0 }));
+            cy.wait(200);
+            pointerOnLiveCanvas('pointerup', ptr({ clientX: cx + 80, clientY: cy0, buttons: 0 }));
           }
         });
       });
@@ -325,7 +332,7 @@ describe('Arcade games — input moves the game', () => {
         } else {
           cy.get('canvas').should('exist');
           cy.window().then((win) => countAnimationFrames(win)).then((frames) => {
-            expect(frames, `${g.name} must still be animating after input`).to.be.greaterThan(5);
+            expect(frames, `${g.name} must still be animating after input`).to.be.greaterThan(1);
           });
         }
       });

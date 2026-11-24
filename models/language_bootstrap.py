@@ -158,6 +158,24 @@ def get_blocking_activity() -> dict | None:
     return None
 
 
+def _tts_exclusions() -> list[str]:
+    """TTS catalog ids the bootstrap must not pick on this machine: engines
+    the TTS engine has demoted, or whose install already failed here
+    (tts.tts_engine.unusable_tts_catalog_ids).  Picking one of them again
+    made TTSLoader.load fail and showed the 'tts Failed' card on every boot
+    (NeuTTS Air on a Windows box without long paths, 2026-11-12..16).
+    Never raises: on any error nothing is excluded."""
+    try:
+        from tts.tts_engine import unusable_tts_catalog_ids
+        ids = unusable_tts_catalog_ids()
+    except Exception:  # noqa: BLE001 -- a hint for selection, never fatal
+        return []
+    if ids:
+        logger.info("bootstrap: TTS pick skips %s (demoted or failed to "
+                    "install on this machine)", ', '.join(ids))
+    return ids
+
+
 def _create_plan(language: str, gpu_info: dict) -> dict:
     """Build the per-model-type bootstrap plan for ``language``.
 
@@ -201,7 +219,11 @@ def _create_plan(language: str, gpu_info: dict) -> dict:
             continue
 
         lang = language if model_type in (ModelType.TTS, ModelType.LLM, ModelType.STT) else None
-        entry = orch.select_best(model_type, language=lang)
+        if model_type == ModelType.TTS:
+            entry = orch.select_best(model_type, language=lang,
+                                     exclude=_tts_exclusions())
+        else:
+            entry = orch.select_best(model_type, language=lang)
 
         if entry:
             step.model_id = entry.id
@@ -420,7 +442,13 @@ def _bootstrap_worker(language: str) -> None:
             _update_step(model_type, status='loading', detail=f'Starting {step.model_name}...')
             try:
                 lang = language if model_type in (ModelType.TTS, ModelType.LLM, ModelType.STT) else None
-                result = orch.auto_load(model_type, language=lang)
+                if model_type == ModelType.TTS:
+                    # The same exclusions as the plan (_create_plan), so the
+                    # engine loaded is the engine planned.
+                    result = orch.auto_load(model_type, language=lang,
+                                            exclude=_tts_exclusions())
+                else:
+                    result = orch.auto_load(model_type, language=lang)
                 # auto_load sizes against what is free NOW, so a model that got
                 # loaded meanwhile leaves "no room" for itself: it returns None
                 # while the job is already done.

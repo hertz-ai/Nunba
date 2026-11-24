@@ -10,21 +10,21 @@ describe('Landing Page Renders', () => {
   });
 
   it('renders the React root with content', () => {
-    cy.get('#root', {timeout: 300000}).invoke('html').should('not.be.empty');
+    cy.get('#root', {timeout: 30000}).invoke('html').should('not.be.empty');
   });
 
   it('has visible text content', () => {
-    cy.get('#root', {timeout: 300000}).invoke('text').should('not.be.empty');
+    cy.get('#root', {timeout: 30000}).invoke('text').should('not.be.empty');
   });
 
   it('loads MUI components', () => {
-    cy.get('[class*="Mui"]', {timeout: 300000}).should(
+    cy.get('[class*="Mui"]', {timeout: 30000}).should(
       'have.length.greaterThan',
       0
     );
   });
 
   it('has interactive buttons', () => {
-    cy.get('button', {timeout: 300000}).should('have.length.greaterThan', 0);
+    cy.get('button', {timeout: 30000}).should('have.length.greaterThan', 0);
   });
 });

@@ -9,6 +9,14 @@ module.exports = defineConfig({
     },
     // React dev server on 3000, Flask backend on 5000
     baseUrl: 'http://localhost:3000',
+    // The Flask backend every spec's cy.request / cy.intercept URL is
+    // built on: Cypress.env('apiUrl').  A local run against a test Flask on
+    // another port passes --env apiUrl=http://localhost:<port>; without it
+    // the specs reach whatever owns :5000 (on a dev box, the installed Nunba).
+    // Build that run's bundle with REACT_APP_API_BASE_URL to match.
+    env: {
+      apiUrl: 'http://localhost:5000',
+    },
     supportFile: 'cypress/support/e2e.js',
     specPattern: 'cypress/e2e/**/*.cy.{js,jsx}',
     viewportWidth: 1280,
@@ -19,6 +27,15 @@ module.exports = defineConfig({
     video: false,
     screenshotOnRunFailure: true,
     chromeWebSecurity: false,
+    // index.html loads Google Analytics as an async script
+    // (www.googletagmanager.com/gtag/js), and the page's `load` event waits
+    // for it.  When that host is slow, cy.visit fails with "did not fire its
+    // `load` event within 30000ms": social-pages "rapid navigation" on CI
+    // (#72, runs on ec4b9f0d and 8f037c5e).  Measured locally: a 40 s delay
+    // on that host gives exactly that error; a refused request does not.
+    // Blocked hosts get an instant 503, so no test waits on analytics, and
+    // test runs no longer send hits to the real Analytics property.
+    blockHosts: ['www.googletagmanager.com', '*.google-analytics.com'],
     experimentalMemoryManagement: true,
     numTestsKeptInMemory: 5,
 
@@ -62,6 +79,40 @@ module.exports = defineConfig({
         log(message) {
           console.log('  [CY]', message);
           return null;
+        },
+        // The HTTP status of a GET, or null when nothing answers within
+        // timeoutMs.  cy.request cannot serve these probes: it fails the
+        // test outright when the port is closed (a sidecar that is not
+        // running on this machine), and it waits for the whole body, which
+        // an event stream never ends.  This reads the status line, then
+        // drops the connection.
+        httpStatus({url, timeoutMs = 5000}) {
+          const lib = url.startsWith('https:') ? require('https') : require('http');
+          return new Promise((resolve) => {
+            let req;
+            try {
+              req = lib.get(url, (res) => {
+                clearTimeout(deadline);
+                resolve(res.statusCode);
+                res.destroy();
+              });
+            } catch {
+              // A URL lib.get rejects outright (no scheme): nothing answers.
+              resolve(null);
+              return;
+            }
+            // One deadline for connect + status line: req.setTimeout only
+            // counts socket idle time, and an unroutable host took 5 s
+            // against a 2 s limit (measured on Windows, 2026-11-20).
+            const deadline = setTimeout(() => {
+              req.destroy();
+              resolve(null);
+            }, timeoutMs);
+            req.on('error', () => {
+              clearTimeout(deadline);
+              resolve(null);
+            });
+          });
         },
       });
 

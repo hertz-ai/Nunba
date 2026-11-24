@@ -129,8 +129,15 @@ class TestSafeTkUpdate:
     def test_calls_update_on_root(self):
         from app import _safe_tk_update
         mock_root = MagicMock()
+        mock_root.tk.dooneevent.return_value = 0   # no more pending events
         _safe_tk_update(mock_root, budget_ms=10)
-        mock_root.update.assert_called()
+        if sys.platform == 'darwin':
+            # 9408ae8: on macOS root.update() enters the Cocoa run loop and
+            # may never return, so events are pumped one at a time instead.
+            mock_root.tk.dooneevent.assert_called()
+            mock_root.update.assert_not_called()
+        else:
+            mock_root.update.assert_called()
 
     def test_handles_tcl_error(self):
         import tkinter

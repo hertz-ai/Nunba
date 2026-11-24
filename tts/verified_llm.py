@@ -37,43 +37,38 @@ def verify_llm(endpoint: str = "http://127.0.0.1:8080",
     Forwards to HARTOS core.verified_llm.verify_llm when available;
     falls back to an inline implementation otherwise so CI without
     HARTOS can still run.
+
+    Timed here with time.perf_counter, whichever path answers: Windows'
+    time.monotonic ticks every 15.6 ms, so a fast local round trip read 0.
     """
+    import time
+
+    t0 = time.perf_counter()
     try:
         from core.verified_llm import verify_llm as _hartos_verify  # type: ignore
-        r = _hartos_verify(endpoint=endpoint, prompt=prompt, timeout_s=timeout_s)
-        # HARTOS returns either a dict (dict API) or a dataclass.
-        # Normalize to our Result shape in either case.  HARTOS uses
-        # `elapsed_ms` (int milliseconds); convert to seconds.
-        if isinstance(r, dict):
-            return Result(
-                ok=bool(r.get("ok", False)),
-                content=str(r.get("content_snippet") or r.get("content") or ""),
-                err=str(r.get("reason") or r.get("err") or ""),
-                elapsed_s=float(r.get("elapsed_ms", 0) or 0) / 1000.0,
-            )
-        # Dataclass-style HARTOS Result (defensive against future API).
-        if hasattr(r, "content") or hasattr(r, "ok"):
-            _ms = getattr(r, "elapsed_ms", None)
-            _s = getattr(r, "elapsed_s", None)
-            elapsed_s = (
-                float(_s) if _s is not None else float(_ms) / 1000.0 if _ms is not None else 0.0
-            )
-            return Result(
-                ok=bool(getattr(r, "ok", False)),
-                content=str(getattr(r, "content", "") or ""),
-                err=str(getattr(r, "reason", "") or getattr(r, "err", "") or ""),
-                elapsed_s=elapsed_s,
-            )
-    except Exception:
-        pass
+    except ImportError:
+        _hartos_verify = None
+    if _hartos_verify is not None:
+        # HARTOS's signature is (url, timeout, prompt, max_tokens) and it
+        # answers a dict.  Called with this module's own names it raised
+        # TypeError on every call, which a bare except hid, so this path
+        # never ran (tests/test_verified_llm_forwards.py).
+        r = _hartos_verify(url=endpoint, timeout=timeout_s, prompt=prompt)
+        ok = bool(r.get("ok", False))
+        return Result(
+            ok=ok,
+            content=str(r.get("content_snippet") or ""),
+            # HARTOS says reason='verified' on success; only a failure's
+            # reason is an error.
+            err="" if ok else str(r.get("reason") or ""),
+            elapsed_s=time.perf_counter() - t0,
+        )
 
     # Fallback inline implementation — no HARTOS.
     import json
-    import time
     import urllib.error
     import urllib.request
 
-    t0 = time.monotonic()
     payload = json.dumps({
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 16,
@@ -93,16 +88,16 @@ def verify_llm(endpoint: str = "http://127.0.0.1:8080",
             content = body["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError):
             pass
-        elapsed = time.monotonic() - t0
+        elapsed = time.perf_counter() - t0
         if content and content.strip():
             return Result(ok=True, content=content, err="", elapsed_s=elapsed)
         return Result(ok=False, content="", err="empty content", elapsed_s=elapsed)
     except (urllib.error.URLError, TimeoutError) as e:
         return Result(ok=False, content="", err=f"{type(e).__name__}: {e}",
-                      elapsed_s=time.monotonic() - t0)
+                      elapsed_s=time.perf_counter() - t0)
     except Exception as e:
         return Result(ok=False, content="", err=f"{type(e).__name__}: {e}",
-                      elapsed_s=time.monotonic() - t0)
+                      elapsed_s=time.perf_counter() - t0)
 
 
 def is_llm_inference_verified(endpoint: str = "http://127.0.0.1:8080") -> bool:

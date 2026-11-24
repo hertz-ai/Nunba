@@ -23,7 +23,7 @@ describe('Social Regions -- List Page', () => {
   it('should load the regions list page without crashing', () => {
     cy.socialVisit('/social/regions');
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.get('#root').invoke('html').should('not.be.empty');
     cy.url().should('include', '/social/regions');
   });
@@ -53,10 +53,10 @@ describe('Social Regions -- List Page', () => {
 
     cy.socialVisit('/social/regions');
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.get('body').should('not.contain.text', 'Cannot read properties');
     // The component renders "No regions found." when empty
-    cy.get('body', {timeout: 300000}).then(($body) => {
+    cy.get('body', {timeout: 30000}).then(($body) => {
       const text = $body.text();
       expect(text.length).to.be.greaterThan(0);
     });
@@ -200,7 +200,7 @@ describe('Social Regions -- Detail Page', () => {
 
     cy.socialVisit(`/social/regions/${id}`);
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.get('#root').invoke('html').should('not.be.empty');
   });
 
@@ -210,10 +210,10 @@ describe('Social Regions -- Detail Page', () => {
 
     cy.socialVisit(`/social/regions/${regionId}`);
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
 
     // RegionDetailPage renders the region name, member count, type chip
-    cy.get('body', {timeout: 300000}).then(($body) => {
+    cy.get('body', {timeout: 30000}).then(($body) => {
       const text = $body.text();
       expect(text.length).to.be.greaterThan(0);
     });
@@ -228,7 +228,7 @@ describe('Social Regions -- Detail Page', () => {
 
     cy.socialVisit(`/social/regions/${regionId}`);
 
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
 
     // The region detail page has a feed endpoint
     cy.socialRequest('GET', `/regions/${regionId}/feed`).then((res) => {

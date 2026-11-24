@@ -88,7 +88,10 @@ class TestExperiments:
         resp = client.post('/api/social/experiments/auto-evolve',
                           json={'hypothesis': 'test'},
                           headers=auth_header)
-        assert resp.status_code in (200, 400, 404, 405, 500)
+        # Admin only since HARTOS 21f45a95 (@require_admin: a cycle burns
+        # compute on every hive node); auth_header is an ordinary user's.
+        assert resp.status_code == 403
+        assert resp.get_json()['error'] == 'Admin access required'
 
     def test_pause_evolve(self, client, auth_header):
         resp = client.post('/api/social/experiments/pause-evolve',

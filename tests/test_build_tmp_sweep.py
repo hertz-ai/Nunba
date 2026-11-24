@@ -22,6 +22,7 @@ with that pre-pass the same run swept 34 of 34 and freed 2,237.8 MB.
 """
 import os
 import stat
+import sys
 import tempfile
 import unittest
 
@@ -64,6 +65,10 @@ class TestReadOnlyTreesAreRemovable(unittest.TestCase):
         os.chmod(p, stat.S_IREAD)   # exactly what git does
         return p
 
+    @unittest.skipUnless(
+        sys.platform == 'win32',
+        'Windows-only failure: POSIX unlink needs write on the directory, not '
+        'the file, so a read-only file in a writable dir is removed by rmtree')
     def test_plain_rmtree_fails_on_this_tree(self):
         """Proves the fixture reproduces the real failure, not a strawman."""
         import shutil

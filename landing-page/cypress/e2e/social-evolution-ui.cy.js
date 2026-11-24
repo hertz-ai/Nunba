@@ -82,7 +82,7 @@ describe('Social Evolution -- Page UI', () => {
     });
 
     cy.socialVisit('/social/agents/agent-1/evolution');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.url().should('include', '/social/agents/agent-1/evolution');
   });
 
@@ -97,7 +97,7 @@ describe('Social Evolution -- Page UI', () => {
     });
 
     cy.socialVisit('/social/agents/agent-1/evolution');
-    cy.contains('Agent Evolution', {timeout: 300000}).should('be.visible');
+    cy.contains('Agent Evolution', {timeout: 30000}).should('be.visible');
   });
 });
 
@@ -120,9 +120,9 @@ describe('Social Evolution -- Traits', () => {
     });
 
     cy.socialVisit('/social/agents/agent-1/evolution');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
 
-    cy.contains('Traits', {timeout: 300000}).should('be.visible');
+    cy.contains('Traits', {timeout: 30000}).should('be.visible');
     cy.contains('Analytical').should('be.visible');
     cy.contains('Creative').should('be.visible');
     cy.contains('Empathetic').should('be.visible');
@@ -148,9 +148,9 @@ describe('Social Evolution -- Specialization Trees', () => {
     });
 
     cy.socialVisit('/social/agents/agent-1/evolution');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
 
-    cy.contains('Specialization Trees', {timeout: 300000}).should('be.visible');
+    cy.contains('Specialization Trees', {timeout: 30000}).should('be.visible');
     cy.contains('NLP Expert').should('be.visible');
     cy.contains('Data Analyst').should('be.visible');
     cy.contains('Creative Writer').should('be.visible');
@@ -167,7 +167,7 @@ describe('Social Evolution -- Specialization Trees', () => {
     });
 
     cy.socialVisit('/social/agents/agent-1/evolution');
-    cy.contains('75%', {timeout: 300000}).should('be.visible');
+    cy.contains('75%', {timeout: 30000}).should('be.visible');
     cy.contains('30%').should('be.visible');
   });
 
@@ -183,7 +183,7 @@ describe('Social Evolution -- Specialization Trees', () => {
 
     cy.socialVisit('/social/agents/agent-1/evolution');
     // The NLP Expert tree should have "Active" chip since agent has 'nlp-expert' specialization
-    cy.contains('Active', {timeout: 300000}).should('be.visible');
+    cy.contains('Active', {timeout: 30000}).should('be.visible');
   });
 });
 
@@ -206,7 +206,7 @@ describe('Social Evolution -- Requirements', () => {
     });
 
     cy.socialVisit('/social/agents/agent-1/evolution');
-    cy.contains('Next Stage Requirements', {timeout: 300000}).should(
+    cy.contains('Next Stage Requirements', {timeout: 30000}).should(
       'be.visible'
     );
     cy.contains('Reach 100 interactions').should('be.visible');
@@ -233,7 +233,7 @@ describe('Social Evolution -- Evolve Button', () => {
     });
 
     cy.socialVisit('/social/agents/agent-1/evolution');
-    cy.contains('Requirements Not Met', {timeout: 300000}).should('be.visible');
+    cy.contains('Requirements Not Met', {timeout: 30000}).should('be.visible');
     cy.contains('Requirements Not Met').closest('button').should('be.disabled');
   });
 
@@ -248,7 +248,7 @@ describe('Social Evolution -- Evolve Button', () => {
     });
 
     cy.socialVisit('/social/agents/agent-1/evolution');
-    cy.contains('Evolve Now', {timeout: 300000}).should('be.visible');
+    cy.contains('Evolve Now', {timeout: 30000}).should('be.visible');
     cy.contains('Evolve Now').closest('button').should('not.be.disabled');
   });
 
@@ -267,7 +267,7 @@ describe('Social Evolution -- Evolve Button', () => {
     }).as('evolve');
 
     cy.socialVisit('/social/agents/agent-1/evolution');
-    cy.contains('Evolve Now', {timeout: 300000}).click({force: true});
+    cy.contains('Evolve Now', {timeout: 30000}).click({force: true});
     cy.wait('@evolve');
   });
 });
@@ -327,7 +327,7 @@ describe('Social Evolution -- Error Handling', () => {
     });
 
     cy.socialVisit('/social/agents/bad-agent/evolution');
-    cy.contains('not found', {timeout: 300000}).should('be.visible');
+    cy.contains('not found', {timeout: 30000}).should('be.visible');
   });
 
   it('should handle API errors without crashing', () => {
@@ -341,7 +341,7 @@ describe('Social Evolution -- Error Handling', () => {
     });
 
     cy.socialVisit('/social/agents/agent-1/evolution');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.get('body').should('not.contain.text', 'Cannot read properties');
   });
 });

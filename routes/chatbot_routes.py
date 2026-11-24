@@ -30,8 +30,8 @@ logger = logging.getLogger(__name__)
 
 
 # Auth decorator — single source of truth in routes/auth.py
-from routes.auth import require_local_or_token as _require_local_or_token
 from routes.auth import admitted_device_user, require_local_token_or_device
+from routes.auth import require_local_or_token as _require_local_or_token
 
 # ============== Nunba-layer TTS (works on ALL tiers) ==============
 
@@ -4096,6 +4096,7 @@ def agents_sync_get():
     # came back twice under the real agent's id and the page added both to
     # the person's agent list (review of 38e6dd78).
     from pathlib import Path
+
     from routes.db_routes import _is_agent_record
 
     if os.path.isdir(prompts_dir):

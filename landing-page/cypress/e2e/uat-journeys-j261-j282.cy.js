@@ -41,19 +41,24 @@ describe('J261-J270: HARTOS/MCP/WAMP/memory/onboarding', () => {
   });
 
   it('J261: GET /api/social/auth/me returns envelope (hartos social bp)', () => {
-    cy.request({url: 'http://localhost:5000/api/social/auth/me', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/social/auth/me`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 500, 503]);
     });
   });
 
   it('J262: GET /api/mcp/local/tools/list returns tool inventory envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/mcp/local/tools/list', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/mcp/local/tools/list`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 403, 503]);
+      if (r.status === 200) {
+        // The inventory offers memory's tools (J71 / J104 run them).
+        const names = (r.body.tools || []).map((t) => t.name);
+        expect(names).to.include.members(['remember', 'recall']);
+      }
     });
   });
 
   it('J263: GET /api/admin/channels returns adapter-type list', () => {
-    cy.request({url: 'http://localhost:5000/api/admin/channels', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/admin/channels`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 503]);
     });
   });
@@ -61,7 +66,7 @@ describe('J261-J270: HARTOS/MCP/WAMP/memory/onboarding', () => {
   it('J264: POST /crossbar round-trips an event envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/crossbar',
+      url: `${Cypress.env('apiUrl')}/crossbar`,
       body: {topic: 'com.hertzai.test.j264', args: [1], kwargs: {}},
       failOnStatusCode: false,
     }).then((r) => {
@@ -70,7 +75,7 @@ describe('J261-J270: HARTOS/MCP/WAMP/memory/onboarding', () => {
   });
 
   it('J265: GET /api/admin/diag/logs returns hub envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/admin/diag/logs', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/admin/diag/logs`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 404, 503]);
     });
   });
@@ -78,7 +83,7 @@ describe('J261-J270: HARTOS/MCP/WAMP/memory/onboarding', () => {
   it('J266: POST /api/llm/switch returns LLM model swap envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/llm/switch',
+      url: `${Cypress.env('apiUrl')}/api/llm/switch`,
       body: {target: 'qwen3.5-0.8b-draft'},
       failOnStatusCode: false,
     }).then((r) => {
@@ -86,27 +91,31 @@ describe('J261-J270: HARTOS/MCP/WAMP/memory/onboarding', () => {
     });
   });
 
-  it('J267: POST /api/memory/remember + POST /api/memory/recall both return envelopes', () => {
-    cy.request({
-      method: 'POST',
-      url: 'http://localhost:5000/api/memory/remember',
-      body: {text: 'j267 test', agent_id: 'j267'},
-      failOnStatusCode: false,
-    }).then((r) => {
-      expect(r.status).to.be.oneOf([200, 201, 400, 401, 403, 404, 503]);
+  // /api/memory/* is GET recent, GET search and DELETE <id>
+  // (routes/chatbot_routes.py; tests/journey/test_J267_memory_crud_breadth.py
+  // is the pytest side).  remember / recall are MCP tools (J71, J104), not
+  // routes here: the POSTs this used to send matched the DELETE-only rule
+  // and got 405.
+  it('J267: memory routes answer recent, search and delete', () => {
+    const api = `${Cypress.env('apiUrl')}/api/memory`;
+    cy.request({url: `${api}/recent?user_id=j267&limit=5`, failOnStatusCode: false}).then((r) => {
+      expect(r.status).to.be.oneOf([200, 401, 403, 503]);
+      if (r.status === 200) expect(r.body).to.be.an('array');
+    });
+    cy.request({url: `${api}/search?user_id=j267`, failOnStatusCode: false}).then((r) => {
+      expect(r.status, 'search without q').to.be.oneOf([400, 401, 403]);
     });
     cy.request({
-      method: 'POST',
-      url: 'http://localhost:5000/api/memory/recall',
-      body: {query: 'j267', agent_id: 'j267'},
+      method: 'DELETE',
+      url: `${api}/j267-no-such-memory?user_id=j267`,
       failOnStatusCode: false,
     }).then((r) => {
-      expect(r.status).to.be.oneOf([200, 400, 401, 403, 404, 503]);
+      expect(r.status, 'delete of an unknown id').to.be.oneOf([404, 401, 403, 503]);
     });
   });
 
   it('J268: GET /api/distributed/tasks returns distributed agent envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/distributed/tasks', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/distributed/tasks`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 404, 503]);
     });
   });
@@ -114,12 +123,12 @@ describe('J261-J270: HARTOS/MCP/WAMP/memory/onboarding', () => {
   it('J269: POST /crossbar + /api/social/auth/me together (hive signal + flask)', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/crossbar',
+      url: `${Cypress.env('apiUrl')}/crossbar`,
       body: {topic: 'com.hertzai.signal.j269', args: ['on']},
       failOnStatusCode: false,
     });
     cy.request({
-      url: 'http://localhost:5000/api/social/auth/me',
+      url: `${Cypress.env('apiUrl')}/api/social/auth/me`,
       failOnStatusCode: false,
     }).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 500, 503]);
@@ -127,7 +136,7 @@ describe('J261-J270: HARTOS/MCP/WAMP/memory/onboarding', () => {
   });
 
   it('J270: GET /api/social/onboarding/progress returns onboarding envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/social/onboarding/progress', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/social/onboarding/progress`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 404, 500, 503]);
     });
   });
@@ -139,11 +148,11 @@ describe('J271-J282: vault, kids, chatbot, daemon, intelligence', () => {
   });
 
   it('J271: GET /api/vault/status + /api/image-proxy responsive', () => {
-    cy.request({url: 'http://localhost:5000/api/vault/status', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/vault/status`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 404, 503]);
     });
     cy.request({
-      url: 'http://localhost:5000/api/image-proxy?url=http://example.com/x.png',
+      url: `${Cypress.env('apiUrl')}/api/image-proxy?url=http://example.com/x.png`,
       failOnStatusCode: false,
     }).then((r) => {
       expect(r.status).to.be.oneOf([200, 400, 401, 403, 404, 415, 503]);
@@ -151,7 +160,7 @@ describe('J271-J282: vault, kids, chatbot, daemon, intelligence', () => {
   });
 
   it('J272: GET /api/social/kids/recommendations returns envelope', () => {
-    cy.request({url: 'http://localhost:5000/api/social/kids/recommendations', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/social/kids/recommendations`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 404, 503]);
     });
   });
@@ -159,7 +168,7 @@ describe('J271-J282: vault, kids, chatbot, daemon, intelligence', () => {
   it('J273: POST /chat with minimal body returns envelope (chatbot core)', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/chat',
+      url: `${Cypress.env('apiUrl')}/chat`,
       body: {text: 'hi j273'},
       failOnStatusCode: false,
     }).then((r) => {
@@ -168,26 +177,31 @@ describe('J271-J282: vault, kids, chatbot, daemon, intelligence', () => {
   });
 
   it('J274: GET /probe returns liveness envelope (core app lifecycle)', () => {
-    cy.request({url: 'http://localhost:5000/probe', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/probe`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 204, 503]);
     });
   });
 
   it('J275: DB routes — GET /db/actions returns envelope', () => {
-    cy.request({url: 'http://localhost:5000/db/actions', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/db/actions`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 404, 405, 503]);
     });
   });
 
   it('J276: SPA route / returns renderable HTML (or a 200 JSON at /local)', () => {
-    cy.visit('/local', {failOnStatusCode: false});
-    cy.contains(/chat|say something|welcome|type a message/i, {timeout: 10000}).should('exist');
+    // A first visit to /local shows the HART language picker, which has none
+    // of the chat's words (chat-flow 1.3).  cy.openLocalChat is the sealed,
+    // returning guest, whose /local is the chat with its composer.
+    cy.openLocalChat();
+    cy.get('textarea', {timeout: 30000})
+      .should('have.attr', 'placeholder')
+      .and('match', /message/i);
   });
 
   it('J277: POST /api/liquid/render returns envelope (server-driven render)', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/liquid/render',
+      url: `${Cypress.env('apiUrl')}/api/liquid/render`,
       body: {component: 'test', props: {}},
       failOnStatusCode: false,
     }).then((r) => {
@@ -198,7 +212,7 @@ describe('J271-J282: vault, kids, chatbot, daemon, intelligence', () => {
   it('J278: POST /api/social/agents/tick returns daemon lifecycle envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/social/agents/tick',
+      url: `${Cypress.env('apiUrl')}/api/social/agents/tick`,
       body: {},
       failOnStatusCode: false,
     }).then((r) => {
@@ -209,7 +223,7 @@ describe('J271-J282: vault, kids, chatbot, daemon, intelligence', () => {
   it('J279: POST /api/social/agents/trigger returns event envelope', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/social/agents/trigger',
+      url: `${Cypress.env('apiUrl')}/api/social/agents/trigger`,
       body: {event: 'test-j279'},
       failOnStatusCode: false,
     }).then((r) => {
@@ -220,7 +234,7 @@ describe('J271-J282: vault, kids, chatbot, daemon, intelligence', () => {
   it('J280: POST /api/social/agents/pause returns envelope (no fire)', () => {
     cy.request({
       method: 'POST',
-      url: 'http://localhost:5000/api/social/agents/pause',
+      url: `${Cypress.env('apiUrl')}/api/social/agents/pause`,
       body: {agent_id: 'j280'},
       failOnStatusCode: false,
     }).then((r) => {
@@ -229,7 +243,7 @@ describe('J271-J282: vault, kids, chatbot, daemon, intelligence', () => {
   });
 
   it('J281: GET /api/social/agents/status (admin-visible daemon status)', () => {
-    cy.request({url: 'http://localhost:5000/api/social/agents/status', failOnStatusCode: false}).then((r) => {
+    cy.request({url: `${Cypress.env('apiUrl')}/api/social/agents/status`, failOnStatusCode: false}).then((r) => {
       expect(r.status).to.be.oneOf([200, 401, 403, 404, 500, 503]);
     });
   });
@@ -238,7 +252,7 @@ describe('J271-J282: vault, kids, chatbot, daemon, intelligence', () => {
     for (const pref of ['auto', 'local_only', 'hive_preferred']) {
       cy.request({
         method: 'POST',
-        url: 'http://localhost:5000/chat',
+        url: `${Cypress.env('apiUrl')}/chat`,
         body: {text: 'hi j282', intelligence_preference: pref},
         failOnStatusCode: false,
       }).then((r) => {

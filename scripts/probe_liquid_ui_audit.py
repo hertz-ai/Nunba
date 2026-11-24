@@ -19,12 +19,27 @@ import pathlib
 import re
 import sys
 
+from rebuild_python_embed import _resolve_sibling_repo
+
+# The trees the audit walks, located from this file rather than one
+# developer's home: Nunba is this script's repo, HARTOS its sibling clone
+# (``../HARTOS``, where quality.yml clones it too).  The hardcoded
+# C:/Users/sathi/... paths these replace exist on no CI runner, so the walk
+# found 0 sites there and the drift checks in
+# tests/test_liquid_ui_substrate.py passed on an empty set.
+NUNBA_ROOT = pathlib.Path(__file__).resolve().parent.parent
+HARTOS_ROOT = pathlib.Path(_resolve_sibling_repo('HARTOS'))
+
 _PRUNE_DIRS = {
     '.venv', 'venv', '__pycache__', 'build', 'dist',
     'agent-ledger-opensource', 'python-embed',
     'hallucinated_recipes_backup', '_archive', 'node_modules',
     '.git', 'site-packages', '.pytest_cache', '.mypy_cache',
     '.tox', '.eggs', 'docs', 'logs', 'agent_data',
+    # Test suites emit fixture types on purpose (negative tests, types they
+    # register at runtime): those are not the product's emits, and counting
+    # them made every new fixture look like substrate drift.
+    'tests',
 }
 
 
@@ -76,8 +91,8 @@ def parse_switch_cases(overlay_path: pathlib.Path) -> set[str]:
 
 
 def main() -> int:
-    hart = pathlib.Path('C:/Users/sathi/PycharmProjects/HARTOS')
-    nunba = pathlib.Path('C:/Users/sathi/PycharmProjects/Nunba-HART-Companion')
+    hart = HARTOS_ROOT
+    nunba = NUNBA_ROOT
     sites = scan_emit_sites(hart) + scan_emit_sites(nunba)
 
     emitted: dict[str, set[str]] = {}

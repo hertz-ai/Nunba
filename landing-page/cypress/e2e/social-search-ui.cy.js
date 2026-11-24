@@ -21,7 +21,7 @@ describe('Social Search -- Page UI', () => {
 
   it('should load the search page without crashing', () => {
     cy.socialVisit('/social/search');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.get('#root').invoke('html').should('not.be.empty');
     cy.url().should('include', '/social/search');
   });
@@ -29,20 +29,20 @@ describe('Social Search -- Page UI', () => {
   it('should display search input with placeholder', () => {
     cy.socialVisit('/social/search');
     cy.get('input[placeholder*="Search"], input[placeholder*="search"]', {
-      timeout: 300000,
+      timeout: 30000,
     }).should('exist');
   });
 
   it('should display three tabs: Posts, Users, Communities', () => {
     cy.socialVisit('/social/search');
-    cy.contains('Posts', {timeout: 300000}).should('be.visible');
+    cy.contains('Posts', {timeout: 30000}).should('be.visible');
     cy.contains('Users').should('be.visible');
     cy.contains('Communities').should('be.visible');
   });
 
   it('should show "Type to search" empty state initially', () => {
     cy.socialVisit('/social/search');
-    cy.contains('Type to search', {timeout: 300000}).should('be.visible');
+    cy.contains('Type to search', {timeout: 30000}).should('be.visible');
   });
 });
 
@@ -75,12 +75,12 @@ describe('Social Search -- Mocked Results', () => {
 
     cy.socialVisit('/social/search');
     cy.get('input[placeholder*="Search"], input[placeholder*="search"]', {
-      timeout: 300000,
+      timeout: 30000,
     }).type('AI agents', {force: true});
 
     // Wait for debounce + response
     cy.wait('@searchAPI');
-    cy.contains('How to build AI agents', {timeout: 300000}).should(
+    cy.contains('How to build AI agents', {timeout: 30000}).should(
       'be.visible'
     );
   });
@@ -93,11 +93,11 @@ describe('Social Search -- Mocked Results', () => {
 
     cy.socialVisit('/social/search');
     cy.get('input[placeholder*="Search"], input[placeholder*="search"]', {
-      timeout: 300000,
+      timeout: 30000,
     }).type('xyznonexistent123', {force: true});
 
     cy.wait('@emptySearch');
-    cy.contains('No results found', {timeout: 300000}).should('be.visible');
+    cy.contains('No results found', {timeout: 30000}).should('be.visible');
   });
 
   it('should switch to Users tab and show user results', () => {
@@ -112,17 +112,17 @@ describe('Social Search -- Mocked Results', () => {
     }).as('searchUsers');
 
     cy.socialVisit('/social/search');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
 
     // Click Users tab
     cy.contains('Users').click({force: true});
 
     cy.get('input[placeholder*="Search"], input[placeholder*="search"]', {
-      timeout: 300000,
+      timeout: 30000,
     }).type('alice', {force: true});
 
     cy.wait('@searchUsers');
-    cy.get('body', {timeout: 300000}).should(($body) => {
+    cy.get('body', {timeout: 30000}).should(($body) => {
       const text = $body.text();
       expect(text.includes('alice') || text.includes('Alice')).to.be.true;
     });
@@ -140,14 +140,14 @@ describe('Social Search -- Mocked Results', () => {
     });
 
     cy.socialVisit('/social/search');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
 
-    cy.get('[role="tab"]', {timeout: 300000}).contains('Communities').click({force: true});
+    cy.get('[role="tab"]', {timeout: 30000}).contains('Communities').click({force: true});
     cy.get('input[placeholder*="Search"], input[placeholder*="search"]', {
-      timeout: 300000,
+      timeout: 30000,
     }).type('ai', {force: true});
 
-    cy.contains('h/ai-agents', {timeout: 300000}).should('be.visible');
+    cy.contains('h/ai-agents', {timeout: 30000}).should('be.visible');
   });
 });
 
@@ -204,7 +204,7 @@ describe('Social Search -- Error Handling', () => {
     });
 
     cy.socialVisit('/social/search');
-    cy.get('#root', {timeout: 300000}).should('exist');
+    cy.get('#root', {timeout: 30000}).should('exist');
     cy.get('body').should('not.contain.text', 'Cannot read properties');
   });
 });

@@ -96,6 +96,9 @@ def _ensure_recipe_mocks(lgapi):
     if 'hartos.reuse_recipe' not in sys.modules or sys.modules['hartos.reuse_recipe'] is None:
         _rr = types.ModuleType('reuse_recipe')
         _rr.chat_agent = lgapi.chat_agent
+        # chat() imports this after every reuse turn to see whether the agent
+        # asked for a new one; the stub has no autogen to fire it.
+        _rr.creation_signals = {}
         sys.modules['hartos.reuse_recipe'] = _rr
 
 
@@ -198,8 +201,18 @@ class _AgentPipelineTestBase(unittest.TestCase):
             _hie, 'chat_agent', MagicMock(return_value='Reuse response'))
         self._recipe_patcher.start()
         self._chat_agent_patcher.start()
+        # chat() decides CREATE vs REUSE with agent_daemon._flow_recipe_exists,
+        # which reads core.platform_paths.get_recipe_prompts_dir() and not
+        # PROMPTS_DIR (the same folder in a real run).  Without this, the
+        # recipe files a test writes to temp_dir are never seen and every
+        # reuse turn is routed into recipe() instead of chat_agent.
+        self._recipe_dir_patcher = patch(
+            'core.platform_paths.get_recipe_prompts_dir',
+            return_value=self.temp_dir)
+        self._recipe_dir_patcher.start()
 
     def tearDown(self):
+        self._recipe_dir_patcher.stop()
         self._recipe_patcher.stop()
         self._chat_agent_patcher.stop()
         import hart_intelligence_entry as _hie
@@ -266,7 +279,8 @@ class TestAgentPipelineCreation(_AgentPipelineTestBase):
     @patch(MOCK_POOLED_GET, side_effect=Exception("DB unavailable"))
     @patch(MOCK_GATHER)
     def test_creation_to_review_transition(self, mock_gather, _, __):
-        """Completed gather_info should save JSON and enter Review Mode."""
+        """A completed gather_info config is shown first; a plain yes saves
+        it and enters Review Mode (HARTOS #205, 181cb2c8)."""
         completed_config = {
             'status': 'completed',
             'name': 'FitBot',
@@ -284,12 +298,19 @@ class TestAgentPipelineCreation(_AgentPipelineTestBase):
         }
         mock_gather.return_value = json.dumps(completed_config)
 
-        result = _chat(self.client, 'Create a fitness agent',
+        shown = _chat(self.client, 'Create a fitness agent',
+                      prompt_id='99003', create_agent=True)
+        self.assertEqual(shown.get('Agent_status'), 'Creation Mode')
+        json_path = os.path.join(self.temp_dir, '99003.json')
+        self.assertFalse(os.path.isfile(json_path),
+                         'saved before the person confirmed the config shown')
+
+        result = _chat(self.client, 'yes',
                        prompt_id='99003', create_agent=True)
 
         self.assertEqual(result.get('Agent_status'), 'Review Mode')
+        mock_gather.assert_called_once()  # the yes is not sent to the model
 
-        json_path = os.path.join(self.temp_dir, '99003.json')
         self.assertTrue(os.path.isfile(json_path),
                         f"Agent config not saved at {json_path}")
 
@@ -400,12 +421,15 @@ class TestAgentPipelineForceComplete(_AgentPipelineTestBase):
         self.assertTrue(os.path.isfile(json_path))
         with open(json_path) as f:
             salvaged = json.load(f)
-        self.assertEqual(salvaged['status'], 'completed')
-        # Verify actions are proper dicts (HIGH bug fix)
+        # A salvage stub is a creation that FAILED, so it is not published as
+        # an active agent (HARTOS 4ac26248), and its action is the plain text
+        # every real config carries, not a dict printed verbatim to the user
+        # (HARTOS ff160f05).
+        self.assertEqual(salvaged['status'], 'pending')
         for flow in salvaged['flows']:
             for action in flow['actions']:
-                self.assertIsInstance(action, dict,
-                                     f"Salvaged action must be dict: {action}")
+                self.assertIsInstance(action, str,
+                                     f"Salvaged action must be text: {action}")
 
 
 # ===================================================================
@@ -440,17 +464,19 @@ class TestAgentPipelineReview(_AgentPipelineTestBase):
         return config
 
     # ------------------------------------------------------------------
-    # Test 7: JSON exists + no recipe → Review Mode
+    # Test 7: JSON exists + no recipe → recipe() finishes it, Creation Mode
     # ------------------------------------------------------------------
     def test_routing_json_exists_no_recipe(self):
-        """With agent JSON but no recipe, should enter Review Mode."""
+        """With agent JSON but no recipe, the turn goes into recipe() to
+        finish creation (HARTOS 9c38bf1b) and reports Creation Mode."""
         self._create_agent_json('99010')
 
         with patch.object(self._hie, 'recipe',
-                          return_value='Reviewing action 1'):
+                          return_value='Reviewing action 1') as mock_recipe:
             result = _chat(self.client, 'Review this agent',
                            prompt_id='99010')
-        self.assertEqual(result.get('Agent_status'), 'Review Mode')
+        mock_recipe.assert_called_once()
+        self.assertEqual(result.get('Agent_status'), 'Creation Mode')
 
     # ------------------------------------------------------------------
     # Test 8: recipe() → 'Agent Created Successfully' → completed
@@ -560,16 +586,18 @@ class TestAgentPipelineFileRouting(_AgentPipelineTestBase):
         return config
 
     # ------------------------------------------------------------------
-    # Test 11: JSON exists + no recipe → Review Mode
+    # Test 11: JSON exists + no recipe → recipe() finishes it, Creation Mode
     # ------------------------------------------------------------------
-    def test_json_no_recipe_routes_to_review(self):
-        """JSON exists but no recipe → review mode (recipe called)."""
+    def test_json_no_recipe_routes_to_creation(self):
+        """JSON exists but no recipe → recipe() finishes creation
+        (HARTOS 9c38bf1b), reported as Creation Mode."""
         self._write_agent_files('99030', with_recipe=False)
 
         with patch.object(self._hie, 'recipe',
-                          return_value='Reviewing flow_0'):
+                          return_value='Reviewing flow_0') as mock_recipe:
             result = _chat(self.client, 'Review', prompt_id='99030')
-        self.assertEqual(result.get('Agent_status'), 'Review Mode')
+        mock_recipe.assert_called_once()
+        self.assertEqual(result.get('Agent_status'), 'Creation Mode')
 
     # ------------------------------------------------------------------
     # Test 12: JSON + partial recipes → Review (create missing recipe)
@@ -836,8 +864,11 @@ class TestAgentPipelineEndToEnd(_AgentPipelineTestBase):
         mock_gather.return_value = json.dumps(completed_config)
         r3 = _chat(self.client, 'Italian and Indian cuisine',
                     prompt_id=prompt_id, create_agent=True)
+        self.assertEqual(r3['Agent_status'], 'Creation Mode',
+                         "Step 3: the completed config is shown first (#205)")
+        r3 = _chat(self.client, 'Yes', prompt_id=prompt_id, create_agent=True)
         self.assertEqual(r3['Agent_status'], 'Review Mode',
-                         "Step 3: Should transition to Review Mode")
+                         "Step 3: a plain yes saves it and enters Review Mode")
 
         json_path = os.path.join(self.temp_dir, f'{prompt_id}.json')
         self.assertTrue(os.path.isfile(json_path))
@@ -894,7 +925,10 @@ class TestAgentPipelineEndToEnd(_AgentPipelineTestBase):
         ]
         mock_gather.return_value = json.dumps(list_response)
 
-        result = _chat(self.client, 'Create list handler',
+        shown = _chat(self.client, 'Create list handler',
+                      prompt_id='77002', create_agent=True)
+        self.assertEqual(shown.get('Agent_status'), 'Creation Mode')
+        result = _chat(self.client, 'yes',
                        prompt_id='77002', create_agent=True)
         self.assertEqual(result.get('Agent_status'), 'Review Mode')
 

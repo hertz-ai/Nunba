@@ -98,11 +98,11 @@ describe('useCameraConsent: the answer HARTOS keeps', () => {
     mockList.mockResolvedValue(GRANTED);
     const {result} = renderHook(() => useCameraConsent('10202'));
     await waitFor(() => expect(result.current).toBe(true));
-    // The privacy page's own list, live rows only, a boot 404 stays off the
-    // error banner, and HARTOS is asked every time (never a cached answer).
+    // The privacy page's own list, live rows only, and a boot 404 stays off
+    // the error banner.  (consentApi.list itself never caches.)
     expect(mockList).toHaveBeenCalledWith(
       {consent_type: 'camera_capture', active_only: true},
-      {silentError: [404], cache: false});
+      {silentError: [404]});
   });
 
   test('no consent on file: the camera stays off', async () => {
