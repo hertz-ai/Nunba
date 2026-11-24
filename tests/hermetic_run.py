@@ -19,7 +19,8 @@ process:
   - the app's own switches are set so that importing main boots no model
     (HEVOLVE_EAGER_LLM=0, NUNBA_DISABLE_LLAMA_AUTOSTART=1, HEVOLVE_DRAFT_FIRST=0);
   - NUNBA_TEST_HOME names a private folder that llama.llama_installer.home_dir
-    returns in place of the person's home.
+    returns in place of the person's home.  A runner that sets it to a folder
+    of its own keeps that folder.
 
 None of it can be a fixture: POST /chat with no model up answers at once and
 hands the start to a background thread (routes/chatbot_routes.py ->
@@ -308,11 +309,21 @@ def install():
     os.environ.setdefault('NUNBA_DISABLE_LLAMA_AUTOSTART', '1')
     os.environ.setdefault('HEVOLVE_DRAFT_FIRST', '0')
 
-    if not os.environ.get('NUNBA_TEST_HOME'):
-        # Read by llama.llama_installer.home_dir: the person's home, then the
-        # folder that stands in for it.
-        _remove_private_homes_left_behind(tempfile.gettempdir(), time.time())
-        private_home = tempfile.mkdtemp(prefix='nunba_test_home_')
-        atexit.register(shutil.rmtree, private_home, ignore_errors=True)
+    # Read by llama.llama_installer.home_dir as "<the person's home>
+    # <os.pathsep><the folder that stands in for it>", and only as that pair:
+    # anything less is the person's real home.  A run that sets the variable
+    # itself keeps its folder, put in that shape here.  On 24 Nov 2026 a
+    # direct-call driver set it to its folder alone, this kept it as it was,
+    # and llama saved server_port 8083 into the owner's real
+    # ~/.nunba/llama_config.json.
+    person, sep, private_home = os.environ.get('NUNBA_TEST_HOME', '').partition(os.pathsep)
+    if not (person and private_home):
+        private_home = private_home or ('' if sep else person)
+        if private_home:
+            private_home = os.path.abspath(private_home)
+        else:
+            _remove_private_homes_left_behind(tempfile.gettempdir(), time.time())
+            private_home = tempfile.mkdtemp(prefix='nunba_test_home_')
+            atexit.register(shutil.rmtree, private_home, ignore_errors=True)
         os.environ['NUNBA_TEST_HOME'] = os.pathsep.join(
             [os.path.expanduser('~'), private_home])
