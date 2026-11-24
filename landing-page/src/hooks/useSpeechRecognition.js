@@ -147,7 +147,13 @@ export function openSttLink(url, {config, onMessage, onOpen, onGiveUp} = {}) {
       failures += 1;
       console.warn(`[STT] the speech socket closed (code ${code}${reason ? `, ${reason}` : ''}); `
         + `reconnecting in ${delay} ms`);
-      retry = setTimeout(() => { retry = null; if (!finished) connect(); }, delay);
+      retry = setTimeout(() => {
+        retry = null;
+        if (finished) return;
+        // A socket that cannot be built now will not be built on a later
+        // try either: say so instead of leaving a mic that hears nothing.
+        try { connect(); } catch (e) { giveUp(`it could not be reopened: ${e && e.message}`); }
+      }, delay);
     };
   };
 
@@ -418,9 +424,21 @@ export default function useSpeechRecognition(config = {}) {
           resolve(true);
         };
 
-        // No language = Whisper detects per utterance.
-        const link = openSttLink(url, {
-          config: sttConfigMessage(lang), onMessage, onOpen, onGiveUp});
+        // No language = Whisper detects per utterance.  A socket that cannot
+        // even be built (a malformed stt-url on the embed, WKWebView's
+        // SecurityError on ws:// from http) is the caller's fallback, as it
+        // was before the link: the throw would otherwise reject this promise
+        // and leave the timer to close a link that never existed.
+        let link;
+        try {
+          link = openSttLink(url, {
+            config: sttConfigMessage(lang), onMessage, onOpen, onGiveUp});
+        } catch (_) {
+          settled = true;
+          clearTimeout(timeout);
+          resolve(false);
+          return;
+        }
         wsRef.current = link;
       });
     } catch (err) {

@@ -95,8 +95,10 @@ describe('openSttLink', () => {
     expect(sockets).toHaveLength(2);
     sockets[1].open();
     link.send(frame(4));
-    expect(controls(sockets[1])).toEqual([{type: 'config'}]);
-    expect(frames(sockets[1])).toEqual([2, 3, 4]);
+    // The config first, then what was held, then the new frame: the server
+    // reads the config before any audio of the reopened stream.
+    const order = sockets[1].sent.map((d) => (typeof d === 'string' ? JSON.parse(d).type : new Uint8Array(d)[0]));
+    expect(order).toEqual(['config', 2, 3, 4]);
   });
 
   test('finish asks for the last words and does not reconnect', () => {
@@ -134,6 +136,24 @@ describe('openSttLink', () => {
     link.send(frame(9));
     jest.advanceTimersByTime(60000);
     expect(sockets).toHaveLength(1 + STT_RECONNECT_DELAYS_MS.length);
+  });
+
+  test('a reconnect that cannot even build a socket gives up once and says so', () => {
+    const onGiveUp = jest.fn();
+    openSttLink('ws://x', {onGiveUp});
+    sockets[0].open();
+    sockets[0].serverClose();
+    const Working = global.WebSocket;
+    global.WebSocket = function Refused() { throw new Error('The operation is insecure'); };
+    global.WebSocket.OPEN = 1;
+    try {
+      jest.advanceTimersByTime(STT_RECONNECT_DELAYS_MS[0]);
+      jest.advanceTimersByTime(60000);
+    } finally {
+      global.WebSocket = Working;
+    }
+    expect(onGiveUp).toHaveBeenCalledTimes(1);
+    expect(sockets).toHaveLength(1);
   });
 
   test('held audio is bounded: the oldest goes first', () => {
@@ -196,7 +216,7 @@ describe('useSpeechRecognition over the link', () => {
 });
 
 describe('the chat page mic', () => {
-  test('streams through the shared link, not a socket of its own', () => {
+  test('source guard: streams through the shared link, not a socket of its own', () => {
     const src = fs.readFileSync(path.join(__dirname, '../../pages/Demopage.js'), 'utf8');
     const start = src.indexOf('const _useStreamingWhisper = async');
     const end = src.indexOf('const _useWebSpeech = ', start);
