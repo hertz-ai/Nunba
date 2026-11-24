@@ -62,6 +62,9 @@ def setup(tmp_path, monkeypatch):
 
 
 def _weights(path, size, magic=b'GGUF'):
+    # The writer makes its folder (owner 2026-11-24, "create if not present
+    # shd be automatic"); building the installer no longer does.
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(magic + b'\0' * (size - len(magic)))
     return path
 

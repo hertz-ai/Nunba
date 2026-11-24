@@ -484,6 +484,12 @@ class LlamaInstaller:
             self._gpu = self._detect_gpu()
         return self._gpu
 
+    @gpu_available.setter
+    def gpu_available(self, value: str) -> None:
+        """Set what the GPU is, for a caller that already knows (the picker
+        tests pin it per platform); no probe runs."""
+        self._gpu = value
+
     @staticmethod
     def resolve_models_dir(models_dir=None, *, config_dir=None):
         """One LLM storage rule: explicit, environment, saved config, default."""
