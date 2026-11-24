@@ -181,8 +181,10 @@ def test_j214_lang_switch_unpins_previous_pins_new(
     # Pre-register BOTH tools as tracked ModelStates so we can
     # observe the flag flipping live (simulates a real RTM that has
     # already started both during normal boot).
-    mgr._on_tool_started(indic_tool, device="gpu", inprocess=False)
-    mgr._on_tool_started(english_tool, device="gpu", inprocess=False)
+    mgr._on_tool_started(indic_tool, device="gpu", inprocess=False,
+                         model_type="tts")
+    mgr._on_tool_started(english_tool, device="gpu", inprocess=False,
+                         model_type="tts")
 
     # User speaks Tamil first — indic pinned, english unpinned default.
     engine.set_language("ta")
@@ -230,7 +232,8 @@ def test_j214_staged_hint_applied_on_tool_started(
 
     # Now RTM fires the hook (first synth).  The hint must be
     # applied to the new state.
-    mgr._on_tool_started(indic_tool, device="gpu", inprocess=False)
+    mgr._on_tool_started(indic_tool, device="gpu", inprocess=False,
+                         model_type="tts")
     with mgr._lock:
         assert mgr._models[indic_tool].pressure_evict_only is True, (
             "staged J214 hint was not applied when the tool started; "
@@ -291,7 +294,8 @@ def test_j214_set_pressure_evict_only_live(fresh_lifecycle_manager):
     """Direct public-API test.  The admin endpoint and the J214 pin
     both ride this same method — if it regresses, both flows break."""
     mgr = fresh_lifecycle_manager
-    mgr._on_tool_started("tts_indic_parler", device="gpu", inprocess=False)
+    mgr._on_tool_started("tts_indic_parler", device="gpu", inprocess=False,
+                         model_type="tts")
 
     r = mgr.set_pressure_evict_only("tts_indic_parler", True)
     assert r["tracked"] is True
