@@ -20,7 +20,6 @@ const TypeWriterForSubtitle = ({
   const intervalRef = useRef(null);
   const hasCompletedRef = useRef(false);
   const prevTextRef = useRef(text);
-  const prevDurationRef = useRef(duration);
 
   const stopAnimation = useCallback(() => {
     if (intervalRef.current) {
@@ -104,18 +103,17 @@ const TypeWriterForSubtitle = ({
       hasCompletedRef.current = false;
       setDisplayText('');
       prevTextRef.current = text;
+    }
 
-      if (shouldStart && !isIdle) {
-        startAnimation();
-      }
-    } else if (
-      Math.abs(duration - prevDurationRef.current) >
-      prevDurationRef.current * 0.1
-    ) {
-      prevDurationRef.current = duration;
-      if (shouldStart && !isIdle && !hasCompletedRef.current) {
-        startAnimation();
-      }
+    // Type whenever this line should be typing: on mount too (a reply pushed
+    // from another device mounts with its text, no empty placeholder first),
+    // on a new line, on any duration change, and when the idle video gives
+    // way.  The cleanup below stops the clock on every re-run, so a re-run
+    // that did not start it again left the line blank or frozen part-way.
+    // startAnimation resumes from the shown index and does nothing once the
+    // line is complete.
+    if (shouldStart && !isIdle) {
+      startAnimation();
     }
 
     return stopAnimation;
