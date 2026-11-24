@@ -113,3 +113,50 @@ describe('OtpAuthModal: what a cloud sign-in leaves for the checkout', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/agents/Hevolve');
   });
 });
+
+// 2026-11-24: the page used a new token before the desktop had stored it,
+// the desktop's social API answered 401, and the page deleted the token.
+// The sign-in now waits for the desktop's answer before anything moves on.
+describe('OtpAuthModal: nothing moves on until the desktop has the new token', () => {
+  test('no token stored, no close, no navigate while the desktop post is pending', async () => {
+    const axiosModule = require('axios');
+    const posts = [axiosModule.post, axiosModule.default && axiosModule.default.post]
+      .filter((fn, i, all) => fn && all.indexOf(fn) === i);
+    let answer;
+    posts.forEach((fn) => fn.mockImplementation(() => new Promise((r) => { answer = r; })));
+    const onClose = jest.fn();
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce({ok: true, json: async () => ({})})
+      .mockResolvedValueOnce({ok: true, json: async () => VERIFY_RESPONSE});
+    render(
+      <MemoryRouter>
+        <OtpAuthModal isOpen={true} onClose={onClose} />
+      </MemoryRouter>
+    );
+    fireEvent.change(document.querySelector('input[type="tel"]'), {
+      target: {value: '9000000001'},
+    });
+    fireEvent.click(screen.getByRole('button', {name: /get otp/i}));
+    fireEvent.change(await screen.findByPlaceholderText('Enter OTP'), {
+      target: {value: '1234'},
+    });
+    fireEvent.click(screen.getByRole('button', {name: /verify otp/i}));
+    await waitFor(() => expect(answer).toBeDefined());
+    const sent = posts.flatMap((fn) => fn.mock.calls);
+    expect(sent[0][0]).toBe('/api/storage/set');
+    expect(sent[0][1]).toEqual({
+      user_id: '42', access_token: 'kong-bearer-xyz', email: 'someone@example.com',
+    });
+    expect(localStorage.getItem('access_token')).toBeNull();
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+
+    answer({status: 200, data: {}});
+    await waitFor(() =>
+      expect(localStorage.getItem('access_token')).toBe('kong-bearer-xyz')
+    );
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/agents/Hevolve'));
+    expect(onClose).toHaveBeenCalled();
+  });
+});

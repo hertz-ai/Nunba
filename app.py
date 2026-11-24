@@ -6187,19 +6187,37 @@ def start_flask():
                 # can't be acquired.  Idempotent — repeated calls only
                 # write when a field actually changed (token rotation,
                 # email/username edit).
-                if all(k in user_data for k in required_keys):
+                #
+                # Updating an existing row needs user_id + access_token +
+                # email only: agentname is the username of a NEW row and
+                # nothing else.  The sign-in writer (setAuthFromOtp) posts
+                # those three and waits for this answer before it stores the
+                # token, so the row already holds the token when the page
+                # first sends it to the social API.  Before, the first post
+                # after a sign-in carried no agentname and bound nothing; the
+                # page's first calls got 401 and the page deleted the token.
+                update_keys = ['user_id', 'access_token', 'email']
+                if all(k in user_data for k in update_keys):
                     try:
                         from integrations.social.models import User, db_session
                         cloud_user_id = str(user_data['user_id'])
                         cloud_email = user_data['email']
                         cloud_token = user_data['access_token']
-                        cloud_username = user_data['agentname']
+                        cloud_username = user_data.get('agentname')
                         with db_session() as _db:
                             existing = (
                                 _db.query(User).filter(User.id == cloud_user_id).first()
                                 or _db.query(User).filter(User.email == cloud_email).first()
                             )
-                            if existing is None:
+                            if existing is None and not cloud_username:
+                                # A new row needs a username; the page's
+                                # mirror posts agentname once the agent
+                                # has loaded, and that post creates it.
+                                logger.info(
+                                    "Cloud user not in local DB yet; created "
+                                    "on the post that carries agentname: "
+                                    f"id={cloud_user_id}")
+                            elif existing is None:
                                 _db.add(User(
                                     id=cloud_user_id,
                                     username=cloud_username,

@@ -329,8 +329,10 @@ const OtpAuthModal = ({
           // guest_* removeItem block (lines 308-354 pre-migration).
           // Encryption + key ordering + event dispatch + mutual-
           // exclusion clearing now live in useAuthSession.setAuthFromOtp
-          // — one boundary, one set of jest cases.
-          setAuthFromOtp({
+          // — one boundary, one set of jest cases.  Awaited: it tells the
+          // desktop the token before storing it, and nothing below may
+          // run (migrate, close, navigate) until the token is stored.
+          await setAuthFromOtp({
             access_token: accessToken,
             user_id: userId,
             email_address: emailAddress,

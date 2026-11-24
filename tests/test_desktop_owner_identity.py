@@ -864,3 +864,39 @@ def test_one_guard_is_the_home_of_the_phone_refusal():
     for fn in fns.values():
         assert 'is_admitted_device' not in ast.unparse(fn), fn.name
     assert "This desktop's sign-in is managed" not in source
+
+
+# 2026-11-24: an OTP sign-in posts {user_id, access_token, email} with no
+# agentname (the page has not loaded the agent's name yet).  The sync to the
+# users table needed all four keys, so that post bound nothing; the page's
+# first calls with the new token got 401 from the social API and the page
+# deleted the token (twice that day).  Updating an existing row needs only
+# the three; agentname is the username of a NEW row and nothing else.
+
+def test_the_sign_in_post_binds_the_new_token_to_the_existing_row(
+        fake_home, gi, clean_owner_env, users_table):
+    """RED before the fix: the row kept the old login."""
+    store, login_of = users_table
+    store('10202', 'old-login')
+    _post_to_set_storage({'user_id': '10202', 'access_token': 'kong-new',
+                          'email': '10202@example.com'})
+    assert login_of('10202') == 'kong-new'
+    # The very lookup the social API makes for an opaque cloud token
+    # (HARTOS integrations/social/auth.py, User.api_token == token).
+    import importlib
+    models = importlib.import_module('integrations.social.models')
+    with models.db_session(commit=False) as s:
+        row = s.query(models.User).filter(models.User.api_token == 'kong-new').first()
+        assert row is not None and row.id == '10202'
+
+
+def test_the_sign_in_post_makes_no_new_row_without_agentname(
+        fake_home, gi, clean_owner_env, users_table):
+    """A new row needs a username; the post that carries agentname makes it."""
+    _store, login_of = users_table
+    _post_to_set_storage({'user_id': '777', 'access_token': 'kong-new',
+                          'email': '777@example.com'})
+    assert login_of('777') == 'NO ROW'
+    _post_to_set_storage({'agentname': 'Nunba', 'user_id': '777',
+                          'access_token': 'kong-new', 'email': '777@example.com'})
+    assert login_of('777') == 'kong-new'

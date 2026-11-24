@@ -65,6 +65,7 @@
  */
 import {decrypt, encrypt} from '../utils/encryption';
 
+import axios from 'axios';
 import {useEffect, useState, useCallback} from 'react';
 
 
@@ -338,6 +339,26 @@ export function setSessionPhone(phone) {
 }
 
 /**
+ * postDesktopSignInRecord — tell this desktop who is signed in.
+ *
+ * The one poster of the desktop's sign-in record (/api/storage/set, the
+ * same route useStorageSync reads and writes).  Plain axios, not the
+ * shared API clients: those delete the tab's token on any 401 and show
+ * the "Session expired" banner, and a LAN browser or the hevolve.ai web
+ * is refused here by design.  The 3 s timeout bounds the wait.
+ *
+ * Resolves true when the desktop answered 2xx, false on anything else;
+ * it never rejects, so a caller can always go on.
+ */
+export function postDesktopSignInRecord(body) {
+  // Started inside a promise so a throw while sending (no adapter, a
+  // stubbed client) also resolves false instead of breaking the sign-in.
+  return Promise.resolve()
+    .then(() => axios.post('/api/storage/set', body, {timeout: 3000}))
+    .then(() => true, () => false);
+}
+
+/**
  * setAuthFromOtp — completes a successful Kong OTP verify.
  * Replaces the localStorage block in OtpAuthModal.js:316-336.
  *
@@ -346,8 +367,14 @@ export function setSessionPhone(phone) {
  * never sees raw cloud PII at rest.  Clears any prior guest_* and
  * pending_cloud_* sentinels so the auto-guest-register useEffect
  * skips and the partial-state hint disappears.
+ *
+ * Async: the desktop is told the new token BEFORE the tab stores it.
+ * The page's first calls with a new token go to the desktop's social
+ * API, which knows a cloud token only once this record is in its users
+ * table; storing first lost that race and the 401 deleted the token
+ * (2026-11-24, twice).  A refused or slow post never blocks the sign-in.
  */
-export function setAuthFromOtp(payload) {
+export async function setAuthFromOtp(payload) {
   if (!payload || !payload.access_token || !payload.user_id) {
     throw new Error('setAuthFromOtp: payload must include access_token + user_id');
   }
@@ -359,6 +386,12 @@ export function setAuthFromOtp(payload) {
     expires_in,
     phone_number,
   } = payload;
+
+  const record = {user_id: String(user_id), access_token: String(access_token)};
+  if (email_address && !['undefined', 'null'].includes(String(email_address))) {
+    record.email = String(email_address);
+  }
+  await postDesktopSignInRecord(record);
 
   localStorage.setItem('access_token', String(access_token));
   if (expires_in != null) {

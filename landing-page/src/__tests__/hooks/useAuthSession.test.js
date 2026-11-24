@@ -44,6 +44,14 @@ jest.mock('../../services/socialApi', () => ({
   chatApi: {post: jest.fn(() => Promise.resolve({}))},
 }));
 
+// setAuthFromOtp tells the desktop the new token through plain axios
+// BEFORE it stores it; the mock answers 200 unless a test says otherwise.
+jest.mock('axios', () => ({
+  __esModule: true,
+  default: {post: jest.fn(() => Promise.resolve({status: 200, data: {}}))},
+}));
+const axios = require('axios').default;
+
 const useAuthSession = require('../../hooks/useAuthSession').default;
 const {
   readAuthSession,
@@ -283,11 +291,11 @@ describe('useAuthSession — hook reactivity', () => {
 // ── Phase 4 — writer surface ───────────────────────────────────────
 describe('writers — Phase 4 centralised mutation surface', () => {
   describe('setAuthFromOtp', () => {
-    test('writes encrypted user_id + email + refresh_token, raw access_token, fires nunba:auth_changed', () => {
+    test('writes encrypted user_id + email + refresh_token, raw access_token, fires nunba:auth_changed', async () => {
       const handler = jest.fn();
       window.addEventListener('nunba:auth_changed', handler);
       try {
-        const next = setAuthFromOtp({
+        const next = await setAuthFromOtp({
           access_token: 'kong-bearer-xyz',
           user_id: 10202,
           email_address: 'Sales@hertzai.com',
@@ -311,14 +319,14 @@ describe('writers — Phase 4 centralised mutation surface', () => {
       }
     });
 
-    test('clears prior guest_* AND pending_cloud_* sentinels (mutual exclusion)', () => {
+    test('clears prior guest_* AND pending_cloud_* sentinels (mutual exclusion)', async () => {
       localStorage.setItem('guest_mode', 'true');
       localStorage.setItem('guest_user_id', 'old-guest');
       localStorage.setItem('guest_name_verified', 'true');
       localStorage.setItem('pending_cloud_user_id', '10202');
       localStorage.setItem('pending_cloud_email', 'Sales@hertzai.com');
 
-      setAuthFromOtp({
+      await setAuthFromOtp({
         access_token: 'tok',
         user_id: 10202,
         email_address: 'Sales@hertzai.com',
@@ -331,10 +339,88 @@ describe('writers — Phase 4 centralised mutation surface', () => {
       expect(localStorage.getItem('pending_cloud_email')).toBeNull();
     });
 
-    test('throws when payload missing access_token or user_id', () => {
-      expect(() => setAuthFromOtp({})).toThrow(/access_token/);
-      expect(() => setAuthFromOtp({access_token: 'x'})).toThrow(/user_id/);
-      expect(() => setAuthFromOtp({user_id: 1})).toThrow(/access_token/);
+    test('rejects when payload missing access_token or user_id', async () => {
+      axios.post.mockClear();
+      await expect(setAuthFromOtp({})).rejects.toThrow(/access_token/);
+      await expect(setAuthFromOtp({access_token: 'x'})).rejects.toThrow(/user_id/);
+      await expect(setAuthFromOtp({user_id: 1})).rejects.toThrow(/access_token/);
+      expect(axios.post).not.toHaveBeenCalled();
+    });
+  });
+
+  // 2026-11-24: the page sent a new Kong token to the desktop's social API
+  // before the desktop had stored it; the API answered 401 and the page's
+  // 401 handler deleted the token, twice in one day.  The sign-in now tells
+  // the desktop first and stores the token after.
+  describe('setAuthFromOtp tells the desktop the token before storing it', () => {
+    beforeEach(() => axios.post.mockClear());
+
+    test('access_token is not stored until the desktop post has answered', async () => {
+      let answer;
+      axios.post.mockImplementationOnce(() => new Promise((r) => { answer = r; }));
+      const pending = setAuthFromOtp({
+        access_token: 'kong-new', user_id: 10202, email_address: 'Sales@hertzai.com',
+      });
+      await Promise.resolve();
+      expect(localStorage.getItem('access_token')).toBeNull();
+      answer({status: 200, data: {}});
+      await pending;
+      expect(localStorage.getItem('access_token')).toBe('kong-new');
+    });
+
+    test('the post carries the token, id and email in its body, plain axios, 3 s bound', async () => {
+      await setAuthFromOtp({
+        access_token: 'kong-new', user_id: 10202, email_address: 'Sales@hertzai.com',
+      });
+      expect(axios.post).toHaveBeenCalledTimes(1);
+      const [url, body, config] = axios.post.mock.calls[0];
+      expect(url).toBe('/api/storage/set');
+      expect(body).toEqual({
+        user_id: '10202', access_token: 'kong-new', email: 'Sales@hertzai.com',
+      });
+      expect(config).toEqual({timeout: 3000});
+      // Not the shared client: its 401 handler would delete the tab's token.
+      expect(require('../../services/socialApi').chatApi.post).not.toHaveBeenCalled();
+    });
+
+    test('an email the verify answer did not carry is not posted as text', async () => {
+      await setAuthFromOtp({access_token: 'kong-new', user_id: 10202, email_address: 'undefined'});
+      expect(axios.post.mock.calls[0][1]).toEqual({user_id: '10202', access_token: 'kong-new'});
+    });
+
+    test.each([
+      ['a 404 (the hevolve.ai web)', {response: {status: 404}}],
+      ['a 401 (a LAN browser)', {response: {status: 401}}],
+      ['a network error', new Error('Network Error')],
+      ['the 3 s timeout', Object.assign(new Error('timeout of 3000ms exceeded'), {code: 'ECONNABORTED'})],
+    ])('the sign-in still completes after %s', async (_label, failure) => {
+      axios.post.mockImplementationOnce(() => Promise.reject(failure));
+      const next = await setAuthFromOtp({
+        access_token: 'kong-new', user_id: 10202, email_address: 'Sales@hertzai.com',
+      });
+      expect(localStorage.getItem('access_token')).toBe('kong-new');
+      expect(next.status).toBe('cloud');
+    });
+
+    test('in a guest tab a refused post still leaves the new account signed in, with no guest token', async () => {
+      localStorage.setItem('access_token', 'guest-jwt-old');
+      localStorage.setItem('guest_mode', 'true');
+      localStorage.setItem('guest_user_id', 'g_02d1');
+      const expired = jest.fn();
+      window.addEventListener('auth:expired', expired);
+      try {
+        axios.post.mockImplementationOnce(() => Promise.reject({response: {status: 401}}));
+        await setAuthFromOtp({
+          access_token: 'kong-new', user_id: 10202, email_address: 'Sales@hertzai.com',
+        });
+        expect(expired).not.toHaveBeenCalled();
+        expect(localStorage.getItem('access_token')).toBe('kong-new');
+        expect(localStorage.getItem('guest_mode')).toBeNull();
+        expect(localStorage.getItem('guest_user_id')).toBeNull();
+        expect(readAuthSession().status).toBe('cloud');
+      } finally {
+        window.removeEventListener('auth:expired', expired);
+      }
     });
   });
 
@@ -533,12 +619,12 @@ describe('writers — Phase 4 centralised mutation surface', () => {
   });
 
   describe('writer + hook integration — events propagate to subscribed component', () => {
-    test('setAuthFromOtp triggers a hook re-render via nunba:auth_changed', () => {
+    test('setAuthFromOtp triggers a hook re-render via nunba:auth_changed', async () => {
       const {result} = renderHook(() => useAuthSession());
       expect(result.current.status).toBe('unauthenticated');
 
-      act(() => {
-        setAuthFromOtp({
+      await act(async () => {
+        await setAuthFromOtp({
           access_token: 'live-tok',
           user_id: 10202,
           email_address: 'Sales@hertzai.com',
@@ -665,8 +751,8 @@ describe('the sign-in phone the checkout needs', () => {
 
   beforeEach(() => localStorage.clear());
 
-  test('setAuthFromOtp keeps the phone encrypted, and readSessionPhone gives it back', () => {
-    setAuthFromOtp({
+  test('setAuthFromOtp keeps the phone encrypted, and readSessionPhone gives it back', async () => {
+    await setAuthFromOtp({
       access_token: 'kong-bearer-xyz',
       user_id: 10202,
       phone_number: '9000000001',
@@ -675,15 +761,15 @@ describe('the sign-in phone the checkout needs', () => {
     expect(readSessionPhone()).toBe('9000000001');
   });
 
-  test('a sign-in whose response has no phone removes one left by an earlier account', () => {
+  test('a sign-in whose response has no phone removes one left by an earlier account', async () => {
     localStorage.setItem('phone_number', encrypt('9000000099'));
-    setAuthFromOtp({access_token: 'kong-bearer-xyz', user_id: 10202});
+    await setAuthFromOtp({access_token: 'kong-bearer-xyz', user_id: 10202});
     expect(localStorage.getItem('phone_number')).toBeNull();
     expect(readSessionPhone()).toBeNull();
   });
 
-  test('clearAuth removes the phone with the rest of the sign-in', () => {
-    setAuthFromOtp({access_token: 'kong-bearer-xyz', user_id: 10202});
+  test('clearAuth removes the phone with the rest of the sign-in', async () => {
+    await setAuthFromOtp({access_token: 'kong-bearer-xyz', user_id: 10202});
     // Seeded directly, so this fails on a clearAuth that forgets the phone key.
     localStorage.setItem('phone_number', encrypt('9000000001'));
     clearAuth();
