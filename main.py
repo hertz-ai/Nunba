@@ -6772,9 +6772,13 @@ def start_background_services():
                     # verified_synth handshake speaks: the engine picks the
                     # voice by the text's script, so "." was spoken by the
                     # English voice whatever language was asked for.
+                    # warm_up=True: nobody hears it, so it never changes
+                    # the languages on file or their order (review of
+                    # a069849a: ['ta'] became ['en', 'ta'] at boot).
                     try:
                         engine.synthesize(_pick_test_phrase(_backend, _lang),
-                                          output_path=_test_path, language=_lang)
+                                          output_path=_test_path, language=_lang,
+                                          warm_up=True)
                         if os.path.exists(_test_path):
                             os.unlink(_test_path)
                         logging.info(f"TTS warm-up: engine pre-loaded (lang={_lang})")

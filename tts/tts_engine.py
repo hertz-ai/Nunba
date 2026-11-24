@@ -755,11 +755,11 @@ def _runs_on_cpu(backend: str) -> bool:
     CPU: device GPU_PREFERRED ("CPU works, GPU faster") or CPU_ONLY.  Free
     VRAM then decides where such an engine runs, never whether it speaks.
     A GPU-only engine, or one the registry does not name, answers False and
-    keeps every VRAM check."""
+    keeps every VRAM check.  Piper, bundled and CPU-only, answers True."""
     key = _BACKEND_TO_REGISTRY_KEY.get(backend)
     spec = _get_engine_registry().get(key) if key else None
     if spec is None:
-        return False
+        return backend == BACKEND_PIPER
     try:
         from integrations.channels.media.tts_router import TTSDevice
     except Exception:
@@ -2528,7 +2528,8 @@ class TTSEngine:
         one the voice spoke, the reply's own script, not the person's UI
         setting: on the 23 Nov walk the speech agent's Tamil replies came in
         labelled 'en'.  The file is written only when the newest language
-        changes."""
+        changes.  A warm-up line (synthesize(warm_up=True)) is not
+        recorded: nobody heard it (review of a069849a)."""
         lang = _normalize_lang(language)
         if self._spoken_languages[-1:] == [lang]:
             return
@@ -3192,7 +3193,7 @@ class TTSEngine:
             return None
 
     def _synthesize_multilingual(self, segments, output_path=None, voice=None,
-                                  speed=1.0, **kwargs):
+                                  speed=1.0, *, warm_up=False, **kwargs):
         """Synthesize multi-type segments: speech, music, singing, lyrics.
 
         Segments from language_segmenter.segment():
@@ -3242,7 +3243,8 @@ class TTSEngine:
                 result = None
                 if seg_type == 'speech':
                     result = self._synth_speech_segment(
-                        text, seg.get('lang', 'en'), tmp.name, **kwargs)
+                        text, seg.get('lang', 'en'), tmp.name,
+                        warm_up=warm_up, **kwargs)
                 elif seg_type == 'music':
                     result = self._synth_music_segment(
                         text, seg.get('genre', ''), seg.get('duration', 30),
@@ -3302,7 +3304,8 @@ class TTSEngine:
             logger.error(f"WAV concatenation failed: {e}")
             return wav_parts[0] if wav_parts else None
 
-    def _synth_speech_segment(self, text, lang, out_path, **kwargs):
+    def _synth_speech_segment(self, text, lang, out_path, *, warm_up=False,
+                              **kwargs):
         """Synthesize one speech segment with language-appropriate TTS engine.
 
         The selected engine speaks first, through ``_speak_with_active_engine``,
@@ -3350,7 +3353,7 @@ class TTSEngine:
         # whole line in synthesize().
         spoken = self._speak_with_active_engine(
             text, out_path, kwargs.pop('voice', None), lang, **kwargs)
-        if spoken:
+        if spoken and not warm_up:
             self._record_spoken_language(lang)
         return spoken
 
@@ -3574,9 +3577,15 @@ class TTSEngine:
                    voice: str | None = None,
                    speed: float | None = None,
                    language: str | None = None,
+                   *,
+                   warm_up: bool = False,
                    **kwargs) -> str | None:
         """
         Synthesize text to speech.
+
+        ``warm_up=True`` marks a line nobody hears (the boot warm-up's
+        greeting): it starts the voice like any line but is not recorded
+        in ``spoken_languages``.
 
         When ``speed`` is left as None (the default), the active
         TTS_SPEED_PROFILE multiplier is applied — fast/balanced/
@@ -3623,7 +3632,8 @@ class TTSEngine:
             if (has_media or has_multi_lang or len(segments) > 1
                     or detected_lang_mismatch):
                 return self._synthesize_multilingual(
-                    segments, output_path, voice, speed, **kwargs)
+                    segments, output_path, voice, speed, warm_up=warm_up,
+                    **kwargs)
         except Exception:
             pass  # Fallback to single-language path
 
@@ -3656,7 +3666,7 @@ class TTSEngine:
         language = self._language
         spoken = self._speak_with_active_engine(
             text, output_path, voice, language, speed=speed, **kwargs)
-        if spoken:
+        if spoken and not warm_up:
             self._record_spoken_language(language)
         return spoken
 

@@ -269,8 +269,8 @@ def boot(monkeypatch):
     monkeypatch.delenv('NUNBA_DISABLE_TTS', raising=False)
     code = _warmup_source()
 
-    def run(*, preferred='en', spoken=(), free_gb=1.4, llm_port=8082, busy=False):
-        engine = _BootEngine(spoken, VOICES)
+    def run(*, preferred='en', spoken=(), free_gb=1.4, llm_port=8082, busy=False,
+            engine=None):
         polled = []
 
         def _module(name, **attrs):
@@ -280,10 +280,17 @@ def boot(monkeypatch):
 
         _module('tts._torch_probe', check_cuda_available=lambda: False)
         _module('core.user_lang', get_preferred_lang=lambda: preferred)
-        _module('tts.tts_engine',
-                TTSEngine=types.SimpleNamespace(_import_check_cache={}),
-                get_tts_engine=lambda: engine,
-                _runs_on_cpu=lambda backend: backend in ON_CPU)
+        if engine is None:
+            engine = _BootEngine(spoken, VOICES)
+            _module('tts.tts_engine',
+                    TTSEngine=types.SimpleNamespace(_import_check_cache={}),
+                    get_tts_engine=lambda: engine,
+                    _runs_on_cpu=lambda backend: backend in ON_CPU)
+        else:
+            # A real TTSEngine (the `speech` fixture's): its synthesize, its
+            # state file and the real _runs_on_cpu.
+            from tts import tts_engine as real
+            monkeypatch.setattr(real, 'get_tts_engine', lambda: engine)
         _module('tts.package_installer',
                 should_install_gpu_ctranslate2=lambda: False,
                 has_nvidia_gpu=lambda: False, is_cuda_torch=lambda: True,
@@ -291,7 +298,9 @@ def boot(monkeypatch):
         _module('llama.llama_config',
                 get_llama_endpoint=lambda: f'http://localhost:{llm_port}')
         _module('integrations.service_tools.vram_manager',
-                vram_manager=types.SimpleNamespace(get_free_vram=lambda: free_gb))
+                vram_manager=types.SimpleNamespace(
+                    get_free_vram=lambda: free_gb,
+                    suggest_offload_mode=lambda tool: 'gpu'))
         _module('integrations.agent_engine.dispatch',
                 is_user_recently_active=lambda: busy)
 
@@ -364,3 +373,49 @@ def test_a_voice_that_needs_the_gpu_is_started_only_with_room_there(boot):
 def test_nothing_is_pre_loaded_while_the_person_is_chatting(boot):
     engine, _ = boot(preferred='en', spoken=['ta'], free_gb=6.0, busy=True)
     assert engine.said == []
+
+
+# ── The warm-up with the real engine: nobody heard its lines ───────────
+
+@pytest.mark.parametrize('spoken', [['ta'], ['hi', 'ta']])
+def test_the_warm_up_leaves_the_languages_spoken_as_they_were(speech, boot, spoken):
+    """Only a line spoken to a person counts as spoken.  The warm-up's own
+    greetings did count (review of a069849a): with ['ta'] on file the file
+    read ['en', 'ta'] after boot, the person's UI language taking a slot,
+    and a voice skipped for want of GPU could move which language was
+    newest.  A Tamil-at-home child's agent must keep Tamil as its language."""
+    lines = {'ta': TAMIL, 'hi': HINDI}
+    for lang in spoken:
+        assert speech.say(lines[lang])
+    assert speech.on_file() == spoken
+    # The next boot: the engine reads the list back from the file.
+    speech.eng._spoken_languages = []
+    speech.eng._load_persisted_demotions()
+    assert speech.eng.last_spoken_languages() == spoken
+    del speech.said[:]
+
+    boot(engine=speech.eng, preferred='en', free_gb=6.0)
+
+    mod = speech.mod
+    # The warm-up did start each voice, the one spoken last last ...
+    assert speech.said == ([(mod.BACKEND_PIPER, 'en')]
+                           + [(mod.BACKEND_MMS_TTS, lang) for lang in spoken]), speech.said
+    # ... and the languages spoken are the ones on file before, in order.
+    assert speech.eng.last_spoken_languages() == spoken
+    assert speech.on_file() == spoken, (
+        f"tts_state.json spoken_languages is {speech.on_file()!r} after the "
+        f"warm-up; it was {spoken!r}")
+    assert speech.next_boot().last_spoken_languages() == spoken
+
+
+def test_piper_is_warmed_as_a_cpu_voice_on_a_full_gpu(speech, boot, caplog):
+    """Piper is bundled and runs only on the CPU, yet the real _runs_on_cpu
+    answered False for it, so the warm-up logged "piper (en) needs the GPU"
+    and skipped it on a full GPU (review of a069849a)."""
+    caplog.set_level(logging.INFO)
+    boot(engine=speech.eng, preferred='en', free_gb=1.4)
+    _no_warmup_failure(caplog)
+    assert speech.said == [(speech.mod.BACKEND_PIPER, 'en')], speech.said
+    gpu_lines = [r.getMessage() for r in caplog.records
+                 if 'needs the GPU' in r.getMessage()]
+    assert not gpu_lines, gpu_lines
