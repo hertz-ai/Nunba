@@ -45,6 +45,10 @@
  *       user_id: string | null,        // had user_id+email but token=null
  *       email:   string | null,
  *     },
+ *     account: {                       // the cloud account whose keys are
+ *       email: string | null,          // still here (signed in, or its token
+ *       phone: string | null,          // lost), or null when there is none
+ *     } | null,
  *     isAuthenticated: boolean,        // derived: status in {'cloud','guest'}
  *   }
  *
@@ -52,7 +56,10 @@
  *   'cloud'           — cloud bearer present AND decrypts/identity resolves
  *   'guest'           — guest_mode='true' AND guest_user_id present
  *   'pending'         — useStorageSync wrote pending_cloud_* sentinel
- *                       (user_data.json has user_id+email but no token)
+ *                       (user_data.json has user_id+email but no token),
+ *                       or a cloud user_id that decrypts is here with no
+ *                       token (a 401 or an expired sign-in): the person
+ *                       signs in again; the page is never the guest then
  *   'unauthenticated' — nothing usable in localStorage
  *
  * IMPORTANT — READ-ONLY:
@@ -134,7 +141,7 @@ export function readAuthSession() {
   void expire_token_raw;
 
   // Status resolution — deterministic order, first-match wins:
-  //   cloud  > guest > pending > unauthenticated
+  //   cloud  > pending (cloud user_id, no token) > guest > pending > unauthenticated
   let status = 'unauthenticated';
   let user_id = null;
   let email = null;
@@ -142,6 +149,16 @@ export function readAuthSession() {
 
   if (access_token && cloud_user_id) {
     status = 'cloud';
+    user_id = cloud_user_id;
+    email = cloud_email;
+    display_name = hart_name || guest_name || cloud_email || null;
+  } else if (cloud_user_id) {
+    // A cloud account with no token (a 401 removed it, or it expired) is
+    // signed out, not a guest.  guest_mode and a guest_user_id are almost
+    // always here too (the HART seal and the desktop's hardware guest id
+    // set them), and reading that as 'guest' made the page post the guest
+    // id, which replaced the account as the desktop's owner (2026-11-24).
+    status = 'pending';
     user_id = cloud_user_id;
     email = cloud_email;
     display_name = hart_name || guest_name || cloud_email || null;
@@ -183,6 +200,17 @@ export function readAuthSession() {
   const hartos_local_token =
     status === 'guest' ? (access_token || null) : null;
 
+  // The account whose keys are still here, so the login dialog can name
+  // it.  A 401 keeps the encrypted email and phone; the pending state has
+  // only the email.  An email the sign-in answer did not carry was stored
+  // as the text 'undefined' and is not an email.
+  const account_email = [cloud_email, pending_cloud_email].find(
+    (v) => v && !['undefined', 'null'].includes(v)) || null;
+  const account_phone = readSessionPhone();
+  const account = (account_email || account_phone)
+    ? {email: account_email, phone: account_phone}
+    : null;
+
   return {
     status,
     identity: {
@@ -208,6 +236,7 @@ export function readAuthSession() {
       user_id: pending_cloud_user_id,
       email: pending_cloud_email,
     },
+    account,
     isAuthenticated: status === 'cloud' || status === 'guest',
 
     // Raw / mirror fields surfaced for consumers that historically
@@ -246,7 +275,9 @@ function _sessionEqual(a, b) {
     a.hart.emoji === b.hart.emoji &&
     a.hart.language === b.hart.language &&
     a.pending_cloud.user_id === b.pending_cloud.user_id &&
-    a.pending_cloud.email === b.pending_cloud.email
+    a.pending_cloud.email === b.pending_cloud.email &&
+    a.account?.email === b.account?.email &&
+    a.account?.phone === b.account?.phone
   );
 }
 
@@ -472,8 +503,13 @@ export function setGuestIdentity(payload) {
  * /api/storage/set, '' = clear).  That record decides who owns the
  * desktop, and the server keeps a signed-in user when a page posts the
  * 'guest' placeholder, so sign-out is the one place that clears it.
- * Sent without waiting and without the error banner; the page signs out
- * even if the desktop is down.
+ * Sent through postDesktopSignInRecord (plain axios, no error banner).
+ *
+ * The page's keys go at once, so the page signs out even if the desktop
+ * is down.  Returns a promise of the session that resolves once the
+ * desktop has answered the clear (or the 3 s bound passed); it never
+ * rejects.  The guest press in the login dialog waits for it, so the
+ * guest is written only after the desktop's record is empty.
  */
 export function clearAuth() {
   const AUTH_KEYS = [
@@ -497,21 +533,15 @@ export function clearAuth() {
   // logout per the 4-layer identity model (HART node + cloud account
   // co-exist; logging out of cloud doesn't dissolve the HART node).
 
-  // Lazy require: socialApi -> axiosFactory -> useAuthSession is a cycle
-  // (same as silentGuestRefresh below).
-  try {
-    const {chatApi} = require('../services/socialApi');
-    chatApi.post('/api/storage/set',
-      {user_id: '', access_token: '', email: ''},
-      {silentError: true}).catch(() => {});
-  } catch (_e) { /* module not loaded */ }
+  const cleared = postDesktopSignInRecord(
+    {user_id: '', access_token: '', email: ''});
 
   try {
     window.dispatchEvent(new CustomEvent('nunba:auth_changed', {
       detail: {source: 'logout'},
     }));
   } catch (_e) { /* same-origin */ }
-  return readAuthSession();
+  return cleared.then(() => readAuthSession());
 }
 
 /**
@@ -561,10 +591,17 @@ export function clearAccessTokenForExpiry() {
 }
 
 /**
- * canRegisterGuestForSeal — may the HART ceremony mint a guest account now?
+ * canRegisterGuestForSeal: may a guest account be minted now?
+ *
+ * Guards every silent guest mint: the HART ceremony asks it, and so does
+ * silentGuestRefresh, the one entry point of every other silent caller
+ * (SocialContext's expired-token mount, guest restore and 401 handler,
+ * Demopage's mount auto-refresh).  A guest is minted over a cloud account
+ * only by the person's own press in the login dialog, which signs the
+ * account out first.
  *
  * Yes only when there is no token AND no cloud identity left behind.  Two
- * ways a cloud user reaches the ceremony without a token:
+ * ways a cloud user reaches a mint without a token:
  *   - useStorageSync writes `pending_cloud_user_id` when user_data.json has a
  *     user_id but no access_token, so that nothing creates "a fresh HART guest
  *     over the cloud identity"; Demopage's auto-refresh honours it.
@@ -593,10 +630,14 @@ export function canRegisterGuestForSeal() {
  * silentGuestRefresh — fetch a fresh guest JWT without nuking the session.
  *
  * Single canonical entry-point for the guest-token-refresh flow.
- * Replaces three parallel call sites that each open-coded the same dance:
- *   - Demopage.js:254-287    auto-refresh useEffect (mount, token missing)
- *   - Demopage.js:3719-3743  handleSend 401 helper (#207 mid-chat recovery)
- *   - SocialContext.js:261, 309   handleExpiry / setupCurrentUser
+ * Replaces the parallel call sites that each open-coded the same dance:
+ *   - Demopage.js:396        auto-refresh useEffect (mount, token missing)
+ *   - SocialContext.js       expired-token mount, guest restore, handleExpiry
+ *
+ * Never mints over a cloud account: when canRegisterGuestForSeal refuses
+ * (a token, or a cloud user_id or pending_cloud_user_id left behind) it
+ * returns null and writes nothing, so an expired account shows the sign-in
+ * screen instead of quietly becoming the guest (2026-11-24).
  *
  * Path:
  *   1. Read guest_name + device_id from localStorage (+ getStableDeviceId
@@ -620,12 +661,14 @@ export function canRegisterGuestForSeal() {
  * pattern Phase 5 axiosFactory.js:23-37 uses.
  *
  * Returns null and does NOT throw on:
+ *   - A cloud account's keys present (canRegisterGuestForSeal refuses)
  *   - Guest mode not active (no guest_name)
  *   - Network failure
  *   - Backend returning a non-OK status
  * Callers should treat null as "couldn't refresh — fall back to login UX".
  */
 export async function silentGuestRefresh({ guestName: explicitName } = {}) {
+  if (!canRegisterGuestForSeal()) return null;
   // `guestName` is for the HART ceremony, which seals BEFORE guest_name is
   // in localStorage (applyHartSeal back-fills it afterwards): it registers
   // the guest under the name being sealed so the seal can carry a bearer.

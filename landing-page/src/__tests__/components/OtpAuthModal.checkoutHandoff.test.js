@@ -15,6 +15,9 @@ jest.mock('uuid', () => ({v4: () => 'test-uuid-1234'}));
 jest.mock('libphonenumber-js', () => ({
   getCountries: () => ['IN', 'US', 'GB'],
   getCountryCallingCode: (code) => ({IN: '91', US: '1', GB: '44'})[code] || '0',
+  // The real parser: "Sign in again" splits the account's phone with it.
+  parsePhoneNumberFromString:
+    jest.requireActual('libphonenumber-js').parsePhoneNumberFromString,
 }));
 jest.mock(
   '../../utils/encryption',
@@ -158,5 +161,64 @@ describe('OtpAuthModal: nothing moves on until the desktop has the new token', (
     );
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/agents/Hevolve'));
     expect(onClose).toHaveBeenCalled();
+  });
+});
+
+// 2026-11-24: after a 401 the guest screen offered only the guest.  It now
+// offers "Sign in again as <account>", which opens this OTP screen filled in
+// with the account's phone (split into country code and number) or email,
+// so the person only presses Get OTP.
+describe('OtpAuthModal: "Sign in again" fills in the account it names', () => {
+  // What a 401 leaves of a sign-in, beside the guest keys of this desktop.
+  const seedAfter401 = ({phone, email}) => {
+    localStorage.setItem('guest_mode', 'true');
+    localStorage.setItem('guest_user_id', 'hw-guest-1');
+    localStorage.setItem('guest_name', 'Radiant.Green.buildra');
+    localStorage.setItem('user_id', encryptionMock.encrypt('42'));
+    if (email) localStorage.setItem('email_address', encryptionMock.encrypt(email));
+    if (phone) localStorage.setItem('phone_number', encryptionMock.encrypt(phone));
+  };
+  const openGuestScreen = () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce({ok: true, json: async () => ({})});
+    render(
+      <MemoryRouter>
+        <OtpAuthModal isOpen={true} onClose={jest.fn()} forceGuestMode={true} />
+      </MemoryRouter>
+    );
+  };
+  const sentLogin = () => JSON.parse(global.fetch.mock.calls[0][1].body);
+
+  test.each([
+    ['with its country code', '+919000000001', '+91 ••••• 0001', '9000000001', '+919000000001'],
+    ['as a bare 10-digit number', '9000000001', '+91 ••••• 0001', '9000000001', '+919000000001'],
+    ['from another country', '+14155550123', '+1 ••••• 0123', '4155550123', '+14155550123'],
+  ])('a phone stored %s', (_label, stored, masked, national, sent) => {
+    seedAfter401({phone: stored, email: 'someone@example.com'});
+    openGuestScreen();
+    // The button names the email, with the phone masked to its last 4.
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: `Sign in again as someone@example.com (${masked})`,
+      })
+    );
+    expect(screen.getByText('User Sign in')).toBeInTheDocument();
+    expect(document.querySelector('input[type="tel"]').value).toBe(national);
+    fireEvent.click(screen.getByRole('button', {name: /get otp/i}));
+    expect(sentLogin()).toEqual({phone_number: sent});
+  });
+
+  test('an account with no phone opens the email tab with the email filled in', () => {
+    seedAfter401({email: 'someone@example.com'});
+    openGuestScreen();
+    fireEvent.click(
+      screen.getByRole('button', {name: 'Sign in again as someone@example.com'})
+    );
+    expect(document.querySelector('input[type="email"]').value).toBe(
+      'someone@example.com'
+    );
+    fireEvent.click(screen.getByRole('button', {name: /get otp/i}));
+    expect(sentLogin()).toEqual({phone_number: 'someone@example.com'});
   });
 });

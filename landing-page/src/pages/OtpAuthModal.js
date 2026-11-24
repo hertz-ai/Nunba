@@ -4,7 +4,11 @@ import {
   AZURE_LOGIN_URL,
   AZURE_OTP_VERIFY_URL,
 } from '../config/apiBase';
-import {setAuthFromOtp, setGuestIdentity} from '../hooks/useAuthSession';
+import useAuthSession, {
+  clearAuth,
+  setAuthFromOtp,
+  setGuestIdentity,
+} from '../hooks/useAuthSession';
 import {agentApi, authApi, chatApi, mailerApi} from '../services/socialApi';
 import {safeReturnPath} from '../utils/checkoutSession';
 import {getStableDeviceId} from '../utils/deviceId';
@@ -12,7 +16,11 @@ import {encrypt} from '../utils/encryption';
 import {logger} from '../utils/logger';
 
 import axios from 'axios';
-import {getCountries, getCountryCallingCode} from 'libphonenumber-js';
+import {
+  getCountries,
+  getCountryCallingCode,
+  parsePhoneNumberFromString,
+} from 'libphonenumber-js';
 import {X, User, ChevronDown, Mail, Phone, Search} from 'lucide-react';
 import {RefreshCw, Wifi, WifiOff} from 'lucide-react';
 import React, {useState, useEffect} from 'react';
@@ -129,6 +137,24 @@ const OtpAuthModal = ({
   // Detect returning guest (name saved from previous session)
   const savedGuestName = localStorage.getItem('guest_name') || '';
   const isReturningGuest = showGuestMode && !!savedGuestName;
+  // The cloud account whose keys are still here (signed in, or its token
+  // lost to a 401), so the guest screen can name it and offer it first.
+  const session = useAuthSession();
+  const account = session.account;
+  // Its phone split into country code and national number; a bare number
+  // is read as the selected country's (India by default).
+  const accountPhone = account?.phone
+    ? parsePhoneNumberFromString(account.phone, countryCode)
+    : null;
+  const maskedPhone = account?.phone
+    ? (accountPhone ? `+${accountPhone.countryCallingCode} ` : '') +
+      `••••• ${account.phone.replace(/\D/g, '').slice(-4)}`
+    : null;
+  const accountName = account ? account.email || maskedPhone : null;
+  const accountLine =
+    account?.email && maskedPhone
+      ? `${account.email} (${maskedPhone})`
+      : accountName;
   const [userNameInput, setUserNameInput] = useState('');
   const [namePrefix, setNamePrefix] = useState(() =>
     generateBaseTwoWordPrefix()
@@ -491,6 +517,10 @@ const OtpAuthModal = ({
     const finalName = guestName.trim();
 
     try {
+      // Over a cloud account the guest press is a sign-out first: the
+      // desktop's record is emptied before any guest is written, so no
+      // guest token sits beside the account's keys (online or offline).
+      if (account) await clearAuth();
       const deviceId = await getStableDeviceId();
 
       // Try backend registration first (persists identity)
@@ -550,8 +580,12 @@ const OtpAuthModal = ({
   const handleReturningGuestLogin = async () => {
     if (isProcessing) return;
     setIsProcessing(true);
+    let deviceId = null;
     try {
-      const deviceId = await getStableDeviceId();
+      // Over a cloud account the guest press is a sign-out first (see
+      // handleGuestLogin).
+      if (account) await clearAuth();
+      deviceId = await getStableDeviceId();
       const res = await authApi.guestRegister({
         guest_name: savedGuestName,
         device_id: deviceId,
@@ -571,12 +605,33 @@ const OtpAuthModal = ({
       // Backend unavailable — just restore localStorage state and continue
       localStorage.setItem('guest_mode', 'true');
       localStorage.setItem('guest_name', savedGuestName);
+      // The sign-out above removed the guest id; the device id stands in,
+      // as in handleGuestLogin's offline fallback, so the page is the guest.
+      if (account && deviceId) localStorage.setItem('guest_user_id', deviceId);
       resetForm();
       onClose();
       navigate('/agents/Hevolve');
     } finally {
       setIsProcessing(false);
     }
+  };
+
+  // "Sign in again as <account>": the phone/email OTP screen, filled in
+  // with the account's phone, or its email when there is no phone.
+  const handleSignInAgain = () => {
+    if (account.phone) {
+      setLoginMethod('phone');
+      if (accountPhone?.country) setCountryCode(accountPhone.country);
+      setPhoneNumber(
+        accountPhone
+          ? String(accountPhone.nationalNumber)
+          : account.phone.replace(/\D/g, '')
+      );
+    } else {
+      setLoginMethod('email');
+      setEmail(account.email);
+    }
+    setManualLoginOverride(true);
   };
 
   const handleGuestRecover = async () => {
@@ -744,6 +799,27 @@ const OtpAuthModal = ({
               <p className="text-sm text-gray-500">
                 Your guest session is ready to continue.
               </p>
+              {account &&
+                (session.status === 'cloud' ? (
+                  <p className="text-sm text-gray-700">
+                    Signed in as {accountName}
+                  </p>
+                ) : (
+                  <>
+                    <button
+                      onClick={handleSignInAgain}
+                      disabled={isOffline || isProcessing}
+                      className="btn-feedback w-full px-4 py-2 border border-blue-500 text-blue-600 rounded hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Sign in again as {accountLine}
+                    </button>
+                    {isOffline && (
+                      <p className="text-xs text-gray-500">
+                        Signing in again needs internet.
+                      </p>
+                    )}
+                  </>
+                ))}
               <button
                 onClick={handleReturningGuestLogin}
                 disabled={isProcessing}
@@ -757,6 +833,10 @@ const OtpAuthModal = ({
                     <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
                     Logging in...
                   </>
+                ) : account ? (
+                  `Sign out ${accountName} and continue as ` +
+                  (savedGuestName.split('.').pop() || savedGuestName) +
+                  ' (guest)'
                 ) : (
                   'Continue as ' +
                   (savedGuestName.split('.').pop() || savedGuestName)
@@ -867,6 +947,8 @@ const OtpAuthModal = ({
                     <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
                     Setting up...
                   </>
+                ) : account ? (
+                  `Sign out ${accountName} and continue as Guest`
                 ) : (
                   'Continue as Guest'
                 )}
