@@ -106,6 +106,15 @@ def tts_engine_under_test(monkeypatch):
         engine, "_can_run_backend",
         lambda backend: backend in runnable,
     )
+    # _select_backend_for_language's first pass takes only voices whose
+    # startup handshake passed (Piper needs only a voice file).  On a fresh
+    # home no handshake ever ran, so English fell to Piper and Chatterbox
+    # Turbo was never pinned: the test depended on the machine's handshake
+    # cache.  Make the runnable voices verified, as on a box that has used them.
+    from tts import tts_handshake as _hs
+    monkeypatch.setattr(_hs, "is_verified_backend",
+                        lambda backend: backend in runnable)
+    monkeypatch.setattr(_hs, "is_known_failed", lambda backend: False)
     # Avoid firing auto-installs against the real network.
     monkeypatch.setattr(
         engine, "_try_auto_install_backend", lambda *a, **kw: None,
