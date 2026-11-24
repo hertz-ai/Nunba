@@ -19,6 +19,8 @@ import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 
+from llama.home_pair import stand_in
+
 logger = logging.getLogger('NunbaLlamaInstaller')
 
 # Minimum llama.cpp build for the Qwen3.5 presets.
@@ -419,11 +421,8 @@ def home_dir() -> Path:
     tests/test_a_test_run_starts_no_model_server.py pins this.
     """
     home = Path.home()
-    person, _, private = os.environ.get('NUNBA_TEST_HOME', '').partition(os.pathsep)
-    if person and private and (os.path.normcase(os.path.abspath(person))
-                               == os.path.normcase(os.path.abspath(str(home)))):
-        return Path(private)
-    return home
+    private = stand_in(os.environ.get('NUNBA_TEST_HOME', ''), home)
+    return Path(private) if private else home
 
 
 # Sibling project model directories to search before re-downloading.

@@ -42,6 +42,7 @@ managed binary and does not boot a model on its own, but it has no hook).
 Standard library only, so importing this module starts nothing.
 """
 import atexit
+import importlib.util
 import os
 import re
 import shutil
@@ -49,6 +50,18 @@ import subprocess
 import sys
 import tempfile
 import time
+
+
+def _home_pair_rule():
+    """llama/home_pair.py's stand_in, the rule home_dir reads NUNBA_TEST_HOME
+    by.  Loaded from its file, so this helper still imports nothing of
+    Nunba's before install() has run."""
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        'llama', 'home_pair.py')
+    spec = importlib.util.spec_from_file_location('_nunba_home_pair', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.stand_in
 
 
 class ModelServerStartRefused(OSError):
@@ -311,13 +324,14 @@ def install():
 
     # Read by llama.llama_installer.home_dir as "<the person's home>
     # <os.pathsep><the folder that stands in for it>", and only as that pair:
-    # anything less is the person's real home.  A run that sets the variable
-    # itself keeps its folder, put in that shape here.  On 24 Nov 2026 a
-    # direct-call driver set it to its folder alone, this kept it as it was,
-    # and llama saved server_port 8083 into the owner's real
-    # ~/.nunba/llama_config.json.
-    person, sep, private_home = os.environ.get('NUNBA_TEST_HOME', '').partition(os.pathsep)
-    if not (person and private_home):
+    # anything less, or another home first, is the person's real home.  A run
+    # that sets the variable itself keeps its folder, re-paired with this home
+    # here by the same rule home_dir uses.  On 24 Nov 2026 a direct-call
+    # driver set it to its folder alone, this kept it as it was, and llama
+    # saved server_port 8083 into the owner's real ~/.nunba/llama_config.json.
+    value = os.environ.get('NUNBA_TEST_HOME', '')
+    if not _home_pair_rule()(value, os.path.expanduser('~')):
+        person, sep, private_home = value.partition(os.pathsep)
         private_home = private_home or ('' if sep else person)
         if private_home:
             private_home = os.path.abspath(private_home)

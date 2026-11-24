@@ -744,7 +744,8 @@ def test_the_persons_home_paired_with_no_folder_is_not_a_stand_in(tmp_path, monk
 
 
 @pytest.mark.parametrize('shape', ['its folder alone', 'its folder after no home',
-                                   'the home with no folder'])
+                                   'the home with no folder', 'its folder after another home',
+                                   'its folder after a Git Bash spelling of the home'])
 def test_a_runner_that_sets_the_variable_itself_keeps_llama_out_of_the_home(
         shape, tmp_path, monkeypatch, no_gpu_probe):
     """On 24 Nov 2026 a direct-call driver set NUNBA_TEST_HOME to its own
@@ -761,9 +762,16 @@ def test_a_runner_that_sets_the_variable_itself_keeps_llama_out_of_the_home(
     persons.write_text(json.dumps({'server_port': 8082, 'context_size': 8192}))
     before = (persons.read_bytes(), persons.stat().st_mtime_ns)
     runners = tmp_path / 'runners_home'
+    git_bash = '/' + str(home)[0].lower() + str(home)[2:].replace('\\', '/')
     value = {'its folder alone': str(runners),
              'its folder after no home': os.pathsep + str(runners),
-             'the home with no folder': str(home) + os.pathsep}[shape]
+             'the home with no folder': str(home) + os.pathsep,
+             # A complete pair home_dir still does not honour: its first part
+             # is not this process's home, so home_dir gives the real one.
+             'its folder after another home': os.pathsep.join(
+                 [str(tmp_path / 'not_this_home'), str(runners)]),
+             'its folder after a Git Bash spelling of the home': os.pathsep.join(
+                 [git_bash, str(runners)])}[shape]
     monkeypatch.setenv('USERPROFILE', str(home))
     monkeypatch.setenv('HOME', str(home))
     monkeypatch.setenv('NUNBA_TEST_HOME', value)
@@ -843,11 +851,13 @@ def test_source_guard_conftest_calls_the_one_helper_and_keeps_no_copy():
         assert own_copy not in source, own_copy
 
 
-def test_source_guard_the_helper_needs_nothing_but_the_standard_library():
+@pytest.mark.parametrize('name', ['tests/hermetic_run.py', 'llama/home_pair.py'])
+def test_source_guard_the_helper_needs_nothing_but_the_standard_library(name):
     """A runner calls install() before it imports anything of Nunba's or
-    HARTOS's.  That only works while the helper itself imports neither."""
-    path = PROJECT_ROOT / 'tests' / 'hermetic_run.py'
-    assert path.is_file(), 'tests/hermetic_run.py is missing'
+    HARTOS's.  That only works while the helper, and the home rule it loads
+    from llama/home_pair.py, import neither."""
+    path = PROJECT_ROOT / name
+    assert path.is_file(), f'{name} is missing'
     imported = set()
     for node in ast.walk(ast.parse(path.read_text(encoding='utf-8'))):
         if isinstance(node, ast.Import):
