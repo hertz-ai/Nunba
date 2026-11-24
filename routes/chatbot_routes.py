@@ -2349,6 +2349,31 @@ CLOUD_API_CONFIG = {
 }
 
 
+def _cloud_authorization(auth_header, api_key):
+    """The Authorization a cloud agent's turn is sent with, or None.
+
+    The turn's own header, unless THIS node issued that token: the desktop's
+    sign-in is a local JWT (iss node:<id>, scope local) that the cloud cannot
+    verify.  Measured 2026-11-17 on the installed build (Nunba 1144b6c3): it
+    went to CLOUD_API_CONFIG['chat_endpoint'] for agent 54, the cloud
+    answered 401, and the turn fell back to local_assistant after a round
+    trip that also sent the desktop's token off the box.  HARTOS's
+    decode_jwt verifies with this node's key, so it decodes only tokens
+    issued here; a cloud sign-in decodes to {} and is forwarded as before.
+    Otherwise the configured HEVOLVE_LLM_API_KEY, else None.  Never raises.
+    """
+    if auth_header:
+        token = auth_header.split(' ', 1)[-1].strip()
+        try:
+            from integrations.social.auth import decode_jwt
+            issued_here = bool(decode_jwt(token))
+        except Exception:  # noqa: BLE001 -- unreadable here: not ours
+            issued_here = False
+        if not issued_here:
+            return auth_header
+    return f'Bearer {api_key}' if api_key else None
+
+
 _internet_cache = {'online': False, 'checked_at': 0}
 # Concurrency primitives for check_internet_connection.
 #   _internet_check_lock guards _internet_cache writes + _internet_check_in_flight
@@ -2541,7 +2566,12 @@ def get_prompts_route():
             logger.warning(f'HARTOS agent fetch failed: {e}')
 
     # ── 3. Cloud agents last (only when online + authenticated) ──
-    has_auth = bool(request.headers.get('Authorization') or os.environ.get('HEVOLVE_LLM_API_KEY'))
+    # Usable only with a credential the cloud accepts: the same rule the
+    # cloud branch of chat_route sends a turn with (_cloud_authorization),
+    # so the desktop's own sign-in does not list cloud agents as usable.
+    has_auth = _cloud_authorization(
+        request.headers.get('Authorization'),
+        os.environ.get('HEVOLVE_LLM_API_KEY')) is not None
     if agent_type in ['all', 'cloud'] and is_online:
         for agent in CLOUD_AGENTS:
             if not any(_is_same_agent(a, agent) for a in agents):
@@ -3117,10 +3147,12 @@ def _run_chat_turn(data):
         logger.info(f'Chat with CLOUD agent: {agent_id}')
         auth_header = request.headers.get('Authorization')
         api_key = os.environ.get('HEVOLVE_LLM_API_KEY')
+        cloud_auth = _cloud_authorization(auth_header, api_key)
         if not check_internet_connection():
             _cloud_miss = 'no internet'
-        elif not auth_header and not api_key:
-            _cloud_miss = 'not signed in'
+        elif not cloud_auth:
+            _cloud_miss = ('not signed in to the cloud (signed in on this '
+                           'desktop only)' if auth_header else 'not signed in')
         else:
             cloud_endpoint = CLOUD_API_CONFIG['chat_endpoint']
             if agent_config and agent_config.get('cloud_endpoint'):
@@ -3136,11 +3168,8 @@ def _run_chat_turn(data):
             # chatbot.py custom_gpt: getprompt/?prompt_id=).
             if prompt_id:
                 payload['prompt_id'] = prompt_id
-            cloud_headers = {'Content-Type': 'application/json'}
-            if auth_header:
-                cloud_headers['Authorization'] = auth_header
-            if api_key and 'Authorization' not in cloud_headers:
-                cloud_headers['Authorization'] = f'Bearer {api_key}'
+            cloud_headers = {'Content-Type': 'application/json',
+                             'Authorization': cloud_auth}
             try:
                 response = requests.post(
                     cloud_endpoint,

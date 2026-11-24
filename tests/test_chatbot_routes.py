@@ -286,11 +286,13 @@ class TestAgentRouting:
     @pytest.fixture
     def node(self, tmp_path, monkeypatch):
         (tmp_path / '54.json').write_text('{}')     # a placeholder recipe
-        state = {'online': True, 'cloud_status': 200, 'cloud': [], 'hartos': []}
+        state = {'online': True, 'cloud_status': 200, 'cloud': [], 'hartos': [],
+                 'cloud_headers': []}
         monkeypatch.delenv('HEVOLVE_LLM_API_KEY', raising=False)
 
         def cloud_post(url, json=None, headers=None, **_kw):
             state['cloud'].append(json)
+            state['cloud_headers'].append(headers or {})
             if isinstance(state['cloud_status'], Exception):
                 raise state['cloud_status']
             return MagicMock(status_code=state['cloud_status'],
@@ -344,6 +346,60 @@ class TestAgentRouting:
         body = self._send(client, signed_in=miss != 'signed out', prompt_id=49)
         assert body['text'] == 'local says hi'
         assert body['agent_id'] == 'local_assistant'
+
+    # The desktop's own sign-in is not a cloud credential.  Measured
+    # 2026-11-17 on the installed build (Nunba 1144b6c3): the page's token
+    # (iss node:<this node>, scope local) went to the cloud's
+    # /chat/custom_gpt for agent 54 and the cloud answered 401, so every
+    # cloud agent fell back to local_assistant after a wasted round trip
+    # that also sent the desktop's token off the box.  decode_jwt
+    # verifies with this node's key, so it decodes only tokens issued here.
+    _THIS_NODES_TOKEN = {'user_id': '10202', 'scope': 'local', 'type': 'access'}
+
+    def test_a_token_this_desktop_issued_is_not_sent_to_the_cloud(
+            self, client, node):
+        with patch('integrations.social.auth.decode_jwt',
+                   return_value=dict(self._THIS_NODES_TOKEN)):
+            body = self._send(client, prompt_id=49)
+        assert node['cloud'] == []
+        assert body['text'] == 'local says hi'
+        assert body['agent_id'] == 'local_assistant'
+
+    def test_with_an_api_key_the_cloud_gets_the_key_not_the_desktop_token(
+            self, client, node, monkeypatch):
+        monkeypatch.setenv('HEVOLVE_LLM_API_KEY', 'cloud-key')
+        with patch('integrations.social.auth.decode_jwt',
+                   return_value=dict(self._THIS_NODES_TOKEN)):
+            body = self._send(client, prompt_id=49)
+        assert body['text'] == 'cloud says hi'
+        assert node['cloud_headers'][0]['Authorization'] == 'Bearer cloud-key'
+
+    def test_a_token_this_desktop_cannot_read_still_goes_to_the_cloud(
+            self, client, node):
+        # A cloud sign-in is not signed by this node, so decode_jwt gives {}
+        # and the header is forwarded as before.
+        with patch('integrations.social.auth.decode_jwt', return_value={}):
+            body = self._send(client, prompt_id=49)
+        assert body['text'] == 'cloud says hi'
+        assert node['cloud_headers'][0]['Authorization'] == 'Bearer t'
+
+    @pytest.mark.parametrize('issued_here, expected', [(True, False), (False, True)])
+    def test_the_agent_list_offers_cloud_agents_only_with_a_cloud_credential(
+            self, client, node, issued_here, expected):
+        # The same question as the cloud branch ("is there a credential the
+        # cloud accepts"), asked by /prompts to mark cloud agents usable.  It
+        # had its own rule, any Authorization at all, so a desktop-only
+        # sign-in listed cloud agents as usable while every turn to them was
+        # answered by local_assistant (review of dbfee43b).
+        import routes.chatbot_routes as cr
+        claims = dict(self._THIS_NODES_TOKEN) if issued_here else {}
+        with patch('integrations.social.auth.decode_jwt', return_value=claims), \
+                patch.object(cr, 'HEVOLVE_PROMPTS_AVAILABLE', False):
+            body = client.get('/prompts?type=cloud',
+                              headers={'Authorization': 'Bearer t'}).get_json()
+        cloud = [a for a in body['prompts'] if a.get('origin') == 'hive']
+        assert cloud, 'the listing offers cloud agents when online'
+        assert all(a['available'] is expected for a in cloud)
 
     def test_an_unknown_agent_is_answered_by_local_assistant(self, client, node):
         body = self._send(client, agent_id='nonexistent_agent_xyz',
