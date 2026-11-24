@@ -86,7 +86,23 @@ export function shouldPlayPushedClip(data, currentRequestId, ttsEnabled,
   sentHere = turnsStartedHere(), lastHere = lastTurnStartedHere()) {
   if (ttsEnabled !== true) return false;
   if (!data || !data.generated_audio_url) return false;
-  const turn = clipTurnOf(data.request_id);
+  return isTurnVoicedHere(data.request_id, currentRequestId, sentHere, lastHere);
+}
+
+/**
+ * Whether this device gives voice to the turn `requestId` belongs to: the
+ * device used speaks a turn, the others only show its words (owner
+ * 2026-11-23, "Only the device you used").  The rule shouldPlayPushedClip
+ * applies to a clip the server pushed, and the one a message pushed as text
+ * alone, which this page speaks itself, must pass too: an agent's mid-turn
+ * send of a tablet turn ('<turn>-intermediate-<n>') was spoken by the
+ * desktop page, which never started that turn (live 2026-11-24 16:44 IST,
+ * Cafe Flow: the desktop said the question twice before the tablet's clip
+ * of the turn arrived).
+ */
+export function isTurnVoicedHere(requestId, currentRequestId,
+  sentHere = turnsStartedHere(), lastHere = lastTurnStartedHere()) {
+  const turn = clipTurnOf(requestId);
   if (turn && turn === lastHere && !isBackgroundRequest(turn)) return true;
   if (isOtherTurnEnvelope(turn, currentRequestId)) return false;
   if (!turn) return true;

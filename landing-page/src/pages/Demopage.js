@@ -33,7 +33,7 @@ import {animateScroll as scrollLibrary} from 'react-scroll';
 
 import autobahn from 'autobahn';
 import { classifyError, getBackoff, startTurn, MAX_RETRIES, turnHasReply, EMPTY_REPLY_REASON, PUSHED_REPLY_MISSING_REASON } from '../utils/chatRetry';
-import { shouldSpeakLocalReply, isDraftReply, hasServerAudioPayload, shouldPlayPushedClip, initialTtsEnabled } from '../utils/ttsGuards';
+import { shouldSpeakLocalReply, isDraftReply, hasServerAudioPayload, shouldPlayPushedClip, isTurnVoicedHere, initialTtsEnabled } from '../utils/ttsGuards';
 import { mergeRestoredMessages } from '../utils/mergeRestoredMessages';
 import { normalizeRestoredMessages } from '../utils/normalizeRestoredMessages';
 import { holdsAgentChat, isSetupCard, restoreServerHistory } from '../utils/serverChatHistory';
@@ -2546,8 +2546,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           return newMessages;
         });
 
-        // Speak + typewriter: whichever comes first — audio arrival or 5s timeout
-        if (ttsEnabled && tts.isAvailable && extractedText) {
+        // Speak + typewriter: whichever comes first — audio arrival or 5s timeout.
+        // Only the device that started the turn speaks it; the words show
+        // everywhere (ttsGuards.isTurnVoicedHere, the pushed-clip rule).
+        if (ttsEnabled && tts.isAvailable && extractedText
+            && isTurnVoicedHere(parsed.request_id, requestIdRef.current)) {
           const wordCount = extractedText.split(/\s+/).length;
           const estimatedSeconds = Math.max(2, wordCount / 2.5);
           let typewriterStarted = false;
