@@ -2461,10 +2461,9 @@ def _hub_snapshot_download(repo_id: str, used_by: str = 'voice setup',
     HARTOS's, the ones the voice worker uses.  ``engine`` is the voice's
     registry id: HARTOS words the ask from it (rv_66voice S2), so the voice
     has one name whether its download or its worker hit the gate."""
-    from huggingface_hub import snapshot_download
-    from huggingface_hub.errors import (
-        GatedRepoError, HfHubHTTPError, RepositoryNotFoundError)
     from hartos.ai_key_vault import gated_weights_answer, hf_token
+    from huggingface_hub import snapshot_download
+    from huggingface_hub.errors import GatedRepoError, HfHubHTTPError, RepositoryNotFoundError
     token = hf_token()
     if token:
         kwargs.setdefault('token', token)
