@@ -608,10 +608,31 @@ class STTLoader(ModelLoader):
             return False
 
     def is_downloaded(self, entry: ModelEntry) -> bool:
+        """True when THIS row's model is on disk and its engine imports.
+
+        The catalog's downloaded flag is the one answer to "which speech
+        model is here" (owner 2026-11-24, single source of truth).  It used
+        to be "faster_whisper is importable" for every row, so sizes never
+        fetched read as present.  The files are checked by whisper_tool's
+        own two checks, the ones it loads models through: the HF cache for
+        a faster-whisper size, the extracted folder for a sherpa-onnx model.
+        """
         try:
             import importlib.util
-            return importlib.util.find_spec('faster_whisper') is not None
+
+            from integrations.service_tools import whisper_tool as wt
+            size = wt._CATALOG_ID_TO_FASTER_WHISPER_SIZE.get(entry.id)
+            if size:
+                return (importlib.util.find_spec('faster_whisper') is not None
+                        and wt._faster_whisper_model_cached(size))
+            key = wt._CATALOG_ID_TO_SHERPA.get(entry.id)
+            if key:
+                return (importlib.util.find_spec('sherpa_onnx') is not None
+                        and wt._sherpa_model_cached(key))
+            return False
         except Exception:
+            logger.debug("STTLoader.is_downloaded(%s) failed",
+                         getattr(entry, 'id', '?'), exc_info=True)
             return False
 
     def validate(self, entry: ModelEntry) -> tuple:

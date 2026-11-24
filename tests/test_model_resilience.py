@@ -1487,11 +1487,22 @@ class TestSTTLoaderDownload(unittest.TestCase):
         self.assertFalse(result)
 
     def test_download_is_downloaded_checks_faster_whisper_spec(self):
-        """STTLoader.is_downloaded() returns True iff faster_whisper importlib spec is found."""
-        with patch('importlib.util.find_spec', return_value=MagicMock()):
-            self.assertTrue(self.loader.is_downloaded(self.entry))
-        with patch('importlib.util.find_spec', return_value=None):
-            self.assertFalse(self.loader.is_downloaded(self.entry))
+        """STTLoader.is_downloaded() needs the faster_whisper package AND the
+        row's own weights (owner 2026-11-24: one source of truth for what is
+        on disk; the package alone used to count)."""
+        from models.catalog import ModelEntry, ModelType
+        entry = ModelEntry(id='stt-faster-whisper-base', name='Whisper Base',
+                           model_type=ModelType.STT)
+        cached = 'integrations.service_tools.whisper_tool._faster_whisper_model_cached'
+        with patch('importlib.util.find_spec', return_value=MagicMock()), \
+             patch(cached, return_value=True):
+            self.assertTrue(self.loader.is_downloaded(entry))
+        with patch('importlib.util.find_spec', return_value=None), \
+             patch(cached, return_value=True):
+            self.assertFalse(self.loader.is_downloaded(entry))
+        with patch('importlib.util.find_spec', return_value=MagicMock()), \
+             patch(cached, return_value=False):
+            self.assertFalse(self.loader.is_downloaded(entry))
 
 
 # ═══════════════════════════════════════════════════════════════════════
