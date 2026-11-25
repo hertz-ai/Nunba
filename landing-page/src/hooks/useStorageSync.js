@@ -269,6 +269,19 @@ export default function useStorageSync() {
       }
       if (cancelled) return;
 
+      // A null here means "not on file" OR "the read failed": fetchStorageKey
+      // turns a timeout or a half-written user_data.json into null too.  In
+      // the startup burst the access_token read timed out, the hook took that
+      // as "signed out", wrote the guest keyset and never asked again (live
+      // 2026-11-25).  Ask again with back-off before trusting the null.
+      for (let wait = 500; (!values.user_id || !values.access_token) && wait <= 4000; wait *= 2) {
+        await new Promise((r) => setTimeout(r, wait));
+        if (cancelled) return;
+        if (!values.user_id) values.user_id = await fetchStorageKey('user_id');
+        if (!values.access_token) values.access_token = await fetchStorageKey('access_token');
+        if (cancelled) return;
+      }
+
       // Re-check after await to avoid races with an in-page signin
       // completing mid-fetch.
       if (localStorage.getItem('access_token')) {
