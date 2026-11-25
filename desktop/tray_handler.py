@@ -24,6 +24,55 @@ IS_LINUX = sys.platform.startswith('linux')
 _tray_icon = None
 _window_instance = None
 
+# Set by quit_app before it closes the windows.  app.on_closing turns every
+# close into a hide to the tray; while this is set it lets the close through.
+QUITTING = False
+
+# How long Quit waits for each step (windows, then child processes).
+QUIT_WAIT_S = 5.0
+
+
+def quit_app():
+    """Quit Nunba: close the windows, end the child processes, then exit.
+
+    os._exit alone does not end children on Windows.  After Quit the
+    WebView2 tree that opened the camera (getUserMedia) kept the device,
+    and the llama-servers kept running.  Each step waits at most
+    QUIT_WAIT_S; the exit happens even if a step raises or hangs."""
+    global QUITTING
+    QUITTING = True
+    try:
+        def _close_windows():
+            import webview
+            for w in list(webview.windows):
+                try:
+                    w.destroy()
+                except Exception as e:
+                    logger.warning(f"Quit: could not close a window: {e}")
+
+        closer = threading.Thread(target=_close_windows, daemon=True, name='QuitCloseWindows')
+        closer.start()
+        closer.join(QUIT_WAIT_S)
+
+        import psutil
+        kids = psutil.Process().children(recursive=True)
+        for kid in kids:
+            try:
+                kid.terminate()
+            except psutil.Error:
+                pass
+        _, alive = psutil.wait_procs(kids, timeout=QUIT_WAIT_S)
+        for kid in alive:
+            try:
+                kid.kill()
+            except psutil.Error:
+                pass
+        logger.info(f"Quit: ended {len(kids)} child process(es), {len(alive)} killed")
+    except Exception as e:
+        logger.error(f"Quit: shutdown step failed, exiting anyway: {e}")
+    finally:
+        os._exit(0)
+
 
 class TrayHandler:
     """Cross-platform system tray handler"""
@@ -63,10 +112,7 @@ class TrayHandler:
         """Handle quit action"""
         logger.info("Quit selected from system tray")
         self.stop()
-        try:
-            os._exit(0)
-        except Exception:
-            sys.exit(0)
+        quit_app()
 
     def _on_restore(self, *args):
         """Handle restore/show action — restores to previous position and size.

@@ -7441,10 +7441,8 @@ def setup_system_tray(window_instance):
         def on_quit_clicked(icon, item):
             logger.info("Quit selected from system tray menu")
             icon.stop()
-            try:
-                os._exit(0)
-            except Exception:
-                sys.exit(0)
+            from desktop.tray_handler import quit_app
+            quit_app()  # closes the windows and ends the children, then exits
 
         def on_restore_clicked(icon, item):
             # pystray callbacks run on pystray's thread — pywebview calls
@@ -7589,6 +7587,9 @@ def on_closing():
     already closed the form (and, for the last window, ended the message
     loop) -- the window was gone, tray Restore had nothing to show, and the
     app served headless until Quit (gui_app.log 11:28:38 -> 11:29:04)."""
+    from desktop import tray_handler
+    if tray_handler.QUITTING:
+        return True  # Quit is closing the windows: let the close through
     global _window
     try:
         if _window:
