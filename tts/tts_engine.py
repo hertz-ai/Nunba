@@ -3287,28 +3287,75 @@ class TTSEngine:
                 return output_path
             return wav_parts[0]
 
-        # Concatenate WAV files
+        # Join the parts into one WAV.  Each part was written by whichever
+        # engine or model spoke it, in that engine's own sample rate, channel
+        # count and sample format (mms_tts 16 kHz, Piper 22.05 kHz, a singing
+        # model 48 kHz stereo, float WAVs from the torch engines).  Copying
+        # frames under the first part's header played every other rate at
+        # the wrong speed and pitch (live 2026-11-25: in a Tamil-first line
+        # Piper's English ran 1.38x slow and "Zoey!" was heard as "Sorry.")
+        # and dropped any part `wave` cannot open.  So each part is decoded by
+        # the framework's WAV reader (read_wav_f32: any PCM width or float,
+        # mixed down to mono), brought to the highest rate among the parts by
+        # the shared resampler (no part is downsampled), and the line is
+        # written as one mono 16-bit WAV.  resample_pcm16 interpolates
+        # linearly: lengths are exact, an upsampled part keeps faint images
+        # above its old Nyquist.
+        import numpy as np
+        from integrations.service_tools.whisper_tool import read_wav_f32
+        from integrations.social._livekit_room import resample_pcm16
+
         out = output_path or tempfile.mktemp(suffix='.wav', prefix='_tts_multi_')
+        keep = None      # a part handed back as the result is not deleted
+        writing = False  # a partial `out` is removed only if this join wrote it
         try:
-            with wave.open(wav_parts[0], 'rb') as first:
-                params = first.getparams()
-            with wave.open(out, 'wb') as outf:
-                outf.setparams(params)
-                for part in wav_parts:
-                    try:
-                        with wave.open(part, 'rb') as inp:
-                            outf.writeframes(inp.readframes(inp.getnframes()))
-                    except Exception:
-                        pass
+            decoded = []
             for part in wav_parts:
                 try:
-                    os.unlink(part)
-                except OSError:
-                    pass
+                    decoded.append(read_wav_f32(part))
+                except Exception as e:
+                    logger.warning(f"TTS join: left out a part it cannot read "
+                                   f"({os.path.basename(part)}): {e}")
+            if not decoded:
+                # Nothing readable: hand back the first part, as before.
+                keep = wav_parts[0]
+                return keep
+            rate = max(r for r, _ in decoded)
+            writing = True
+            with wave.open(out, 'wb') as outf:
+                outf.setnchannels(1)
+                outf.setsampwidth(2)
+                outf.setframerate(rate)
+                for src_rate, samples in decoded:
+                    # x32768 is exact for a 16-bit part; a float part at full
+                    # scale clips to the int16 range.
+                    pcm = np.clip(np.round(samples * 32768.0), -32768, 32767
+                                  ).astype('<i2').tobytes()
+                    if pcm and src_rate != rate:
+                        converted = resample_pcm16(pcm, src_rate, 1, rate, 1)
+                        if not converted:
+                            logger.warning(f"TTS join: left out a {src_rate} Hz part "
+                                           f"the resampler could not bring to {rate} Hz")
+                            continue
+                        pcm = converted
+                    outf.writeframes(pcm)
             return out
         except Exception as e:
             logger.error(f"WAV concatenation failed: {e}")
-            return wav_parts[0] if wav_parts else None
+            if writing:
+                try:
+                    os.unlink(out)
+                except OSError:
+                    pass
+            keep = wav_parts[0]
+            return keep
+        finally:
+            for part in wav_parts:
+                if part != keep:
+                    try:
+                        os.unlink(part)
+                    except OSError:
+                        pass
 
     def _synth_speech_segment(self, text, lang, out_path, *, warm_up=False,
                               **kwargs):
