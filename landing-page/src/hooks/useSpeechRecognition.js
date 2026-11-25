@@ -247,6 +247,11 @@ export function micTurnText(said) {
 // on.  It used to say 'Start with "Nunba" to talk to me.'
 export const OPEN_MIC_CUE = 'The microphone is on. I\'m listening.';
 
+// The tag on a person's bubble the open mic heard and the agent judged not
+// meant for it (HARTOS addressee): the words stay in the chat, muted, so the
+// whole session is kept, and the agent did not answer them.
+export const HEARD_NOT_FOR_ME = 'Heard - not for me';
+
 // What the person is told when a mic's speech socket did not come back, so the
 // button never shows a mic that hears nothing (owner 2026-11-24, "I see stop
 // which means nunba is still listening isnt").

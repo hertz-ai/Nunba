@@ -3544,7 +3544,9 @@ def _run_chat_turn(data):
 
                 # An open-mic turn HARTOS judged not meant for the agent: the
                 # agent stays silent.  No reply, no TTS, and NOT the raw-llama
-                # fallback below, which would answer the room's words.
+                # fallback below, which would answer the room's words.  The
+                # agent's own verdict and its one-line reason go to the page,
+                # which shows the bubble as heard.
                 if open_mic and result.get('not_addressed'):
                     logger.info(f'open-mic turn judged not addressed '
                                 f'(request_id={request_id}), no reply')
@@ -3554,7 +3556,9 @@ def _run_chat_turn(data):
                         'agent_type': 'local',
                         'source': 'langchain_local',
                         'success': True,
+                        'addressed': False,
                         'not_addressed': True,
+                        'reason': result.get('reason') or '',
                     })
 
                 response_text = result.get('text') or result.get('response')

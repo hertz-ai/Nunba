@@ -1112,10 +1112,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       const [next, ...rest] = messageQueue;
       setMessageQueue(rest);
       // Directly set inputMessage and call handleSend via ref on next tick
-      // (an open-mic turn keeps its open_mic mark through the queue).
-      setInputMessage(next.text);
+      // (an open-mic turn keeps its open_mic mark through the queue, and
+      // goes with its own words, never through the input box).
+      if (!next.openMic) setInputMessage(next.text);
       setTimeout(() => {
-        if (handleSendRef.current) handleSendRef.current({ openMic: next.openMic === true });
+        if (handleSendRef.current) handleSendRef.current({ openMic: next.openMic === true, text: next.text });
       }, 50);
     }
   }, [loading, engineReady, agentsLoading]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1137,9 +1138,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       setMessageQueue((prev) => {
         if (prev.length === 0) return prev;
         const [next, ...rest] = prev;
-        setInputMessage(next.text);
+        if (!next.openMic) setInputMessage(next.text);
         setTimeout(() => {
-          if (handleSendRef.current) handleSendRef.current({ openMic: next.openMic === true });
+          if (handleSendRef.current) handleSendRef.current({ openMic: next.openMic === true, text: next.text });
         }, 50);
         return rest;
       });
@@ -3464,13 +3465,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                 const words = micTurnText(data.text);
                 if (!words) return;
                 fullText += (fullText ? ' ' : '') + words;
-                setInputMessage(fullText);
+                // A clicked mic fills the input box as before.  The open mic
+                // never writes there (the person may be typing): its words
+                // go as the turn's own text.
+                if (!unprompted) setInputMessage(fullText);
                 // Auto-send after 1s of silence (fast conversational flow),
                 // marked open_mic when the page opened this mic.
                 clearTimeout(autoSendTimer);
                 autoSendTimer = setTimeout(() => {
                   if (fullText.trim() && handleSendRef.current) {
-                    handleSendRef.current({ openMic: unprompted });
+                    handleSendRef.current({ openMic: unprompted, text: fullText });
                     fullText = '';
                   }
                 }, 1000);
@@ -3486,7 +3490,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           stopAudio();
           clearTimeout(autoSendTimer);
           if (fullText.trim() && handleSendRef.current) {
-            handleSendRef.current({ openMic: unprompted });
+            handleSendRef.current({ openMic: unprompted, text: fullText });
             fullText = '';
           }
           recognitionRef.current = null;
@@ -3642,16 +3646,18 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           interim = '';
         }
         if (newFinal) committedText += newFinal;
-        setInputMessage(committedText + interim);
+        // The open mic never writes into or clears the input box (the person
+        // may be typing): its words go as the turn's own text.
+        if (!unprompted) setInputMessage(committedText + interim);
 
         // Re-arm autosend only when THIS event delivered new final text.
         if (newFinal) {
           clearTimeout(autoSendTimer);
           autoSendTimer = setTimeout(() => {
             if (committedText.trim() && handleSendRef.current) {
-              handleSendRef.current({ openMic: unprompted });
+              handleSendRef.current({ openMic: unprompted, text: committedText });
               committedText = '';
-              setInputMessage('');
+              if (!unprompted) setInputMessage('');
             }
           }, 1000);
         }
@@ -3679,9 +3685,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       recognition.onend = () => {
         clearTimeout(autoSendTimer);
         if (committedText.trim() && handleSendRef.current) {
-          handleSendRef.current({ openMic: unprompted });
+          handleSendRef.current({ openMic: unprompted, text: committedText });
           committedText = '';
-          setInputMessage('');
+          if (!unprompted) setInputMessage('');
         }
         setIsRecording(false);
         if (!_handedOffToNativeMic) micBusyRef.current = false;
@@ -4172,6 +4178,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     // it goes marked open_mic and HARTOS decides whether the agent answers.
     // A click or key passes an event, which is never an open-mic turn.
     const openMic = how?.openMic === true;
+    // An open-mic turn carries its own words (how.text) and never writes
+    // into or clears the input box, so what the person is typing stays.
+    const turnText = openMic && typeof how.text === 'string' ? how.text : inputMessage;
     // Prime TTS audio element on user gesture — required by WebView2 autoplay policy.
     // Without this, audio.play() from async SSE callbacks is silently blocked.
     // Fire-and-forget: a stray `await` here blocks the rest of handleSend
@@ -4227,7 +4236,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     setCurrentThinkingId(null);
     setThinkingStartTime(null);
 
-    if (!inputMessage.trim() && !fileUrl && !userImage) return;
+    if (!turnText.trim() && !fileUrl && !userImage) return;
     // Queue message when:
     //   - A previous user-initiated request is in flight (loading) AND it's
     //     been less than 10s since that message (existing throttle
@@ -4264,13 +4273,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       (!engineReady && withinEngineBootGrace) ||
       agentsLoading
     ) {
-      setMessageQueue((prev) => [...prev, { text: inputMessage.trim(), id: Date.now(), openMic }]);
-      setInputMessage('');
+      setMessageQueue((prev) => [...prev, { text: turnText.trim(), id: Date.now(), openMic }]);
+      if (!openMic) setInputMessage('');
       return;
     }
 
     // Parse @agent mention and route to that agent
-    const agentMentionMatch = inputMessage.match(/@(\S+)/);
+    const agentMentionMatch = turnText.match(/@(\S+)/);
     if (agentMentionMatch) {
       const mentionedName = agentMentionMatch[1];
       const targetAgent = allAgents.find(a =>
@@ -4302,7 +4311,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     setRequestId(msgId);
     const userMessage = {
       type: 'user',
-      content: inputMessage,
+      content: turnText,
       pdf: pdffileUrl || null,
       image: userImage || null,
       messageId: msgId,
@@ -4317,7 +4326,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     // rerender is enough in theory, but WKWebView occasionally ignores the
     // rerender when another source (wake-listener, STT) writes to the same
     // value in the same tick.  Direct DOM clear is belt-and-suspenders.
-    if (textareaRef.current) {
+    // Not for an open-mic turn: the box holds what the person is typing.
+    if (!openMic && textareaRef.current) {
       textareaRef.current.value = '';
     }
     setShouldScroll(true);
@@ -4328,7 +4338,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     // Clear form data
     setUploadedPdf(null);
     setUserImage(null);
-    setInputMessage('');
+    if (!openMic) setInputMessage('');
     setFileUrl(null);
     setPdfFile(null);
     setpdfFileUrl(null);
@@ -4402,7 +4412,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             // non-existent prompt file at PROMPTS_DIR/{prompt_id}.json.
             const _promptIdForBackend = _isOrphan ? 0 : (currentAgent?.prompt_id ?? 0);
             const localResult = await chatApi.chat({
-              text: inputMessage,
+              text: turnText,
               user_id: effectiveUserId,
               request_id: msgId,
               agent_id: _agentIdForBackend,
@@ -4436,7 +4446,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               setCurrentAgent((prev) => ({
                 ...prev,
                 autonomous_creation: true,
-                original_task: inputMessage,
+                original_task: turnText,
               }));
             }
             // Handle creation_suggested from reuse agent (Step 17/19)
@@ -4568,8 +4578,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               // tracked so the else-branch / unmount can cancel a stale retry.
               const _timer = scheduleLoadingRetry(
                 loadingRetryRef.current,
-                inputMessage,
-                (text) => setMessageQueue((prev) => [...prev, { text, id: Date.now() }]),
+                turnText,
+                (text) => setMessageQueue((prev) => [...prev, { text, id: Date.now(), openMic }]),
               );
               if (_timer !== null) {
                 loadingRetryRef.current += 1;
@@ -4606,13 +4616,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             // no_content: the reply is pushed to this window later, as on the
             // cloud path, so the turn stays open for it (awaitPushedReply).
             const replyPushed = resultData.status === 'no_content';
-            // An open-mic turn HARTOS judged not meant for the agent: no
-            // reply, no voice, and the room's words leave the chat (they are
-            // not the person's turn), rather than a failed message.
+            // An open-mic turn the agent (HARTOS addressee) judged not meant
+            // for it: no reply, no voice, no failure.  The person's bubble
+            // stays, marked heard (shown muted, HEARD_NOT_FOR_ME), so the
+            // whole session is kept and the page shows what the agent decided.
             const notAddressed = openMic && resultData.not_addressed === true;
             if (notAddressed) {
               console.log('[STT] open mic: turn judged not addressed, no reply');
-              setMessages((prev) => prev.filter((m) => m.messageId !== msgId));
+              updateMessageStatus(msgId, {
+                status: 'sent', error: null, heard: true, heardReason: resultData.reason || '',
+              });
             }
             if (!cardConsumedText && !replyPushed && responseText) {
               const assistantMessage = {

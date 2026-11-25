@@ -31,7 +31,7 @@
  *   npx react-scripts test --watchAll=false src/__tests__/hooks/openMicAddressed.test.js
  */
 const {
-  addressedToNunba, micTurnText, OPEN_MIC_CUE,
+  addressedToNunba, micTurnText, OPEN_MIC_CUE, HEARD_NOT_FOR_ME,
 } = require('../../hooks/useSpeechRecognition');
 
 const fs = require('fs');
@@ -112,9 +112,11 @@ function pageStubs() {
   let nextTimer = 0;
   page.setInputMessage = (v) => { page.composer.push(v); };
   page.handleSendRef = {
+    // An open-mic send carries its own words (how.text); any other send
+    // takes the composer as it stands.
     current: (how) => {
-      page.sent.push(page.composer[page.composer.length - 1]);
-      page.marks.push(how);
+      page.sent.push(how && how.openMic ? how.text : page.composer[page.composer.length - 1]);
+      page.marks.push(how ? how.openMic === true : false);
     },
   };
   page.setTimeout = (cb) => { nextTimer += 1; timers.set(nextTimer, cb); return nextTimer; };
@@ -176,16 +178,27 @@ function webSpeechMic(unprompted) {
   return page;
 }
 
-const OPEN_MIC = { openMic: true };
-const CLICKED = { openMic: false };
+const OPEN_MIC = true;
+const CLICKED = false;
+// What the person is typing in the chat box while the open mic hears the room.
+const TYPED = 'what I am typing';
 
 describe('a mic the page opened, Whisper tier', () => {
   test.each([...ROOM_SPEECH, OWNER_SPEECH])('a final without "Nunba" is sent as a turn, marked open_mic: %s', (said) => {
     const page = whisperMic(true).hear([said.slice(0, 8), false], [said, true]);
     expect(page.sent).toEqual([said]);
     expect(page.marks).toEqual([OPEN_MIC]);
-    // No partial speech in the composer, only the final that is sent.
-    expect(page.composer).toEqual([said]);
+    // The open mic never writes into the chat box, not even its final.
+    expect(page.composer).toEqual([]);
+  });
+
+  test('with text typed in the box, a final sends its own words and the box keeps the typed text', () => {
+    const page = whisperMic(true);
+    page.composer.push(TYPED);
+    page.hear([OWNER_SPEECH.slice(0, 5), false], [OWNER_SPEECH, true]);
+    expect(page.sent).toEqual([OWNER_SPEECH]);
+    expect(page.marks).toEqual([OPEN_MIC]);
+    expect(page.composer).toEqual([TYPED]);
   });
 
   test('speech naming Nunba is sent as said, marked open_mic', () => {
@@ -215,8 +228,17 @@ describe('a mic the page opened, Web Speech tier', () => {
       [['And he leaves me', false]], [['And he leaves me sickly sickly', true]]);
     expect(page.sent).toEqual(['And he leaves me sickly sickly']);
     expect(page.marks).toEqual([OPEN_MIC]);
-    // No partial speech: the final, then the composer cleared by the send.
-    expect(page.composer).toEqual(['And he leaves me sickly sickly', '']);
+    // The open mic never writes into or clears the chat box.
+    expect(page.composer).toEqual([]);
+  });
+
+  test('with text typed in the box, a final sends its own words and the box keeps the typed text', () => {
+    const page = webSpeechMic(true);
+    page.composer.push(TYPED);
+    page.hear([['hello do', false]], [[OWNER_SPEECH, true]]);
+    expect(page.sent).toEqual([OWNER_SPEECH]);
+    expect(page.marks).toEqual([OPEN_MIC]);
+    expect(page.composer).toEqual([TYPED]);
   });
 
   test('two finals inside one second are one turn, words apart', () => {
@@ -236,64 +258,119 @@ describe('a clicked mic, Web Speech tier: unchanged', () => {
   });
 });
 
-describe('handleSend carries the open-mic mark to the chat request', () => {
-  // handleSend's first line reads what it was called with.
-  function markOf(how) {
+describe('handleSend carries the open-mic mark and its own words', () => {
+  // handleSend's first lines read what it was called with, and the words of
+  // the turn: an open-mic send's own text, else the chat box.
+  function turnOf(how, inputMessage) {
     const block = cut(SRC, 'const handleSend = async (how) => {', '// Prime TTS audio element');
     // eslint-disable-next-line no-new-func
-    return new Function('how',
-      `${block.replace('const handleSend = async (how) => {', '')}\nreturn openMic;`)(how);
+    return new Function('how', 'inputMessage',
+      `${block.replace('const handleSend = async (how) => {', '')}\nreturn { openMic, turnText };`,
+    )(how, inputMessage);
   }
 
   test('an open-mic send is marked; a click event or no argument is not', () => {
-    expect(markOf(OPEN_MIC)).toBe(true);
-    expect(markOf(CLICKED)).toBe(false);
-    expect(markOf({ type: 'click', target: {} })).toBe(false);
-    expect(markOf(undefined)).toBe(false);
+    expect(turnOf({ openMic: true, text: 'x' }, '').openMic).toBe(true);
+    expect(turnOf({ openMic: false }, '').openMic).toBe(false);
+    expect(turnOf({ type: 'click', target: {} }, '').openMic).toBe(false);
+    expect(turnOf(undefined, '').openMic).toBe(false);
   });
 
-  test('the chat request sends open_mic only for a marked turn', () => {
+  test('an open-mic send takes its own words, not what is typed in the box', () => {
+    expect(turnOf({ openMic: true, text: OWNER_SPEECH }, TYPED).turnText).toBe(OWNER_SPEECH);
+  });
+
+  test('a click or a clicked mic sends the box, as before', () => {
+    expect(turnOf({ type: 'click', target: {} }, TYPED).turnText).toBe(TYPED);
+    expect(turnOf({ openMic: false, text: 'ignored' }, TYPED).turnText).toBe(TYPED);
+    expect(turnOf(undefined, TYPED).turnText).toBe(TYPED);
+  });
+
+  test('handleSend never clears the box for an open-mic turn', () => {
+    const send = cut(SRC, 'const handleSend = async (how) => {', 'handleSendRef.current = handleSend;');
+    expect(send.split("if (!openMic) setInputMessage('');").length - 1).toBe(2);
+    expect(send).toContain('if (!openMic && textareaRef.current) {');
+    // Every use of the box's text in handleSend goes through turnText.
+    expect(send.split('inputMessage').length - 1).toBe(1);
+  });
+
+  test('the chat request sends the turn text, and open_mic only for a marked turn', () => {
     const body = cut(SRC, 'const localResult = await chatApi.chat({', '});');
+    expect(body).toContain('text: turnText,');
     expect(body).toContain('...(openMic ? { open_mic: true } : {}),');
   });
 
-  test('a queued open-mic turn keeps its mark through both queue drains', () => {
-    expect(SRC).toContain('{ text: inputMessage.trim(), id: Date.now(), openMic }');
-    const drains = SRC.split('handleSendRef.current({ openMic: next.openMic === true })').length - 1;
-    expect(drains).toBe(2);
+  test('a queued open-mic turn keeps its mark and words through both drains, never via the box', () => {
+    expect(SRC).toContain('{ text: turnText.trim(), id: Date.now(), openMic }');
+    expect(SRC).toContain('(text) => setMessageQueue((prev) => [...prev, { text, id: Date.now(), openMic }]),');
+    const sends = SRC.split('handleSendRef.current({ openMic: next.openMic === true, text: next.text })').length - 1;
+    expect(sends).toBe(2);
+    const boxWrites = SRC.split('if (!next.openMic) setInputMessage(next.text);').length - 1;
+    expect(boxWrites).toBe(2);
   });
 });
 
-describe('a turn HARTOS judged not addressed is silent', () => {
+describe('a turn the agent did not take shows as heard, and is silent', () => {
   function reply(openMic, resultData) {
     const block = cut(SRC, 'const notAddressed = openMic && resultData.not_addressed === true;',
       'if (!cardConsumedText && !replyPushed && responseText) {');
     const page = pageStubs();
-    let messages = [{ messageId: 'm1', type: 'user', content: 'say ball' },
+    let messages = [{ messageId: 'm1', type: 'user', content: 'say ball', status: 'sent' },
       { messageId: 'm0', type: 'assistant', content: 'Say ball.' }];
-    const setMessages = (fn) => { messages = fn(messages); };
+    // Demopage's own updateMessageStatus: merge the updates into that bubble.
+    const updateMessageStatus = (id, updates) => {
+      messages = messages.map((m) => (m.messageId === id ? { ...m, ...updates } : m));
+    };
     // eslint-disable-next-line no-new-func
-    const notAddressed = new Function('openMic', 'resultData', 'msgId', 'setMessages', 'console',
+    const notAddressed = new Function('openMic', 'resultData', 'msgId', 'updateMessageStatus', 'console',
       `${block}\nreturn notAddressed;`,
-    )(openMic, resultData, 'm1', setMessages, page.console);
+    )(openMic, resultData, 'm1', updateMessageStatus, page.console);
     return { notAddressed, messages, logs: page.logs };
   }
 
-  test('an open-mic turn judged not addressed leaves no bubble and logs it', () => {
-    const { notAddressed, messages, logs } = reply(true, { text: '', not_addressed: true });
+  test('an open-mic turn judged not addressed keeps its bubble, marked heard with the reason, and logs it', () => {
+    const { notAddressed, messages, logs } = reply(true,
+      { text: '', addressed: false, not_addressed: true, reason: 'talking to the audience' });
     expect(notAddressed).toBe(true);
-    expect(messages.map((m) => m.messageId)).toEqual(['m0']);
+    expect(messages.map((m) => m.messageId)).toEqual(['m1', 'm0']);
+    expect(messages[0]).toMatchObject({
+      status: 'sent', error: null, heard: true, heardReason: 'talking to the audience',
+    });
+    expect(messages[1].heard).toBeUndefined();
     expect(logs).toEqual(['[STT] open mic: turn judged not addressed, no reply']);
   });
 
-  test('a clicked turn is never silenced by the flag', () => {
+  test('a clicked turn is never marked heard by the flag', () => {
     const { notAddressed, messages } = reply(false, { text: '', not_addressed: true });
     expect(notAddressed).toBe(false);
-    expect(messages).toHaveLength(2);
+    expect(messages.every((m) => m.heard === undefined)).toBe(true);
   });
 
-  test('the empty-reply failure is not shown for a silent open-mic turn', () => {
+  test('no reply bubble, no voice, no failure for a turn the agent did not take', () => {
+    // The reply bubble and its speech live only in the branch that has words;
+    // a not-addressed answer has none ('' text), and the heard block speaks
+    // nothing.
+    const heard = cut(SRC, 'const notAddressed = openMic && resultData.not_addressed === true;',
+      'if (!cardConsumedText && !replyPushed && responseText) {');
+    expect(heard).not.toMatch(/speak|assistantMessage/);
+    const withWords = cut(SRC, 'if (!cardConsumedText && !replyPushed && responseText) {',
+      '} else if (!cardConsumedText && !replyPushed && !notAddressed) {');
+    expect(withWords).toContain('shouldSpeakLocalReply(');
     expect(SRC).toContain('} else if (!cardConsumedText && !replyPushed && !notAddressed) {');
+  });
+});
+
+describe('the chat list shows a heard bubble muted, tagged', () => {
+  const LIST = fs.readFileSync(path.join(__dirname, '..', '..', 'pages', 'chat', 'ChatMessageList.js'), 'utf8');
+
+  test('the tag is one constant, plain words', () => {
+    expect(HEARD_NOT_FOR_ME).toBe('Heard - not for me');
+  });
+
+  test('a heard bubble renders the tag and is muted', () => {
+    expect(LIST).toContain("import {HEARD_NOT_FOR_ME} from '../../hooks/useSpeechRecognition';");
+    expect(cut(LIST, '{message.heard && (', ')}')).toContain('{HEARD_NOT_FOR_ME}');
+    expect(LIST).toContain('opacity: message.heard ? 0.6 : undefined,');
   });
 });
 

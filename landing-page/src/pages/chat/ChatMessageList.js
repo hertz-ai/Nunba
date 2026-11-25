@@ -7,6 +7,7 @@ import RelativeTime from '../../components/Common/RelativeTime';
 import {isReplyMessage} from '../../utils/chatRetry';
 import {timeOf} from '../../utils/mergeRestoredMessages';
 import {formatTier} from '../../utils/tier';
+import {HEARD_NOT_FOR_ME} from '../../hooks/useSpeechRecognition';
 
 import Lottie from 'lottie-react';
 import {FileText} from 'lucide-react';
@@ -658,6 +659,8 @@ const ChatMessageList = ({
                 backgroundColor:
                   message.type === 'user' ? '#EFEAAA' : '#212A31',
                 color: message.type === 'user' ? '#000000' : '#FFFFFF',
+                // Open-mic speech the agent judged not for it: kept, muted.
+                opacity: message.heard ? 0.6 : undefined,
                 animationDelay: `${Math.min(index * 30, 300)}ms`,
                 animationFillMode: 'both',
               }}
@@ -673,6 +676,11 @@ const ChatMessageList = ({
                   {message.type === 'user' && (
                     <div className="space-y-2">
                       <div>{message.content}</div>
+                      {message.heard && (
+                        <div className="text-xs font-normal" title={message.heardReason || undefined}>
+                          {HEARD_NOT_FOR_ME}
+                        </div>
+                      )}
 
                       {message.pdf && (
                         <div className="flex flex-col gap-2 mt-2">
