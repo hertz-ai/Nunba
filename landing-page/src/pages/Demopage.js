@@ -5818,11 +5818,6 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                             >
                               Login
                             </RouterLink>
-                            <OtpAuthModal
-                              isOpen={isModalOpen}
-                              onClose={() => setIsModalOpen(false)}
-                              forceGuestMode={isLocalRoute}
-                            />
                           </li>
                           <span className="mx-4">OR</span>
                           <li className="inline mb-0 ps-1">
@@ -5939,6 +5934,17 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             showThinkingTraces={showThinkingTraces}
             onToggleShowThinkingTraces={toggleShowThinkingTraces}
           />
+          {/* The one sign-in modal.  It lived inside the empty-chat welcome
+              card, so with restored history "Please login to talk to agent"
+              opened nothing. */}
+          {!isAuthenticated && (
+            <OtpAuthModal
+              isOpen={isModalOpen}
+              onClose={() => setIsModalOpen(false)}
+              message={sessionExpiredMessage}
+              forceGuestMode={isLocalRoute}
+            />
+          )}
         </div>
       </div>
       {!isAuthenticated && (
