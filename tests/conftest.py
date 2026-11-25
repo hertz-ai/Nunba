@@ -58,6 +58,24 @@ def _private_tts_state_file(tmp_path, monkeypatch):
     monkeypatch.setenv('NUNBA_TTS_STATE_PATH', str(tmp_path / 'tts_state.json'))
 
 
+@pytest.fixture(autouse=True)
+def _no_handshake_verdicts_from_another_test():
+    """Each test starts with no saved TTS handshake verdicts.
+
+    tts_handshake._cache lives for the process, and both the selector's
+    passes and the fallback's list (TTSEngine._fallback_voices) leave out a
+    voice whose every saved handshake failed.  A test that ran a failing
+    handshake (test_tts_handshake.py leaves ('piper', 'en') failed) would
+    otherwise take that voice away from every test after it in the same
+    run.  Cleared only when the module is already loaded: nothing is
+    imported for tests that never touch TTS.
+    """
+    handshake = sys.modules.get('tts.tts_handshake')
+    if handshake is not None:
+        with handshake._cache_lock:
+            handshake._cache.clear()
+
+
 # ---------------------------------------------------------------------------
 # Temp directory for config files (llama_config, etc.)
 # ---------------------------------------------------------------------------
