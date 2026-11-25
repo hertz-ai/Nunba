@@ -112,8 +112,9 @@ const PUSHED_REPLY_WAIT_MS = 120000;
 
 // handleStart's argument when the page opens the mic by itself (once speech
 // recognition is ready) rather than the person clicking it.  Such a mic hears
-// the whole room, so it sends only speech that names Nunba
-// (useSpeechRecognition.micTurnText).  A click passes the click event.
+// the whole room, so its turns are sent marked open_mic and HARTOS decides
+// from context whether the agent answers (useSpeechRecognition.micTurnText).
+// A click passes the click event.
 const UNPROMPTED_MIC = 'unprompted';
 
 // Setup/install cards (CUDA torch, GPU-whisper ctranslate2, model downloads,
@@ -547,9 +548,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         for (const [type, step] of Object.entries(data.steps)) {
           if (step.status === 'ready' && !announcedCapsRef.current.has(type)) {
             announcedCapsRef.current.add(type);
-            // Auto-start mic when STT is ready — voice-first UX.  Nobody
-            // clicked it, so it sends only speech that names Nunba, and the
-            // announcement says so.
+            // Auto-start mic when STT is ready: the mic is on by default.
+            // Nobody clicked it, so its turns go marked open_mic, and the
+            // announcement says the mic is on.
             const opensMic = type === 'stt' && !isRecording && handleStartRef.current;
             const label = opensMic ? OPEN_MIC_CUE : CAPABILITY_LABELS[type];
             if (label) {
@@ -1111,9 +1112,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       const [next, ...rest] = messageQueue;
       setMessageQueue(rest);
       // Directly set inputMessage and call handleSend via ref on next tick
+      // (an open-mic turn keeps its open_mic mark through the queue).
       setInputMessage(next.text);
       setTimeout(() => {
-        if (handleSendRef.current) handleSendRef.current();
+        if (handleSendRef.current) handleSendRef.current({ openMic: next.openMic === true });
       }, 50);
     }
   }, [loading, engineReady, agentsLoading]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1137,7 +1139,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         const [next, ...rest] = prev;
         setInputMessage(next.text);
         setTimeout(() => {
-          if (handleSendRef.current) handleSendRef.current();
+          if (handleSendRef.current) handleSendRef.current({ openMic: next.openMic === true });
         }, 50);
         return rest;
       });
@@ -3363,18 +3365,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     if (isRecording || micBusyRef.current) return;
     micBusyRef.current = true;
     // True when the page opened this mic by itself; a click passes its event.
+    // Such a mic sends what it hears through the same send as a clicked one,
+    // marked open_mic ({ openMic: true }), and HARTOS decides whether the
+    // agent answers.  It used to drop every final that did not start with
+    // "Nunba" (owner 2026-11-24: the mic is on by default, no keyword).
     const unprompted = how === UNPROMPTED_MIC;
-    // Such a mic drops speech that does not name Nunba.  Both tiers report a
-    // drop here: the length only (it is room speech, not the person's), and
-    // once per mic an on-screen cue so the refusal is not silent.
-    let toldToSayName = false;
-    const notAddressed = (said) => {
-      console.log(`[STT] open mic: ${String(said).trim().length} chars not addressed to Nunba, not sent`);
-      if (!toldToSayName) {
-        toldToSayName = true;
-        pushNotification({ type: 'info', message: OPEN_MIC_CUE });
-      }
-    };
 
     // Barge-in: if TTS is playing, stop it before starting mic
     if (tts.isSpeaking) {
@@ -3466,18 +3461,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             const data = JSON.parse(evt.data);
             if (data.text?.trim()) {
               if (data.is_final) {
-                const words = micTurnText(data.text, unprompted);
-                if (!words) {
-                  notAddressed(data.text);
-                  return;
-                }
+                const words = micTurnText(data.text);
+                if (!words) return;
                 fullText += (fullText ? ' ' : '') + words;
                 setInputMessage(fullText);
-                // Auto-send after 1s of silence (fast conversational flow)
+                // Auto-send after 1s of silence (fast conversational flow),
+                // marked open_mic when the page opened this mic.
                 clearTimeout(autoSendTimer);
                 autoSendTimer = setTimeout(() => {
                   if (fullText.trim() && handleSendRef.current) {
-                    handleSendRef.current();
+                    handleSendRef.current({ openMic: unprompted });
                     fullText = '';
                   }
                 }, 1000);
@@ -3493,7 +3486,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           stopAudio();
           clearTimeout(autoSendTimer);
           if (fullText.trim() && handleSendRef.current) {
-            handleSendRef.current();
+            handleSendRef.current({ openMic: unprompted });
             fullText = '';
           }
           recognitionRef.current = null;
@@ -3638,16 +3631,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           else interim += result[0].transcript;
         }
         if (unprompted) {
-          // A mic the page opened: only speech that names Nunba, and no
-          // partial speech in the composer (same rule as the Whisper tier).
+          // A mic the page opened: no partial speech in the composer (same
+          // rule as the Whisper tier); its finals are sent marked open_mic.
           if (!newFinal) return;
-          const words = micTurnText(newFinal, true);
-          if (!words) {
-            notAddressed(newFinal);
-            return;
-          }
-          // Chrome's finals carry their own leading space; the words after
-          // the name are trimmed, so two addressed finals need one between.
+          const words = micTurnText(newFinal);
+          if (!words) return;
+          // Chrome's finals carry their own leading space; the words are
+          // trimmed, so two finals need one between.
           newFinal = (committedText ? ' ' : '') + words;
           interim = '';
         }
@@ -3659,7 +3649,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           clearTimeout(autoSendTimer);
           autoSendTimer = setTimeout(() => {
             if (committedText.trim() && handleSendRef.current) {
-              handleSendRef.current();
+              handleSendRef.current({ openMic: unprompted });
               committedText = '';
               setInputMessage('');
             }
@@ -3689,7 +3679,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       recognition.onend = () => {
         clearTimeout(autoSendTimer);
         if (committedText.trim() && handleSendRef.current) {
-          handleSendRef.current();
+          handleSendRef.current({ openMic: unprompted });
           committedText = '';
           setInputMessage('');
         }
@@ -4157,7 +4147,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     }, PUSHED_REPLY_WAIT_MS);
   };
 
-  const handleSend = async () => {
+  const handleSend = async (how) => {
+    // True for a turn the page-opened mic heard (handleStart, UNPROMPTED_MIC):
+    // it goes marked open_mic and HARTOS decides whether the agent answers.
+    // A click or key passes an event, which is never an open-mic turn.
+    const openMic = how?.openMic === true;
     // Prime TTS audio element on user gesture — required by WebView2 autoplay policy.
     // Without this, audio.play() from async SSE callbacks is silently blocked.
     // Fire-and-forget: a stray `await` here blocks the rest of handleSend
@@ -4250,7 +4244,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       (!engineReady && withinEngineBootGrace) ||
       agentsLoading
     ) {
-      setMessageQueue((prev) => [...prev, { text: inputMessage.trim(), id: Date.now() }]);
+      setMessageQueue((prev) => [...prev, { text: inputMessage.trim(), id: Date.now(), openMic }]);
       setInputMessage('');
       return;
     }
@@ -4404,6 +4398,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               // Local | Hybrid | Hive from the toggle: a Hive turn runs here
               // first and escalates (HARTOS speculative_dispatcher).
               intelligence_preference: intelligencePreference,
+              // Heard by the mic the page opened, nobody clicked: HARTOS
+              // (addressee) answers or stays silent from context.
+              ...(openMic ? { open_mic: true } : {}),
             });
             // isRequestInFlight is cleared below, once the reply (or the
             // reason there is none) is on screen.
@@ -4589,6 +4586,14 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             // no_content: the reply is pushed to this window later, as on the
             // cloud path, so the turn stays open for it (awaitPushedReply).
             const replyPushed = resultData.status === 'no_content';
+            // An open-mic turn HARTOS judged not meant for the agent: no
+            // reply, no voice, and the room's words leave the chat (they are
+            // not the person's turn), rather than a failed message.
+            const notAddressed = openMic && resultData.not_addressed === true;
+            if (notAddressed) {
+              console.log('[STT] open mic: turn judged not addressed, no reply');
+              setMessages((prev) => prev.filter((m) => m.messageId !== msgId));
+            }
             if (!cardConsumedText && !replyPushed && responseText) {
               const assistantMessage = {
                 type: 'assistant',
@@ -4681,7 +4686,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                   logger.warn('[TTS] local-reply speak failed:', err?.message || err);
                 });
               }
-            } else if (!cardConsumedText && !replyPushed) {
+            } else if (!cardConsumedText && !replyPushed && !notAddressed) {
               // A 200 with no text and no card: say so on the message
               // rather than end the turn with nothing on screen.
               updateMessageStatus(msgId, { status: 'failed', error: EMPTY_REPLY_REASON });

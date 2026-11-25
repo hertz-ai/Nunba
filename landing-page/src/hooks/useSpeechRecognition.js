@@ -220,10 +220,9 @@ export function startContinuousRecognition(Recognition, lang, onResult) {
 // Speech is meant for Nunba when it names Nunba ("Hey Nunba, ...").  Returns
 // what was said after the name -- leading punctuation dropped, words as
 // spoken -- '' when the name came with nothing after it, and null when the
-// name is not in it.  The one rule for both the "Hey Nunba" listener and a
-// mic the chat page opened by itself (micTurnText below).  The name counts
-// only as a whole word: "the nunbas are here" does not name Nunba (it used to
-// send "s are here").
+// name is not in it.  Only the "Hey Nunba" listener uses it; the chat page's
+// mic does not (micTurnText below).  The name counts only as a whole word:
+// "the nunbas are here" does not name Nunba (it used to send "s are here").
 const WAKE_WORD = /\bnunba\b/i;
 export function addressedToNunba(text) {
   const said = String(text || '');
@@ -233,21 +232,20 @@ export function addressedToNunba(text) {
 }
 
 // What one final transcript from the chat page's mic sends as a turn, or null
-// to send nothing.  A mic the person clicked open sends what they said.  A
-// mic the page opened by itself (it starts listening once speech recognition
-// is ready) hears the whole room, so it sends only speech addressed to Nunba:
-// on 2026-11-03 three background-speech finals ("1.5°C 1.5°C", "And he leaves
-// me sickly...") each became an agent turn.
-export function micTurnText(said, unprompted) {
-  const words = unprompted ? addressedToNunba(said) : String(said || '').trim();
-  return words || null;
+// to send nothing: what was said, for a mic the person clicked open and for
+// one the page opened by itself alike.  The page used to send an open mic's
+// speech only after the word "Nunba" (11-03, after room speech became agent
+// turns).  Owner 2026-11-24/25: the mic is on by default, and whether speech
+// was meant for the agent is worked out from context, not a keyword.  So the
+// page sends it marked as heard by the open mic, and HARTOS (addressee)
+// decides whether the agent answers or stays silent.
+export function micTurnText(said) {
+  return String(said || '').trim() || null;
 }
 
-// What the person is told about such a mic: when the page opens it, and the
-// first time it drops speech that did not name Nunba.  Without it the refusal
-// was silent: the red Stop looked like a mic that hears everything, and the
-// dropped words left only a console line.
-export const OPEN_MIC_CUE = 'I\'m listening. Start with "Nunba" to talk to me.';
+// What the person is told when the page opens the mic by itself: that it is
+// on.  It used to say 'Start with "Nunba" to talk to me.'
+export const OPEN_MIC_CUE = 'The microphone is on. I\'m listening.';
 
 // What the person is told when a mic's speech socket did not come back, so the
 // button never shows a mic that hears nothing (owner 2026-11-24, "I see stop

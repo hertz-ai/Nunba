@@ -2832,6 +2832,10 @@ def _run_chat_turn(data):
     intelligence_preference = data.get('intelligence_preference')
     if intelligence_preference not in ('local_only', 'auto', 'hive_preferred'):
         intelligence_preference = None
+    # open_mic: the page's always-on mic heard this, nobody clicked it.
+    # Forwarded to HARTOS, which decides from context whether the agent
+    # answers or stays silent (owner 2026-11-24: no keyword gate).
+    open_mic = data.get('open_mic') is True
     # Honor the body, then fall back to the canonical persisted reader — the
     # same shape as preferred_lang below.  The bare 'auto' default overrode a
     # stored 'local_only' choice on every turn, which is the same defect the
@@ -3505,6 +3509,7 @@ def _run_chat_turn(data):
                     device_id=device_id,
                     attachments=attachments,
                     goal_tags=goal_tags,
+                    open_mic=open_mic,
                 )
                 # Surface explicit LangChain errors (guardrails, prompt injection, etc.)
                 if result.get('error') and not (result.get('text') or result.get('response')):
@@ -3536,6 +3541,21 @@ def _run_chat_turn(data):
                     # "all at once" rendering the user reported.  Drained
                     # buffer is now diag-only; not attached to HTTP responses.
                     return jsonify(error_response)
+
+                # An open-mic turn HARTOS judged not meant for the agent: the
+                # agent stays silent.  No reply, no TTS, and NOT the raw-llama
+                # fallback below, which would answer the room's words.
+                if open_mic and result.get('not_addressed'):
+                    logger.info(f'open-mic turn judged not addressed '
+                                f'(request_id={request_id}), no reply')
+                    return jsonify({
+                        'text': '',
+                        'agent_id': agent_id,
+                        'agent_type': 'local',
+                        'source': 'langchain_local',
+                        'success': True,
+                        'not_addressed': True,
+                    })
 
                 response_text = result.get('text') or result.get('response')
                 # The `media` HARTOS's /chat reply carries (a Reel Studio

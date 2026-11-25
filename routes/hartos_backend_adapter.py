@@ -846,6 +846,7 @@ def chat(
     device_id=None,
     attachments=None,
     goal_tags=None,
+    open_mic=False,
     **kwargs
 ) -> dict[str, Any]:
     """
@@ -962,6 +963,11 @@ def chat(
     goal_tags = turn_goal_tags(goal_tags)
     if goal_tags:
         payload["goal_tags"] = goal_tags
+    # Heard by the page's always-on mic, nobody clicked: HARTOS /chat decides
+    # from context whether the agent answers or stays silent (not_addressed).
+    # Sent only when true, so every other caller's body is unchanged.
+    if open_mic is True:
+        payload["open_mic"] = True
     # Per-request draft override: HARTOS /chat honours `draft_first` in the
     # body.  Sent only when a caller sets it, so every other caller keeps
     # HARTOS's default.
