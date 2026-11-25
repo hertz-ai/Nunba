@@ -161,7 +161,20 @@ export function createApiClient(
         // behavior as the prior 2 lines (remove access_token +
         // dispatch auth:expired); SocialContext silent-recovery
         // listener still fires.
-        _getClearTokenWriter()();
+        //
+        // Only a 401 for the token the page holds NOW says that token is
+        // dead.  A request that went out with no token, or an older one (the
+        // startup burst before useStorageSync restores the sign-in), must
+        // not erase the token restored since (live 2026-11-25).  With no
+        // token on the page there is nothing to erase: as before.
+        const current = localStorage.getItem('access_token');
+        const headers = error.config?.headers;
+        const sent = headers && typeof headers.get === 'function'
+          ? headers.get('Authorization')
+          : headers?.Authorization;
+        if (!current || sent === `Bearer ${current}`) {
+          _getClearTokenWriter()();
+        }
       }
 
       // Surface server-side faults to the global ApiErrorBanner so the
