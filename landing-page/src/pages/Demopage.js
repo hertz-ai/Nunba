@@ -83,6 +83,7 @@ import {useLocalEngineReady} from '../hooks/useLocalEngineReady';
 import {scheduleLoadingRetry} from '../utils/loadingRetry';
 
 // ── Extracted sub-components ──
+import AgentPersonaLabel from '../components/chat/AgentPersonaLabel';
 import GpuTierBadge from '../components/chat/GpuTierBadge';
 import NotificationBell from '../components/Common/NotificationBell';
 import AgentSidebar from './chat/AgentSidebar';
@@ -994,6 +995,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             source: contData.source,
             servedBy: contData.served_by,
             nodeTier: contData.node_tier,
+            persona: contData.persona,
           }]);
           setShouldScroll(true);
         }
@@ -1063,6 +1065,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                       source: execData.source,
                       servedBy: execData.served_by,
                       nodeTier: execData.node_tier,
+                      persona: execData.persona,
                     }]);
                     setShouldScroll(true);
                   }
@@ -2518,6 +2521,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             source: parsed.source || 'cloud',
             servedBy: parsed.served_by,
             nodeTier: parsed.node_tier,
+            // The persona HARTOS named for this person in the agent that
+            // pushed it (design_1125 B): the chat header shows the newest
+            // of the open agent's (AgentPersonaLabel).
+            persona: parsed.persona,
+            promptId: parsed.prompt_id,
           };
           setMessages((prev) => {
             const newMessages = [...prev, assistantMessage];
@@ -2546,6 +2554,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           source: parsed.source || 'cloud',
           servedBy: parsed.served_by,
           nodeTier: parsed.node_tier,
+          persona: parsed.persona,
+          promptId: parsed.prompt_id,
         };
 
         setMessages((prev) => {
@@ -2596,6 +2606,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             source: parsed.source,
             servedBy: parsed.served_by,
             nodeTier: parsed.node_tier,
+            persona: parsed.persona,
+            promptId: parsed.prompt_id,
           };
           setMessages((prev) => {
             const newMessages = [...prev, assistantMessage];
@@ -4647,6 +4659,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                 // routes/chatbot_routes.py:2693.
                 servedBy: resultData.served_by,
                 nodeTier: resultData.node_tier,
+                // The persona HARTOS named for this person in the agent
+                // (design_1125 B): the chat header shows the newest.
+                persona: resultData.persona,
                 timestamp: new Date(),
                 // Draft-first: tag with speculationId so the expert
                 // response arriving via WAMP can replace this bubble
@@ -4838,6 +4853,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           source: resultData.source || null,
           servedBy: resultData.served_by,
           nodeTier: resultData.node_tier,
+          persona: resultData.persona,
         }]);
       } else {
         // No text back: say so, rather than end the run with nothing shown.
@@ -5652,8 +5668,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                   #198 — NotificationBell sits here so the bell + unread badge are
                   visible on the FIRST page the user sees (the chat), matching LinkedIn-
                   style global top-right placement. Same component the AdminLayout uses
-                  (commit 8ffa635e); reads /api/social/notifications. */}
+                  (commit 8ffa635e); reads /api/social/notifications.
+                  On its left, "<agent name> · <persona>" once the open agent's
+                  reply names a persona (design_1125 B, AgentPersonaLabel). */}
               <div className="flex justify-end items-center gap-2 px-3 pt-2">
+                <AgentPersonaLabel name={currentAgent?.name} promptId={currentAgent?.prompt_id}
+                  messages={messages} />
                 <button
                   type="button"
                   onClick={toggleVoiceSpeechConsent}

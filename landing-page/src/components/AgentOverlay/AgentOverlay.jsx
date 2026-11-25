@@ -9,6 +9,7 @@ import { formatMoney } from '../../constants/liquidFragments';
 import realtimeService from '../../services/realtimeService';
 import { agentFormApi, chatApi, consentApi, notificationsApi } from '../../services/socialApi';
 import { HART_GLASS_SURFACE } from '../../theme/hartGlass';
+import { withPersona } from '../../utils/agentPersona';
 import { rememberOwnTurn } from '../../utils/chatRetry';
 
 
@@ -2216,9 +2217,11 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
                 as a person asking (owner 2026-11-11), and a camera ask's body
                 is HARTOS's reason, which names no one.  A bare id (a prompt
                 id) means nothing to a person, so an overlay with only an id
-                gets no badge. */}
+                gets no badge.  An agent's question also says the persona it
+                is for: "<agent> · <persona>" (HARTOS person_ask, design_1125
+                B); none placed, the agent alone. */}
             {overlay.agent_name && (
-              <Chip label={askerOf(overlay)} size="small"
+              <Chip label={withPersona(askerOf(overlay), overlay.persona)} size="small"
                 sx={{ position: 'absolute', top: 8, left: 12, fontSize: '0.65rem', height: 20,
                   background: 'rgba(108,99,255,0.2)', color: ACCENT, border: '1px solid rgba(108,99,255,0.3)' }} />
             )}

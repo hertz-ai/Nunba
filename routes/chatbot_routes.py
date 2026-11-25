@@ -3658,6 +3658,11 @@ def _run_chat_turn(data):
                         response_json['agent_name'] = result['agent_name']
                     if result.get('agent_display_name'):
                         response_json['agent_display_name'] = result['agent_display_name']
+                    # The persona of this turn's person in the agent (HARTOS
+                    # _chat_reply, design_1125 B): the page names it beside
+                    # the agent's name.  None named, none passed on.
+                    if result.get('persona'):
+                        response_json['persona'] = result['persona']
                     # Pass through creation_suggested flag
                     if result.get('creation_suggested'):
                         response_json['creation_suggested'] = True
