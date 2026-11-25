@@ -1499,8 +1499,10 @@ def _spoke_this_session(backend: str) -> bool:
 
 def _handshake_known_failed(backend: str) -> bool:
     """True when every handshake of ``backend`` in this run failed
-    (tts_handshake.is_known_failed): both ladder passes and the fallback
-    leave it out.  False when that cannot be read."""
+    (tts_handshake.is_known_failed): both ladder passes leave it out, and a
+    demotion does not count it as a voice ready to take over
+    (TTSEngine._can_speak_now).  The fallback still tries it.  False when
+    that cannot be read."""
     try:
         from tts import tts_handshake
         return bool(tts_handshake.is_known_failed(backend))
@@ -2159,10 +2161,15 @@ class TTSEngine:
                 progress(f"{backend} installed — testing synthesis...")
             # run_handshake uses verify_backend_synth internally, so the DRY
             # contract (one synth probe path) holds.  retry() is
-            # run_handshake (broadcast, local play) with the saved verdict
-            # dropped first.
+            # run_handshake with the saved verdict dropped first.  An
+            # install, which has its setup card, announces the voice (the
+            # page's ready card, the greeting on the speakers).  A heal is
+            # quiet: it runs in the middle of a conversation (review rv_db95:
+            # the page showed "Voice engine ready" and played the greeting).
+            announce = progress is not None
             hs = _hs_mod.retry(self, backend, lang=self._language,
-                               timeout_s=180)
+                               timeout_s=180, broadcast=announce,
+                               play_audio=announce)
             verdict = _vr_mod.Result(
                 ok=hs.ok, n_bytes=hs.n_bytes,
                 err=hs.err, elapsed_s=hs.elapsed_s,
@@ -2411,10 +2418,11 @@ class TTSEngine:
           machine than it has failed (``_has_good_record``) gets the normal
           threshold even for a structural failure.
         * **The last voice**: a voice is not demoted while no other voice
-          for ``language`` is ready (``_fallback_voices``, the list the
-          fallback itself walks).  The failure is counted and logged with
-          the time its start took; the rest of this line goes on without
-          it, and the next line starts it again.
+          for ``language`` can speak now (the fallback's own list,
+          ``_fallback_voices``, cut to ``_can_speak_now``: it spoke in this
+          run or its packages are known to import).  The failure is
+          counted and logged with the time its start took; the rest of
+          this line goes on without it, and the next line starts it again.
 
         A refused key (``key_refused``) is the exception to both: the repo
         will refuse the same key again, so one start demotes.
@@ -2487,7 +2495,9 @@ class TTSEngine:
                 f"msg: {str(error)[:120]!r})"
             )
         lang = language or self._language
-        if not key_refused and not self._fallback_voices(lang, without=backend):
+        if not key_refused and not any(
+                self._can_speak_now(v, lang)
+                for v in self._fallback_voices(lang, without=backend)):
             why = self._say_set_aside(self._set_aside_for(lang))
             logger.warning(
                 f"TTS backend '{backend}' KEPT after {n} {kind} "
@@ -4314,17 +4324,20 @@ class TTSEngine:
 
     def _fallback_voices(self, language, without, transient=False) -> list[str]:
         """The voices a line in ``language`` goes to when ``without`` (the
-        selected voice) does not speak it, in ladder order.
+        selected voice) does not speak it, in ladder order: the fallback's
+        own list (_synthesize_with_fallback), as it always was.  A voice is
+        on it when it is in the language's ladder (the VRAM filter has
+        already left out the ones that neither fit nor run on the CPU), can
+        speak the language, is not demoted and has its venv when it needs
+        one; and its start did not fail earlier on this line (one start per
+        line).  A saved handshake verdict takes nobody off it: the verdict
+        can be older than the voice's last line, and Piper is the last
+        resort, never set aside (review rv_db95: with such a verdict mms_tts
+        was never tried and every Tamil line was silent).
 
-        The one list for the fallback (_synthesize_with_fallback) and for
-        "is another voice ready" before a demotion (_record_backend_failure).
-        A voice is on it when it is in the language's ladder (the VRAM filter
-        has already left out the ones that neither fit nor run on the CPU),
-        Nunba can build it, it can speak the language, it is not demoted, no
-        handshake of it failed in this run, its start did not fail earlier on
-        this line, it has its venv when it needs one, and (Piper) it has a
-        voice for the language.  Nothing here loads, installs, probes a
-        process or evicts a model.
+        "Is another voice ready" before a demotion (_record_backend_failure)
+        is this list cut to the voices that can speak now (_can_speak_now).
+        Nothing here loads, installs, probes a process or evicts a model.
 
         ``transient``: a passing failure (no GPU memory for this line);
         Piper alone when it speaks the language, as before.
@@ -4351,12 +4364,9 @@ class TTSEngine:
         if lang_norm != 'en':
             candidates = [c for c in candidates if c in capable]
         failed_on_line = getattr(self._line, 'failed', None) or {}
-        ready = []
+        voices = []
         for c in candidates:
-            if (not _is_engine_backend(c) or self._is_demoted(c)
-                    or _handshake_known_failed(c) or c in failed_on_line):
-                continue
-            if c == BACKEND_PIPER and not _piper_has_voice(language):
+            if self._is_demoted(c) or c in failed_on_line:
                 continue
             if c not in self._backends and _is_venv_backend(c):
                 # A venv-backed engine whose venv is missing or was built by
@@ -4374,8 +4384,35 @@ class TTSEngine:
                     logger.info(f"Voice {c} left out: its venv is missing or "
                                 f"built by another interpreter")
                     continue
-            ready.append(c)
-        return ready
+            voices.append(c)
+        return voices
+
+    def _can_speak_now(self, backend, language) -> bool:
+        """Whether ``backend`` can take a line in ``language`` now, as far as
+        is known without starting anything: it spoke in this run (a passed
+        handshake, or a line through this engine), or the runnable check's
+        saved answer (_can_run_backend's cache, which the auto-install probe
+        also fills) says its packages import; and no handshake of it failed
+        in this run.  A venv folder whose packages are missing, or a voice
+        never checked, is not ready.  Piper, the last resort that is never
+        set aside, needs only a voice for the language.
+
+        Asked only for "is another voice ready" before a demotion
+        (_record_backend_failure); the fallback still tries every voice on
+        its list (review rv_db95)."""
+        if backend == BACKEND_PIPER:
+            return _piper_has_voice(language)
+        if not _is_engine_backend(backend) or _handshake_known_failed(backend):
+            return False
+        with self._state_lock:
+            spoke = backend in self._stamped_this_run
+        if spoke or _spoke_this_session(backend):
+            return True
+        required_pkg = self._get_required_package(backend)
+        if not required_pkg:
+            return False
+        cache_key = f'venv:{backend}' if _is_venv_backend(backend) else required_pkg
+        return TTSEngine._import_check_cache.get(cache_key) is True
 
     def _set_aside_for(self, language) -> list[dict[str, Any]]:
         """Why each voice that can speak ``language`` is not speaking it, as

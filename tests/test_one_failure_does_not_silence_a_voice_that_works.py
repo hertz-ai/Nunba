@@ -135,8 +135,9 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(vs, '_backend_err_log_path',
                         lambda b: str(tmp_path / f'{b}.err'))
     monkeypatch.setattr(hs, '_cache', {})
-    monkeypatch.setattr(hs, '_play_locally', lambda path: None)
-    monkeypatch.setattr(hs, '_broadcast', lambda payload: None)
+    played, broadcasts = [], []
+    monkeypatch.setattr(hs, '_play_locally', played.append)
+    monkeypatch.setattr(hs, '_broadcast', broadcasts.append)
     monkeypatch.setattr(te, '_engine', None)
     monkeypatch.setattr(te, '_VRAM_SKIPS', {}, raising=False)
     monkeypatch.setattr(te, '_LADDER_FILTER_CACHE', {})
@@ -230,11 +231,19 @@ def world(monkeypatch, tmp_path):
         out = str(tmp_path / f'line_{lines[0]}.wav')
         return engine.synthesize(text, output_path=out, language=language), out
 
+    def runnable(voice, answer=True):
+        """The runnable check's saved answer for ``voice`` (the cache
+        _can_run_backend and the auto-install probe fill)."""
+        key = (f'venv:{voice}' if te._is_venv_backend(voice)
+               else te.TTSEngine._get_required_package(voice))
+        te.TTSEngine._import_check_cache[key] = answer
+
     return types.SimpleNamespace(
         te=te, hs=hs, state=state, reports=reports, published=published,
         ladders=ladders, installs=installs, cards=cards, starts=starts,
         fails=fails, broken=broken, takes=takes, write_state=write_state,
-        on_file=on_file, boot=boot, line=line)
+        on_file=on_file, boot=boot, line=line, runnable=runnable,
+        played=played, broadcasts=broadcasts)
 
 
 def _demotion(t0, failures=1):
@@ -272,6 +281,7 @@ def test_a_voice_with_a_good_record_gets_three_starts_for_a_structural_failure(w
     te = world.te
     mms = te.BACKEND_MMS_TTS
     world.ladders['ta'] = [te.BACKEND_INDIC_PARLER, mms, te.BACKEND_PIPER]
+    world.runnable(te.BACKEND_INDIC_PARLER)       # another voice is ready
     world.write_state(voice_record={mms: {
         'successes': 50, 'failures': 1, 'last_ok_at': time.time() - 60}})
     engine = world.boot()
@@ -290,6 +300,7 @@ def test_a_voice_without_a_good_record_is_demoted_after_one_structural_failure(
     te = world.te
     mms = te.BACKEND_MMS_TTS
     world.ladders['ta'] = [te.BACKEND_INDIC_PARLER, mms, te.BACKEND_PIPER]
+    world.runnable(te.BACKEND_INDIC_PARLER)       # another voice is ready
     if record:
         world.write_state(voice_record={mms: record})
     engine = world.boot()
@@ -374,11 +385,14 @@ def test_the_last_voice_ready_for_tamil_is_never_demoted(world, caplog):
 @pytest.mark.parametrize('other', ['ready', 'handshake_failed', 'demoted'])
 def test_a_voice_is_demoted_only_when_another_voice_for_the_language_is_ready(
         world, other):
-    """The fallback's own list decides "ready": a voice whose handshake failed
-    this run, or a demoted one, is not counted (and not started)."""
+    """Indic Parler's packages import (the runnable check said so).  A failed
+    handshake saved for it this run, or its demotion, means it is not ready:
+    mms_tts is kept.  The fallback itself still tries a voice whose saved
+    handshake failed (that verdict can be stale), but never a demoted one."""
     te = world.te
     mms, parler = te.BACKEND_MMS_TTS, te.BACKEND_INDIC_PARLER
     world.ladders['ta'] = [mms, parler, te.BACKEND_PIPER]
+    world.runnable(parler)
     world.broken[mms] = _start_failure(mms)
     engine = world.boot()
     if other == 'handshake_failed':
@@ -393,8 +407,83 @@ def test_a_voice_is_demoted_only_when_another_voice_for_the_language_is_ready(
         assert said == out and world.starts[-1] == (parler, 'ta')
     else:
         assert not engine._is_demoted(mms), f'demoted with no other voice ready ({other})'
+    if other == 'handshake_failed':
+        assert said == out and world.starts[-1] == (parler, 'ta'), (
+            'the fallback left out a voice for a saved verdict')
+    if other == 'demoted':
         assert said is None
         assert (parler, 'ta') not in world.starts
+
+
+@pytest.mark.parametrize('other', [
+    'venv_folder_without_its_packages', 'never_checked',
+    'runnable_check_said_yes', 'handshake_passed_this_run',
+    'spoke_a_line_this_run'])
+def test_another_voice_counts_as_ready_only_when_it_can_speak_now(
+        world, monkeypatch, other):
+    """Ready means it spoke in this run or the runnable check's saved answer
+    says its packages import.  A venv folder whose packages are missing, or a
+    voice nobody checked (chatterbox_multilingual speaks Tamil and has no
+    venv), is not ready: mms_tts is kept (owner, 23:40 IST: "if demoted
+    without another model inference ready that's also bad")."""
+    from tts import backend_venv
+    te = world.te
+    mms = te.BACKEND_MMS_TTS
+    other_voice = (te.BACKEND_INDIC_PARLER if other == 'venv_folder_without_its_packages'
+                   else te.BACKEND_CHATTERBOX_ML)
+    world.ladders['ta'] = [mms, other_voice, te.BACKEND_PIPER]
+    if other == 'venv_folder_without_its_packages':
+        monkeypatch.setattr(te, '_is_venv_backend', lambda b: b == other_voice)
+        # the folder is there: the venv layer's check without a probe says yes
+        monkeypatch.setattr(backend_venv, 'is_venv_healthy',
+                            lambda name, probe_module=None: True)
+        world.runnable(other_voice, False)        # its import probe said no
+    elif other == 'runnable_check_said_yes':
+        world.runnable(other_voice)
+    elif other == 'handshake_passed_this_run':
+        world.hs._cache[(other_voice, 'ta')] = types.SimpleNamespace(ok=True)
+    engine = world.boot()
+    if other == 'spoke_a_line_this_run':
+        engine._stamped_this_run.add(other_voice)
+
+    # mms_tts (no record) fails a start once on a Tamil line
+    engine._record_backend_failure(mms, _start_failure(mms), language='ta')
+
+    ready = other in ('runnable_check_said_yes', 'handshake_passed_this_run',
+                      'spoke_a_line_this_run')
+    assert engine._is_demoted(mms) is ready, (
+        f'{other}: mms_tts demoted={engine._is_demoted(mms)}, '
+        f'{"ready" if ready else "not ready"} expected')
+
+
+# ── a saved failed handshake does not take a voice off the fallback ───
+
+def test_a_tamil_voice_with_an_old_failed_handshake_still_takes_the_lines(world):
+    """mms_tts works, but a handshake of it failed earlier in this run and
+    that verdict is still saved.  The selector passes over it (as before);
+    the fallback must not: before, all three lines were silent."""
+    mms = world.te.BACKEND_MMS_TTS
+    world.hs._cache[(mms, 'ta')] = types.SimpleNamespace(ok=False)
+    engine = world.boot()
+    for n in (1, 2, 3):
+        said, out = world.line(engine)
+        assert said == out, f'Tamil line {n} silent with mms_tts working'
+    assert world.starts == [(mms, 'ta')] * 3
+
+
+def test_piper_with_an_old_failed_handshake_still_takes_an_english_line(world):
+    """Piper is the last resort and is never set aside: a failed handshake
+    of it saved earlier in this run does not take it off the fallback, so an
+    English line whose voice fails still speaks."""
+    te = world.te
+    xtts, piper = te.BACKEND_XTTS_V2, te.BACKEND_PIPER
+    world.ladders['en'] = [xtts, piper]
+    world.hs._cache[(piper, 'en')] = types.SimpleNamespace(ok=False)
+    world.broken[xtts] = _start_failure(xtts)
+    engine = world.boot(language='en')
+    said, out = world.line(engine, ENGLISH, language='en')
+    assert said == out, 'the English line was silent: Piper was left out'
+    assert world.starts == [(xtts, 'en'), (piper, 'en')]
 
 
 def test_a_kept_voice_is_started_once_per_line_and_the_log_says_what_it_cost(
@@ -440,6 +529,36 @@ def test_a_demoted_voice_whose_packages_run_is_checked_and_brought_back_without_
     assert mms not in world.te.TTSEngine._auto_install_failed
     said, out = world.line(engine)
     assert said == out and world.starts[-1] == (mms, 'ta')
+
+
+def test_the_check_of_a_demoted_voice_is_quiet(world):
+    """The heal runs during a conversation: its handshake is not broadcast
+    (the page made it a "Voice engine ready" card) and its greeting is not
+    played on the speakers."""
+    mms = world.te.BACKEND_MMS_TTS
+    world.write_state(demoted={mms: _demotion(time.time() - 3600)})
+    engine = world.boot()
+    engine._select_backend_for_language('ta')
+    _wait_for_threads('tts-heal-')
+    assert not engine._is_demoted(mms), 'the check did not pass'
+    assert world.broadcasts == [], 'the heal broadcast its handshake to the page'
+    assert world.played == [], 'the heal played its greeting on the speakers'
+
+
+def test_an_install_still_announces_its_voice(world, monkeypatch):
+    """An install shows its own setup card: its check still broadcasts and
+    plays the greeting, as before."""
+    te = world.te
+    mms = te.BACKEND_MMS_TTS
+    monkeypatch.setattr(te, '_probe_backend_runnable', lambda backend, pkg: False)
+    world.cards.return_value = MagicMock()        # the setup card's progress
+    world.write_state(demoted={mms: _demotion(time.time() - 3600)})
+    engine = world.boot()
+    engine._select_backend_for_language('ta')
+    _wait_for_threads('tts-auto-install-')
+    world.installs.assert_called_once()
+    assert not engine._is_demoted(mms)
+    assert len(world.broadcasts) == 1 and world.played
 
 
 def test_a_heal_check_that_fails_keeps_the_voice_demoted_and_is_not_tried_again(world):
