@@ -1361,9 +1361,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
         // Local /prompts already merges HARTOS + cloud agents — no separate cloud call needed
 
-        // Multi-device agent sync (authenticated users only)
+        // Multi-device agent sync (authenticated users only).  Gated on the
+        // cloud session, not the user id alone: the id is known from storage
+        // before useStorageSync restores the token, and a sync sent then went
+        // out with no token, got 401 and never ran again (live 2026-11-25).
         const mergeSyncedAgents = async () => {
-          if (decryptedUserId && !isGuestMode) {
+          if (decryptedUserId && !isGuestMode && session.status === 'cloud') {
             try {
               const syncRes = await chatApi.getAgentSync();
               const syncAgents = syncRes?.agents || [];
@@ -1522,7 +1525,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       }
     };
     fetchPrompts();
-  }, [agentData, decryptedUserId, agentRetryTrigger]);
+  }, [agentData, decryptedUserId, agentRetryTrigger, session.status]);
 
   // HART welcome: previously injected a fake assistant message which prevented
   // the empty-state welcome view (agent name + starter chips) from showing.
