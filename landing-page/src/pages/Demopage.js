@@ -3947,20 +3947,31 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           const wsPort = 5460;
           const ws = new WebSocket(`ws://127.0.0.1:${wsPort}`);
           let wsInterval = null;
+          let opened = false;
 
           ws.onopen = () => {
+            opened = true;
             console.log('[VIDEO] WebSocket connected, streaming via ws');
             // Send user_id first, then video_start
             ws.send(userId);
             ws.send('video_start');
           };
           ws.onerror = () => {
+            if (opened) return; // onclose follows and releases the camera
             console.warn('[VIDEO] WebSocket onerror, switching to HTTP fallback');
             if (wsInterval) clearInterval(wsInterval);
             try { ws.close(); } catch {}
             startHttpFallback();
           };
           ws.onclose = (ev) => {
+            // A socket that was in use and closed (VisionService stopped,
+            // Nunba quitting): release the camera.  Falling back to HTTP
+            // here kept the device held with nothing taking the frames.
+            if (opened) {
+              if (wsInterval) clearInterval(wsInterval);
+              if (!cancelled) stopCommon();
+              return;
+            }
             // Some WebKit builds close without ever firing onerror or
             // onopen (handshake refused silently) — treat an unopened
             // close the same as an error so we still fall back.

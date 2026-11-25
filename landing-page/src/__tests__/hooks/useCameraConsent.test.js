@@ -306,6 +306,15 @@ describe('the agent page streams through the one hook', () => {
     expect(src).toMatch(/setCameraConsent\(!cameraOn\)/);
   });
 
+  // A video-mode socket that opened and then closed released nothing: the
+  // page fell back to HTTP posting and kept the camera held.
+  test('video mode releases the camera when its open socket closes', () => {
+    const close = src.slice(src.indexOf('ws.onclose = (ev) => {'));
+    expect(close).toMatch(/^ws\.onclose = \(ev\) => \{[\s\S]*?if \(opened\) \{\s*if \(wsInterval\) clearInterval\(wsInterval\);\s*if \(!cancelled\) stopCommon\(\);\s*return;/);
+    expect(src).toMatch(/ws\.onopen = \(\) => \{\s*opened = true;/);
+    expect(src).toMatch(/ws\.onerror = \(\) => \{\s*if \(opened\) return;/);
+  });
+
   test('video mode streams only while the camera is on', () => {
     expect(src).toMatch(/if \(mediaMode !== 'video' \|\| !cameraOn\)/);
     expect(src).toMatch(/\}, \[mediaMode, effectiveUserId, cameraOn\]\);/);
