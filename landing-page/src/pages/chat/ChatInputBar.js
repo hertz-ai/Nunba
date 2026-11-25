@@ -12,6 +12,8 @@ import {
   Camera,
   Brain,
   Ear,
+  Video,
+  VideoOff,
 } from 'lucide-react';
 import React from 'react';
 
@@ -66,6 +68,10 @@ const ChatInputBar = ({
   // (with server-emitted dynamic verb) remains as the status surface.
   onToggleShowThinkingTraces,
   showThinkingTraces,
+  // The camera on/off switch: the same consent as the Privacy page's camera
+  // card (Demopage wires it to useCameraConsent's setCameraConsent).
+  onToggleCamera,
+  cameraOn,
 }) => {
   return (
     <div className="bg-black pt-4 border-t border-gray-700 flex justify-center flex-col mt-2 mb-2 sticky bottom-0 z-10">
@@ -345,6 +351,17 @@ const ChatInputBar = ({
             className="btn-feedback text-gray-400 hover:text-blue-400 p-1 btn-press" title="Take photo"
             aria-label="Take photo">
             <Camera className="w-4 h-4" />
+          </button>
+        )}
+
+        {/* Camera on/off: off stops the camera at once */}
+        {onToggleCamera && (
+          <button onClick={onToggleCamera}
+            className={`btn-feedback p-1 btn-press ${cameraOn ? 'text-green-400' : 'text-gray-500 hover:text-gray-300'}`}
+            title={cameraOn ? 'Camera on (click to turn off)' : 'Camera off (click to turn on)'}
+            aria-label={cameraOn ? 'Turn camera off' : 'Turn camera on'}
+            aria-pressed={Boolean(cameraOn)}>
+            {cameraOn ? <Video className="w-4 h-4" /> : <VideoOff className="w-4 h-4" />}
           </button>
         )}
 
