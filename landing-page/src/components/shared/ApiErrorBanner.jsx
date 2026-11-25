@@ -22,7 +22,9 @@ const EVENT_NAME = 'hevolve:api-error';
 
 function messageFor(status) {
   if (status >= 500) return "Something's off on our end. Try refreshing.";
-  if (status === 401 || status === 403) return 'Session expired — please sign in again.';
+  if (status === 401) return 'Session expired — please sign in again.';
+  // 403 is "not allowed": the session is fine, so do not ask for a sign-in.
+  if (status === 403) return "You don't have permission for that.";
   if (status === 404) return "Couldn't find what you asked for.";
   if (status >= 400) return 'Bad request — try again in a moment.';
   return 'Network glitch. Try refreshing.';
