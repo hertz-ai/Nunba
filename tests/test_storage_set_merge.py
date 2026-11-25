@@ -44,17 +44,25 @@ def set_storage_fn():
 
 
 def _dump_targets(fn):
-    """First positional arg of every json.dump(...) call, as source names."""
+    """The dict each write persists, as source names: the first positional
+    arg of json.dump(...), or the payload arg of the atomic writer
+    _atomic_write(path, payload) that set_storage uses since 2026-11-25."""
     out = []
     for node in ast.walk(fn):
-        if (isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
+        if not (isinstance(node, ast.Call) and node.args):
+            continue
+        if (isinstance(node.func, ast.Attribute)
                 and node.func.attr == 'dump'
                 and isinstance(node.func.value, ast.Name)
-                and node.func.value.id == 'json'
-                and node.args):
+                and node.func.value.id == 'json'):
             arg = node.args[0]
-            out.append(arg.id if isinstance(arg, ast.Name) else type(arg).__name__)
+        elif (isinstance(node.func, ast.Name)
+                and node.func.id == '_atomic_write'
+                and len(node.args) >= 2):
+            arg = node.args[1]
+        else:
+            continue
+        out.append(arg.id if isinstance(arg, ast.Name) else type(arg).__name__)
     return out
 
 
@@ -62,7 +70,8 @@ def test_persists_a_merged_dict_not_the_posted_one(set_storage_fn):
     """RED before the fix: json.dump(user_data, ...) — the clobber."""
     targets = _dump_targets(set_storage_fn)
 
-    assert targets, 'set_storage no longer writes user_data.json via json.dump'
+    assert targets, ('set_storage no longer writes user_data.json via '
+                     'json.dump or _atomic_write')
     assert 'user_data' not in targets, (
         "set_storage writes the POSTED-keys dict straight to user_data.json. "
         "That deletes every key the caller did not mention. Merge into the "

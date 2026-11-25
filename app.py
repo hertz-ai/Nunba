@@ -6045,6 +6045,7 @@ def start_flask():
                 from desktop.guest_identity import (
                     PLACEHOLDER_USER_ID,
                     USER_DATA_LOCK,
+                    _atomic_write,
                     get_user_data_file_path,
                     is_placeholder_user_id,
                 )
@@ -6120,8 +6121,21 @@ def start_flask():
                             _cleared.append(key)
                     stored.update(user_data)
 
-                    with open(user_data_file, 'w') as f:
-                        json.dump(stored, f)
+                    # Atomic: get_storage reads this file without the lock, and
+                    # open(..., 'w') emptied it before the dump, so a read in
+                    # between got a half-written file and the page took the
+                    # sign-in as missing (live 2026-11-25).  On Windows the
+                    # replace fails while a reader holds the file open, so try
+                    # again briefly rather than lose the write.
+                    import time
+                    for _attempt in range(10):
+                        try:
+                            _atomic_write(user_data_file, stored)
+                            break
+                        except PermissionError:
+                            if _attempt == 9:
+                                raise
+                            time.sleep(0.02 * (_attempt + 1))
 
                     logger.info(
                         f"user_data.json merged — set={set_keys} "

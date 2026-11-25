@@ -382,6 +382,58 @@ def _get_storage(key, phone=None, guest=False):
         return ns['get_storage'](key)
 
 
+class _ReadsMidWrite:
+    """json whose dump lets one get_storage read run while the record is
+    being written, the way the page's unlocked reads race a sign-in write."""
+
+    def __init__(self):
+        self.seen = []
+
+    def __getattr__(self, name):
+        return getattr(json, name)
+
+    def dump(self, obj, fh, **kw):
+        self.seen.append(_get_storage('access_token'))
+        return json.dump(obj, fh, **kw)
+
+
+def test_a_read_during_a_write_gets_the_old_full_record(
+        fake_home, gi, clean_owner_env, monkeypatch):
+    """RED before the fix: set_storage opened the record with 'w', which
+    empties it, then dumped, so a read in between got an error, and the page
+    took the sign-in as missing (live 2026-11-25)."""
+    _write(fake_home, json.dumps({'user_id': '10202', 'access_token': 'old'}))
+    mid = _ReadsMidWrite()
+    monkeypatch.setattr(gi, 'json', mid)  # the atomic writer's dump
+    reply = _set_storage_handler(json_module=mid)({'access_token': 'new'})
+    assert reply['success'] is True
+    assert mid.seen and mid.seen[0] == {'success': True, 'data': 'old'}
+    record = json.loads(_record(fake_home).read_text(encoding='utf-8'))
+    assert record == {'user_id': '10202', 'access_token': 'new'}
+
+
+def test_a_write_waits_out_a_reader_holding_the_record_open(
+        fake_home, gi, clean_owner_env, monkeypatch):
+    """On Windows the atomic replace fails with PermissionError while a
+    reader has the record open; the write must go through, not be lost."""
+    _write(fake_home, json.dumps({'user_id': '10202', 'access_token': 'old'}))
+    real = gi._atomic_write
+    calls = []
+
+    def busy_once(path, payload):
+        calls.append(path)
+        if len(calls) == 1:
+            raise PermissionError(13, 'Access is denied')
+        return real(path, payload)
+
+    monkeypatch.setattr(gi, '_atomic_write', busy_once)
+    reply = _post_to_set_storage({'access_token': 'new'})
+    assert reply['success'] is True
+    assert len(calls) == 2
+    record = json.loads(_record(fake_home).read_text(encoding='utf-8'))
+    assert record == {'user_id': '10202', 'access_token': 'new'}
+
+
 def test_a_post_of_the_placeholder_keeps_the_owner(fake_home, gi, clean_owner_env):
     """RED before the fix: the record and the export both became 'guest'."""
     _write(fake_home, json.dumps({'user_id': '10202', 'access_token': 'old'}))
