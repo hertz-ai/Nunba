@@ -77,4 +77,18 @@ export function matchAgentBySlug(agents, slugOrName, id) {
   return list.find((a) => a && agentSlug(a.name) === target);
 }
 
+/**
+ * The agent page's URL, the one writer every link to it uses: the name slug,
+ * plus `?id=<prompt_id>` when the agent has one, since two agents can share a
+ * name (matchAgentBySlug reads the id first). A name with no Latin letters or
+ * digits slugs to nothing, and "/agents/" alone is the gallery's route, so
+ * its encoded name stands in and the id picks the agent.
+ */
+export function agentPath(agent) {
+  const name = String(agent?.name || '');
+  const segment = agentSlug(name) || encodeURIComponent(name);
+  const id = agent?.prompt_id;
+  return `/agents/${segment}${id != null ? `?id=${encodeURIComponent(id)}` : ''}`;
+}
+
 export default agentSlug;

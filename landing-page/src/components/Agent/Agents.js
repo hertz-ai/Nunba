@@ -11,7 +11,7 @@ import {X, Search, ArrowRight, Sparkles, CloudOff} from 'lucide-react';
 
 import AgentPoster from '../../assets/images/AgentPoster.png';
 import {chatApi} from '../../services/socialApi';
-import {agentSlug} from '../../utils/agentSlug';
+import {agentPath} from '../../utils/agentSlug';
 
 // Hevolve brand spectrum: the steward's six hues. Each card is tinted with one
 // of these (by grid position) so the gallery reads as a spectrum rather than a
@@ -332,9 +332,8 @@ const AgentCard = ({agent, index = 0, isOverlay = false, onSelect = () => {}}) =
     }
 
     // Canonical slug — the readers slugify too, so the round trip closes.
-    // ?id=<prompt_id> tells apart two agents with one name (matchAgentBySlug).
-    const idQuery = agent.prompt_id != null ? `?id=${encodeURIComponent(agent.prompt_id)}` : '';
-    navigate(`/agents/${agentSlug(agent.name)}${idQuery}`, {
+    // agentPath adds ?id=<prompt_id>, which tells apart two agents with one name.
+    navigate(agentPath(agent), {
       state: {
         agentData: agent,
       },

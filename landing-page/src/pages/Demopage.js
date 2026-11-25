@@ -42,7 +42,7 @@ import { decrypt, encrypt } from '../utils/encryption';
 import useAuthSession, { setGuestIdentity, clearAuth, silentGuestRefresh } from '../hooks/useAuthSession';
 import { logger } from '../utils/logger';
 import { useShellBridge } from '../utils/shellBridge';
-import { matchAgentBySlug } from '../utils/agentSlug';
+import { matchAgentBySlug, agentPath } from '../utils/agentSlug';
 
 // NewHome is only loaded when user is not logged in (landing page)
 const NewHome = React.lazy(() =>
@@ -1190,7 +1190,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             logger.log(
               `💾 Saving ${messages.length} messages for agent: ${currentAgent.name}`
             );
-            saveMessagesToStorage(messages, _switchFromId);
+            saveMessagesToStorage(messages, _switchFromId, currentAgent.name);
           }
 
           // Setup/install cards are system-global, not agent-scoped — carry
@@ -1247,7 +1247,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         logger.log(
           `💾 Saving ${messages.length} messages before creating new agent`
         );
-        saveMessagesToStorage(messages, currentAgent.prompt_id || currentAgent.id);
+        saveMessagesToStorage(messages, currentAgent.prompt_id || currentAgent.id, currentAgent.name);
       }
 
       logger.log(
@@ -1274,8 +1274,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       }
 
       setShowCreateAgentForm(false);
-      const encodedName = encodeURIComponent(agentDatafromApi.name);
-      navigate(`/agents/${encodedName}`);
+      navigate(agentPath(agentDatafromApi));
 
       logger.log(
         `✨ New agent created with fresh chat: ${agentDatafromApi.name}`
@@ -1308,7 +1307,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         logger.log(
           `💾 Component unmount: Saving ${messagesRef.current.length} messages for ${currentAgentRef.current.name}`
         );
-        saveMessagesToStorage(messagesRef.current, _unmountId);
+        saveMessagesToStorage(messagesRef.current, _unmountId, currentAgentRef.current.name);
       }
     };
   }, []);
@@ -1807,9 +1806,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     return `chat_messages_${promptId}`;
   };
 
-  // `name` is the agent whose chat this is; a send that switched agents this
-  // render passes its own, since currentAgent here is still the previous one.
-  const saveMessagesToStorage = (messages, promptId, name = currentAgent?.name) => {
+  // `name` is the name of the agent whose id is promptId.  Every caller passes
+  // it: currentAgent in this closure can be another agent (a stale render).
+  const saveMessagesToStorage = (messages, promptId, name) => {
     // Setup cards alone are not this agent's chat.  An agent switch keeps
     // them on screen (isGlobalSetupCard), and a save inside the switch wrote
     // them over the agent's stored conversation: 2026-11-04, agents 54,
@@ -2002,7 +2001,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       };
 
       if (currentAgent?.prompt_id && messages.length > 0) {
-        saveMessagesToStorage(messages, currentAgent.prompt_id || currentAgent.id);
+        saveMessagesToStorage(messages, currentAgent.prompt_id || currentAgent.id, currentAgent.name);
       }
       setMessages([
         {
@@ -2031,7 +2030,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         logger.log(
           `💾 Saving ${messages.length} messages before selecting ${agent.name}`
         );
-        saveMessagesToStorage(messages, currentAgent.prompt_id || currentAgent.id);
+        saveMessagesToStorage(messages, currentAgent.prompt_id || currentAgent.id, currentAgent.name);
       }
 
       logger.log(`🧹 Clearing messages for agent selection: ${agent.name}`);
@@ -3234,7 +3233,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         logger.log(
           `💾 Saving ${messages.length} messages before switching to ${chat.name}`
         );
-        saveMessagesToStorage(messages, currentAgent.prompt_id || currentAgent.id);
+        saveMessagesToStorage(messages, currentAgent.prompt_id || currentAgent.id, currentAgent.name);
       }
 
       logger.log(`🧹 Clearing messages for agent switch to: ${chat.name}`);
@@ -3257,7 +3256,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       }, 100);
 
       setIsOpen(false);
-      navigate(`/agents/${encodeURIComponent(chat.name)}`);
+      navigate(agentPath(chat));
     } else {
       logger.log('Same agent or agent not found');
     }
@@ -4344,7 +4343,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     setShouldScroll(true);
     setWaitingText(null);
     logger.log('agentdata', agentData);
-    logger.log('currentagent', turnAgent);
+    logger.log('turnAgent', turnAgent);
 
     // Clear form data
     setUploadedPdf(null);
@@ -4527,8 +4526,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                   }]).catch(() => {});
                 }
                 // Navigate to the newly created agent's page
-                const encodedName = encodeURIComponent(agentName);
-                navigate(`/agents/${encodedName}`);
+                navigate(agentPath({ name: agentName, prompt_id: resultData.prompt_id || turnAgent?.prompt_id }));
               }
             }
             // Track prompt_id from auto-generated creation flow — through

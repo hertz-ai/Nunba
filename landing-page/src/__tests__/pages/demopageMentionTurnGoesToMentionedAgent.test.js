@@ -33,6 +33,29 @@ function cut(start, end) {
 
 const STORAGE = cut('  const getChatStorageKey = (promptId) => {', '  const readLocalMessages = (promptId) => {');
 const SEND = cut('  const handleSend = async (how) => {', '  // Keep ref in sync for queue processor');
+const UNMOUNT_SAVE = cut('      // Save messages when component unmounts (using refs to avoid stale closure)',
+  '\n    };\n  }, []);');
+
+// The argument lists of every call to `callee(` in src, split at top-level commas.
+function argsOfEachCall(src, callee) {
+  const calls = [];
+  for (let at = src.indexOf(callee); at >= 0; at = src.indexOf(callee, at + 1)) {
+    const args = [];
+    let depth = 0;
+    let arg = '';
+    for (let i = at + callee.length; i < src.length; i += 1) {
+      const c = src[i];
+      if (')]}'.includes(c)) {
+        if (depth === 0) { args.push(arg.trim()); break; }
+        depth -= 1;
+      }
+      if ('([{'.includes(c)) depth += 1;
+      if (c === ',' && depth === 0) { args.push(arg.trim()); arg = ''; } else { arg += c; }
+    }
+    calls.push(args.filter(Boolean));
+  }
+  return calls;
+}
 
 // Agent A is open.  It differs from B in every field the send reads.
 const AGENT_A = {
@@ -179,5 +202,38 @@ describe('an @mention turn goes to the mentioned agent', () => {
     });
     expect(stored(AGENT_A.prompt_id)).toMatchObject({agentId: AGENT_A.prompt_id, agentName: AGENT_A.name});
     expect(desktop.switchedTo).toEqual([]);
+  });
+});
+
+// Review nit on 64d183cd: saveMessagesToStorage stamped currentAgent's name
+// from its own closure whenever a caller left the name out, so a save could
+// put one agent's name on another agent's chat.  The name is now passed by
+// every caller, with no default.
+describe('every save names the agent it saves', () => {
+  test("leaving the page saves the open agent's chat under that agent's name", () => {
+    // The cleanup is made on the first render, so the currentAgent it sees is
+    // the agent open when the page mounted (A).  The agent open now is B.
+    const scope = {
+      currentAgent: AGENT_A,
+      currentAgentRef: {current: AGENT_B},
+      messagesRef: {current: [{type: 'user', content: 'hello'}, {type: 'assistant', content: 'hi'}]},
+      logger: {log: () => {}},
+      holdsAgentChat,
+      effectiveUserId: 'user-1',
+      fetch: () => Promise.resolve({}),
+      console: {error: () => {}},
+    };
+    const names = Object.keys(scope);
+    // eslint-disable-next-line no-new-func
+    new Function(...names, `${STORAGE}\n${UNMOUNT_SAVE}`)(...names.map((n) => scope[n]));
+
+    expect(stored(AGENT_B.prompt_id)).toMatchObject({agentId: AGENT_B.prompt_id, agentName: AGENT_B.name});
+  });
+
+  test('the storage helper has no default name, and every call passes one', () => {
+    expect(STORAGE).toMatch(/const saveMessagesToStorage = \(messages, promptId, name\) => \{/);
+    const calls = argsOfEachCall(SRC, 'saveMessagesToStorage(');
+    expect(calls.length).toBeGreaterThan(0);
+    calls.forEach((args) => expect(args).toHaveLength(3));
   });
 });

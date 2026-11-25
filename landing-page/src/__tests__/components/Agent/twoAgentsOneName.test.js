@@ -26,7 +26,7 @@ import React from 'react';
 import {render, screen, fireEvent, waitFor} from '@testing-library/react';
 import {MemoryRouter, Routes, Route, useLocation} from 'react-router-dom';
 
-import {matchAgentBySlug} from '../../../utils/agentSlug';
+import {matchAgentBySlug, agentPath} from '../../../utils/agentSlug';
 
 jest.mock('../../../assets/images/AgentPoster.png', () => 'agent-poster.png', {virtual: true});
 jest.mock('../../../components/footer', () => ({__esModule: true, default: () => null}));
@@ -200,5 +200,111 @@ describe('two agents with one name', () => {
     const opened = await agentOpenedAt('/agents/speech-therapy-companion');
     expect(opened.agentPage.prompt_id).toBe(FIRST.prompt_id);
     expect(opened.demopage.prompt_id).toBe(FIRST.prompt_id);
+  });
+});
+
+// ── Inside the chat page (design_1125 F1) ──
+// Three more places in Demopage.js send the page to an agent's URL: its own
+// agent list (the "All Agents" overlay calls the same handler), the cloud
+// create form, and the end of a build.  Each is cut out of the page and run
+// as written; the URL it goes to then reaches the URL effect above the way
+// the router hands it over.
+
+function cutPage(start, end) {
+  const a = SRC.indexOf(start);
+  if (a < 0) throw new Error(`Demopage marker not found: ${start}`);
+  const b = SRC.indexOf(end, a + start.length);
+  if (b < 0) throw new Error(`Demopage end marker not found after ${start}: ${end}`);
+  return SRC.slice(a, b);
+}
+
+const SWITCHER = cutPage('  const handleButtonClick = (chat) => {',
+  '  useEffect(() => {\n    // Auto-scroll to bottom whenever messages change');
+const CREATE_FORM = cutPage('  const handleCreateAgentSubmit = async (agentDatafromApi) => {',
+  '  useEffect(() => {\n    // restore-on-mount');
+const BUILD_DONE = cutPage("              if (resultData.agent_status === 'completed' && ",
+  '\n            }\n            // Track prompt_id from auto-generated creation flow');
+
+// The :agentName param and the query the router hands Demopage for a URL.
+// The router decodes each path segment before matching (decodePath).
+function routeOf(url) {
+  const u = new URL(url, 'http://nunba.local');
+  const [, first, segment] = u.pathname.split('/');
+  return {
+    agentName: first === 'agents' && segment ? decodeURIComponent(segment) : undefined,
+    search: u.search,
+  };
+}
+
+// The chat page with `open` as its agent.  run(code) runs cut page code with
+// the page's state stubbed; settlesOn() is the agent open once the URL the
+// page went to has been through the URL effect.
+function chatPage(open) {
+  const page = {open, urls: []};
+  const scope = {
+    currentAgent: open,
+    messages: [],
+    logger: {log: () => {}},
+    console: {error: () => {}},
+    saveMessagesToStorage: () => {},
+    isGlobalSetupCard: () => false,
+    setMessages: () => {},
+    setCurrentAgent: (v) => { page.open = typeof v === 'function' ? v(page.open) : v; },
+    setVideoUrl: () => {},
+    setIdleVideoUrl: () => {},
+    setIsOpen: () => {},
+    setShowCreateAgentForm: () => {},
+    setAllAgents: () => {},
+    setTimeout: () => 0,
+    loadMessagesFromStorage: () => [],
+    withOpenChatAsks: (m) => m,
+    mergeCarriedSetupCards: (m) => m,
+    askStatesRef: {current: {}},
+    navigate: (url) => { page.urls.push(url); },
+    agentPath,
+    decryptedUserId: null,
+    isGuestMode: true,
+    chatApi: {syncAgents: () => Promise.resolve()},
+  };
+  page.run = (code, extra = {}) => {
+    const all = {...scope, ...extra};
+    const names = Object.keys(all);
+    // eslint-disable-next-line no-new-func
+    return new Function(...names, code)(...names.map((n) => all[n]));
+  };
+  page.settlesOn = () => demopageOpens({agentData: page.open, ...routeOf(page.urls[page.urls.length - 1])});
+  return page;
+}
+
+describe('two agents with one name, inside the chat page', () => {
+  test("the page's own agent list opens the second agent", () => {
+    const page = chatPage(FIRST);
+    page.run(`${SWITCHER}\nreturn handleButtonClick;`)(SECOND);
+
+    expect(page.settlesOn().prompt_id).toBe(SECOND.prompt_id);
+    expect(page.urls).toEqual(['/agents/speech-therapy-companion?id=95568353503']);
+  });
+
+  test('the cloud create form opens the agent it made, not an older one of that name', async () => {
+    const page = chatPage(FIRST);
+    await page.run(`${CREATE_FORM}\nreturn handleCreateAgentSubmit;`)(SECOND);
+
+    expect(page.settlesOn().prompt_id).toBe(SECOND.prompt_id);
+    expect(page.urls).toEqual(['/agents/speech-therapy-companion?id=95568353503']);
+  });
+
+  test('after a build completes, the page stays on the new agent, not an older one of that name', () => {
+    // The create-mode agent of the turn; the server names the finished agent
+    // like an older one and returns its new prompt id.
+    const building = {prompt_id: SECOND.prompt_id, name: 'New Agent', type: 'local', create_agent: true};
+    const page = chatPage(building);
+    page.run(BUILD_DONE, {
+      turnAgent: building,
+      resultData: {agent_status: 'completed', prompt_id: SECOND.prompt_id, agent_name: SECOND.name},
+    });
+
+    expect(page.open.name).toBe(SECOND.name);
+    expect(page.settlesOn().prompt_id).toBe(SECOND.prompt_id);
+    expect(page.urls).toEqual(['/agents/speech-therapy-companion?id=95568353503']);
   });
 });
