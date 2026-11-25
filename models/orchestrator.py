@@ -943,7 +943,9 @@ def get_orchestrator() -> ModelOrchestrator:
 
     Shares the singleton with HARTOS's model_orchestrator module so that
     both import paths return the same instance.  Registers Nunba-specific
-    loaders (LLM, TTS, STT, VLM) on the instance.
+    loaders (LLM, TTS, STT, VLM) on the instance, and on one it builds, the
+    loaders HARTOS owns (speaker, phonetic) through HARTOS's
+    register_hartos_loaders.
     """
     if _hartos_mod._orchestrator_instance is not None:
         _register_loaders(_hartos_mod._orchestrator_instance)
@@ -955,6 +957,9 @@ def get_orchestrator() -> ModelOrchestrator:
             catalog = get_catalog()
             inst = ModelOrchestrator(catalog=catalog)
             _register_loaders(inst)
+            # HARTOS's own get_orchestrator registers these only on a
+            # singleton it builds (design 1125 H3).
+            _hartos_mod.register_hartos_loaders(inst)
             _hartos_mod._orchestrator_instance = inst
         else:
             _register_loaders(_hartos_mod._orchestrator_instance)
