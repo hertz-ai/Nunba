@@ -289,10 +289,12 @@ const AgentPage = () => {
                     allAgents = Array.isArray(arr) ? arr.map((a) => ({ ...a, _isLocal: a.type === 'local' })) : [];
                     logger.log('Agent.js: Fetched local agents:', allAgents.length);
                 } catch (e) { console.warn('Agent.js: Local backend not available:', e.message); }
-                setAgentData(matchAgentBySlug(allAgents, agentName) || defaultAgentData);
+                // ?id=<prompt_id> from the gallery card tells apart two agents with one name.
+                const agentId = new URLSearchParams(location.search).get('id');
+                setAgentData(matchAgentBySlug(allAgents, agentName, agentId) || defaultAgentData);
             } catch (err) { console.error("Error fetching agents:", err); }
         })();
-    }, [agentName, effectiveUserId, isGuestMode, initialAgentData]);
+    }, [agentName, location.search, effectiveUserId, isGuestMode, initialAgentData]);
 
     // Crossfade: wait for Demopage readiness, ensure hero shows at least 2s
     useEffect(() => {

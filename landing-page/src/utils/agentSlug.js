@@ -61,11 +61,20 @@ export function agentSlug(name) {
  * undefined when nothing matches — callers decide what to do with that, and
  * "fall back to the default agent" is a decision worth making explicitly rather
  * than inheriting from a failed `.find()`.
+ *
+ * `id` is the `?id=<prompt_id>` the gallery card adds to the URL. Two agents
+ * can share a name, and only the id tells them apart, so the id is tried
+ * first. With no id, or an id no agent has, the slug decides as before.
  */
-export function matchAgentBySlug(agents, slugOrName) {
+export function matchAgentBySlug(agents, slugOrName, id) {
+  const list = agents || [];
+  if (id != null && id !== '') {
+    const byId = list.find((a) => a && a.prompt_id != null && String(a.prompt_id) === String(id));
+    if (byId) return byId;
+  }
   const target = agentSlug(slugOrName);
   if (!target) return undefined;
-  return (agents || []).find((a) => a && agentSlug(a.name) === target);
+  return list.find((a) => a && agentSlug(a.name) === target);
 }
 
 export default agentSlug;

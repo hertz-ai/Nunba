@@ -1172,10 +1172,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
   useEffect(() => {
     if (agentName) {
-      let matchedAgent = matchAgentBySlug(allAgents, agentName);
+      // ?id=<prompt_id> from the gallery card tells apart two agents with one name.
+      const agentId = new URLSearchParams(location.search).get('id');
+      let matchedAgent = matchAgentBySlug(allAgents, agentName, agentId);
 
       if (!matchedAgent) {
-        matchedAgent = matchAgentBySlug(items, agentName);
+        matchedAgent = matchAgentBySlug(items, agentName, agentId);
       }
 
       if (matchedAgent) {
@@ -1235,7 +1237,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         }
       }
     }
-  }, [allAgents, agentName]);
+  }, [allAgents, agentName, location.search]);
 
   const handleCreateAgentSubmit = async (agentDatafromApi) => {
     try {
@@ -1805,7 +1807,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     return `chat_messages_${promptId}`;
   };
 
-  const saveMessagesToStorage = (messages, promptId) => {
+  // `name` is the agent whose chat this is; a send that switched agents this
+  // render passes its own, since currentAgent here is still the previous one.
+  const saveMessagesToStorage = (messages, promptId, name = currentAgent?.name) => {
     // Setup cards alone are not this agent's chat.  An agent switch keeps
     // them on screen (isGlobalSetupCard), and a save inside the switch wrote
     // them over the agent's stored conversation: 2026-11-04, agents 54,
@@ -1816,7 +1820,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       const storageKey = getChatStorageKey(promptId);
       const chatData = {
         agentId: promptId,
-        agentName: currentAgent?.name,
+        agentName: name,
         lastUpdated: new Date().toISOString(),
         messageCount: messages.length,
         messages: messages,
@@ -4281,6 +4285,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       return;
     }
 
+    // The agent this turn goes to.  setCurrentAgent below shows only on the
+    // next render, so the rest of this send reads turnAgent, not currentAgent.
+    let turnAgent = currentAgent;
     // Parse @agent mention and route to that agent
     const agentMentionMatch = turnText.match(/@(\S+)/);
     if (agentMentionMatch) {
@@ -4291,6 +4298,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       if (targetAgent && targetAgent.prompt_id !== currentAgent?.prompt_id) {
         setCurrentAgent(targetAgent);
         localStorage.setItem('active_agent_id', String(targetAgent.prompt_id));
+        turnAgent = targetAgent;
       } else if (!targetAgent) {
         setMessages((prev) => [...prev, {
           type: 'system',
@@ -4336,7 +4344,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     setShouldScroll(true);
     setWaitingText(null);
     logger.log('agentdata', agentData);
-    logger.log('currentagent', currentAgent);
+    logger.log('currentagent', turnAgent);
 
     // Clear form data
     setUploadedPdf(null);
@@ -4404,16 +4412,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             // history but new messages must route through the default
             // local agent — the chat backend rejects `agent_type='orphan'`
             // with 400 ("Unknown agent type: orphan", chatbot_routes.py:2822).
-            const _isOrphan = currentAgent?.type === 'orphan' || currentAgent?._isOrphan;
-            const _agentTypeForBackend = _isOrphan ? 'local' : (currentAgent?.type || 'local');
+            const _isOrphan = turnAgent?.type === 'orphan' || turnAgent?._isOrphan;
+            const _agentTypeForBackend = _isOrphan ? 'local' : (turnAgent?.type || 'local');
             const _agentIdForBackend = _isOrphan
               ? 'local_assistant'
-              : (currentAgent?.id || currentAgent?.prompt_id || 'local_assistant');
+              : (turnAgent?.id || turnAgent?.prompt_id || 'local_assistant');
             // Orphan ghosts also drop their stale prompt_id so the
             // backend's "is this a real custom agent?" check
             // (chatbot_routes.py:2427-2439) doesn't try to read a
             // non-existent prompt file at PROMPTS_DIR/{prompt_id}.json.
-            const _promptIdForBackend = _isOrphan ? 0 : (currentAgent?.prompt_id ?? 0);
+            const _promptIdForBackend = _isOrphan ? 0 : (turnAgent?.prompt_id ?? 0);
             const localResult = await chatApi.chat({
               text: turnText,
               user_id: effectiveUserId,
@@ -4423,8 +4431,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               conversation_id: conversationId,
               media_mode: mediaMode || 'audio',
               prompt_id: _promptIdForBackend,
-              create_agent: currentAgent?.create_agent || false,
-              autonomous_creation: currentAgent?.autonomous_creation || false,
+              create_agent: turnAgent?.create_agent || false,
+              autonomous_creation: turnAgent?.autonomous_creation || false,
               image_url: userImage || null,
               file_url: fileUrl || null,
               preferred_lang: localStorage.getItem('hart_language') || 'en',
@@ -4490,8 +4498,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                   ? { ...prev, agent_status: resultData.agent_status, prompt_id: sid }
                   : { ...prev, agent_status: resultData.agent_status };
               });
-              if (resultData.agent_status === 'completed' && currentAgent?.create_agent) {
-                const agentName = resultData.agent_display_name || resultData.agent_name || currentAgent?.name || 'Created Agent';
+              if (resultData.agent_status === 'completed' && turnAgent?.create_agent) {
+                const agentName = resultData.agent_display_name || resultData.agent_name || turnAgent?.name || 'Created Agent';
                 setCurrentAgent((prev) => ({
                   ...prev,
                   create_agent: false,
@@ -4501,9 +4509,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                   name: agentName,
                 }));
                 setAllAgents((prev) => {
-                  const pid = resultData.prompt_id || currentAgent?.prompt_id;
+                  const pid = resultData.prompt_id || turnAgent?.prompt_id;
                   const exists = prev.some((a) => a.prompt_id === pid);
-                  if (!exists) return [...prev, { ...currentAgent, prompt_id: pid, create_agent: false, autonomous_creation: false, agent_status: null, available: true, name: agentName }];
+                  if (!exists) return [...prev, { ...turnAgent, prompt_id: pid, create_agent: false, autonomous_creation: false, agent_status: null, available: true, name: agentName }];
                   return prev;
                 });
                 setMessages((prev) => [...prev,
@@ -4511,7 +4519,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                   { type: 'system', content: `Your agent "${agentName}" has been shared to the social feed! View it in Thought Experiments.` },
                 ]);
                 if (decryptedUserId && !isGuestMode) {
-                  const pid = resultData.prompt_id || currentAgent?.prompt_id;
+                  const pid = resultData.prompt_id || turnAgent?.prompt_id;
                   chatApi.syncAgents([{
                     prompt_id: pid,
                     name: agentName,
@@ -4728,9 +4736,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               updateMessageStatus(msgId, { status: 'failed', error: EMPTY_REPLY_REASON });
             }
             // Auto-save after each response (survives force-quit)
-            const _saveId = currentAgent?.prompt_id || currentAgent?.id;
+            const _saveId = turnAgent?.prompt_id || turnAgent?.id;
             if (_saveId) {
-              setTimeout(() => saveMessagesToStorage(messagesRef.current, _saveId), 100);
+              setTimeout(() => saveMessagesToStorage(messagesRef.current, _saveId, turnAgent?.name), 100);
             }
             setLoading(false);
             if (replyPushed) {

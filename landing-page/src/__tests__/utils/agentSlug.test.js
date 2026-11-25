@@ -93,3 +93,39 @@ describe('matchAgentBySlug — the round trip', () => {
     );
   });
 });
+
+// design_1125 D1: two agents named "Speech Therapy Companion" on the owner's
+// desktop.  A name slug cannot tell them apart, so the gallery card adds
+// ?id=<prompt_id> and the resolver tries that id first.
+describe('matchAgentBySlug with an id (two agents with one name)', () => {
+  const FIRST = {prompt_id: 95530004763, name: 'Speech Therapy Companion'};
+  const SECOND = {prompt_id: 95568353503, name: 'Speech Therapy Companion'};
+  const TWINS = [FIRST, SECOND];
+  const SLUG = 'speech-therapy-companion';
+
+  test('the id picks the agent, whichever of the two it is', () => {
+    expect(matchAgentBySlug(TWINS, SLUG, '95568353503')).toBe(SECOND);
+    expect(matchAgentBySlug(TWINS, SLUG, '95530004763')).toBe(FIRST);
+  });
+
+  test('the id matches a number or a string prompt_id', () => {
+    expect(matchAgentBySlug(TWINS, SLUG, 95568353503)).toBe(SECOND);
+    const asText = {prompt_id: '95568353503', name: SECOND.name};
+    expect(matchAgentBySlug([FIRST, asText], SLUG, '95568353503')).toBe(asText);
+  });
+
+  test('the id wins over the name in the URL', () => {
+    expect(matchAgentBySlug([LOCAL_TUTOR, ...TWINS], 'local-tutor', '95568353503')).toBe(SECOND);
+  });
+
+  test('with no id the name decides, as before (the first of the two)', () => {
+    expect(matchAgentBySlug(TWINS, SLUG)).toBe(FIRST);
+    expect(matchAgentBySlug(TWINS, SLUG, null)).toBe(FIRST);
+    expect(matchAgentBySlug(TWINS, SLUG, '')).toBe(FIRST);
+  });
+
+  test('an id no agent has falls back to the name', () => {
+    expect(matchAgentBySlug(TWINS, SLUG, '123')).toBe(FIRST);
+    expect(matchAgentBySlug(TWINS, 'nobody-here', '123')).toBeUndefined();
+  });
+});

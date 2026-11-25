@@ -332,7 +332,9 @@ const AgentCard = ({agent, index = 0, isOverlay = false, onSelect = () => {}}) =
     }
 
     // Canonical slug — the readers slugify too, so the round trip closes.
-    navigate(`/agents/${agentSlug(agent.name)}`, {
+    // ?id=<prompt_id> tells apart two agents with one name (matchAgentBySlug).
+    const idQuery = agent.prompt_id != null ? `?id=${encodeURIComponent(agent.prompt_id)}` : '';
+    navigate(`/agents/${agentSlug(agent.name)}${idQuery}`, {
       state: {
         agentData: agent,
       },
