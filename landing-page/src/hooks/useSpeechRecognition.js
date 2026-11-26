@@ -94,6 +94,9 @@ export const STT_RECONNECT_DELAYS_MS = [500, 1000, 2000, 4000, 8000];
 export const STT_HELD_AUDIO_BYTES = 16000 * 2 * 30;
 // A socket that stayed open this long earns a fresh set of retries.
 const STT_STEADY_MS = 5000;
+// The marker that ends the utterance the speech server holds: what a stop
+// sends (finish) and what endUtterance sends in mid-stream.
+const END_OF_UTTERANCE = JSON.stringify({control: 'final'});
 
 // One speech socket for a mic, kept open for as long as the mic is: every mic
 // that streams to the local Whisper uses this (the chat page's own mic and
@@ -203,12 +206,11 @@ export function openSttLink(url, {config, onMessage, onOpen, onGiveUp} = {}) {
     // are never joined to what is heard after.
     endUtterance() {
       if (finished) return;
-      const marker = JSON.stringify({control: 'final'});
       if (isOpen() && !held.length) {
-        ws.send(marker);
+        ws.send(END_OF_UTTERANCE);
         return;
       }
-      held.push(marker);
+      held.push(END_OF_UTTERANCE);
       flush();
     },
     // Drop the stream without asking for its last words (unmount, a page
@@ -223,7 +225,7 @@ export function openSttLink(url, {config, onMessage, onOpen, onGiveUp} = {}) {
       if (retry) { clearTimeout(retry); retry = null; }
       const sock = ws;
       if (sock && sock.readyState === WebSocket.OPEN) {
-        try { sock.send(JSON.stringify({control: 'final'})); } catch (_) { /* closing anyway */ }
+        try { sock.send(END_OF_UTTERANCE); } catch (_) { /* closing anyway */ }
         setTimeout(() => {
           try { sock.close(); } catch (_) { /* already closed */ }
           if (then) then();

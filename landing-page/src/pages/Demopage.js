@@ -3679,8 +3679,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           // of the room from before the voice; Whisper made 'Mm-hmm' of the
           // 8.4 s, and the open mic sent it as the parent's answer.  So when
           // the voice starts, the utterance the server holds is ended there
-          // (link.endUtterance, the marker a stop sends), and nothing is
-          // sent again until the tail has passed.
+          // (link.endUtterance, the marker a stop sends) on the mic the page
+          // opened, and nothing is sent again until the tail has passed.  A
+          // clicked mic is push-to-talk: its dictation runs to Stop, and the
+          // voice only mutes it (rv_2e86 F1).
           const voiceEndedAt = agentVoiceEndedAtRef.current;
           if (!ttsActiveRef.current && voiceEndedAt !== null && voiceEndedAt !== tailReadFor) {
             tailReadFor = voiceEndedAt;
@@ -3691,7 +3693,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               + `input latency ${latencies.inputLatencyS})`);
           }
           if (hearsAgentVoice(ttsActiveRef.current, voiceEndedAt, Date.now(), tailMs)) {
-            if (!deafForVoice && sentSinceEnd) link.endUtterance();
+            if (unprompted && !deafForVoice && sentSinceEnd) link.endUtterance();
             deafForVoice = true;
             sentSinceEnd = false;
             return;

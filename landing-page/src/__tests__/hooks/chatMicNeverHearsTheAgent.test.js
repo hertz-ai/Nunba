@@ -22,7 +22,8 @@
  *  - when the voice starts, the utterance the server holds is ended with the
  *    marker a stop already sends ({control:'final'}, openSttLink
  *    .endUtterance), so what was said before the voice is not joined to what
- *    is heard after it.
+ *    is heard after it.  Only on the mic the page opened: a clicked mic is
+ *    push-to-talk and its dictation runs to Stop (rv_2e86 F1).
  *
  * The page's real _useStreamingWhisper and the render-body lines that feed
  * the gate are cut out of Demopage.js and RUN, with the real speech link,
@@ -108,8 +109,9 @@ const NAMES = ['fetch', 'navigator', 'window', 'effectiveUserId', 'micTurnText',
 // The playback state the page's render feeds the gate with.
 const voiceState = () => ({ttsActiveRef: {current: false}, agentVoiceEndedAtRef: {current: null}});
 
-// The page with its mic open (the mic the page opens by itself).
-async function chatPage(graph, voice = voiceState()) {
+// The page with its mic open: the mic the page opens by itself, or with
+// `unprompted: false` one the person clicked.
+async function chatPage(graph, voice = voiceState(), {unprompted = true} = {}) {
   const audio = fakeAudio(graph);
   const values = {
     fetch: async () => ({ok: true, json: async () => ({url: 'ws://127.0.0.1:8005'})}),
@@ -117,7 +119,7 @@ async function chatPage(graph, voice = voiceState()) {
     window: {AudioContext: audio.AudioContext},
     effectiveUserId: '42',
     micTurnText,
-    unprompted: true,
+    unprompted,
     setInputMessage: () => {},
     handleSendRef: {current: () => {}},
     openSttLink,
@@ -313,6 +315,24 @@ describe('the chat page mic', () => {
     jest.advanceTimersByTime(256);
     audio.frame();                                // after the tail
     expect(received(sock)).toEqual(['config', 'audio', 'audio', 'final', 'audio']);
+  });
+
+  test('a mic the person clicked keeps its dictation whole when the agent speaks (rv_2e86 F1)', async () => {
+    // A clicked mic is push-to-talk: its utterance ends at Stop, and the
+    // speech server gives it no final in mid-utterance (whisper_tool).  The
+    // agent's voice starting only mutes it, and the tail still keeps its
+    // echo out; the dictation goes on after it.
+    const {audio, voice, sock} = await chatPage(undefined, voiceState(), {unprompted: false});
+    audio.frame();
+    audio.frame();                                // the person dictating
+    render(voice, {isPlayingResponse: true});
+    audio.frame();                                // during the reply: nothing sent
+    render(voice, {isPlayingResponse: false});
+    jest.advanceTimersByTime(200);
+    audio.frame();                                // inside the tail: nothing sent
+    jest.advanceTimersByTime(56);
+    audio.frame();                                // after the tail
+    expect(received(sock)).toEqual(['config', 'audio', 'audio', 'audio']);
   });
 
   test('a mic that sent nothing before the voice ends nothing', async () => {
