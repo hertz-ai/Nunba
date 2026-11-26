@@ -4296,7 +4296,9 @@ def agents_sync_get():
 
 
 def agents_sync_post():
-    """POST /agents/sync - Push agent configs, last-write-wins merge."""
+    """POST /agents/sync - Push agent configs, last-write-wins merge, per key:
+    a newer client copy wins on the keys it sends; a key it does not send is
+    kept as stored (tests/test_agent_sync_keeps_stored_keys.py)."""
     user_id = _get_user_id_from_auth()
     if not user_id:
         return jsonify({'success': False, 'error': 'Authentication required'}), 401
@@ -4322,10 +4324,13 @@ def agents_sync_post():
                     existing = json.load(f)
                 server_ts = existing.get('updated_at', '')
                 if client_ts > server_ts:
-                    # Client is newer — overwrite
-                    agent['creator_user_id'] = str(user_id)
+                    # Client is newer: it wins on the keys it sends, and nothing
+                    # stored is dropped -- a phone's copy lacks what the desktop's
+                    # CREATE wrote (flows, personas, an avatar id ...), and writing
+                    # that copy whole erased it (coordinator hevolve-66e6, 11-26).
+                    merged = {**existing, **agent, 'creator_user_id': str(user_id)}
                     with open(fpath, 'w', encoding='utf-8') as f:
-                        json.dump(agent, f, indent=2)
+                        json.dump(merged, f, indent=2)
                     updated.append(pid)
                 else:
                     # Server is newer — return it
