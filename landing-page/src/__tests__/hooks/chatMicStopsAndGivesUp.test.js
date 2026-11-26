@@ -26,6 +26,7 @@ const path = require('path');
 
 const {
   openSttLink, sttConfigMessage, micTurnText, MIC_STOPPED_CUE, STT_RECONNECT_DELAYS_MS,
+  agentVoiceTailMs, hearsAgentVoice,
 } = require('../../hooks/useSpeechRecognition');
 
 const PAGE = process.env.OPEN_MIC_DEMOPAGE
@@ -80,7 +81,7 @@ function fakeAudio() {
 const NAMES = ['fetch', 'navigator', 'window', 'effectiveUserId', 'micTurnText', 'unprompted',
   'notAddressed', 'setInputMessage', 'handleSendRef', 'openSttLink', 'sttConfigMessage',
   'recognitionRef', 'setIsRecording', 'micBusyRef', 'pushNotification', 'MIC_STOPPED_CUE',
-  'ttsActiveRef'];
+  'ttsActiveRef', 'agentVoiceEndedAtRef', 'agentVoiceTailMs', 'hearsAgentVoice'];
 
 // The page's state, stubbed; `start()` runs the page's own function.
 function chatPage({unprompted = false, userId = '42'} = {}) {
@@ -112,6 +113,9 @@ function chatPage({unprompted = false, userId = '42'} = {}) {
     pushNotification: (n) => page.toasts.push(n),
     MIC_STOPPED_CUE,
     ttsActiveRef: {current: false},
+    agentVoiceEndedAtRef: {current: null},
+    agentVoiceTailMs,
+    hearsAgentVoice,
   };
   const tier = cut(SRC, 'const _useStreamingWhisper = async () => {', 'const _useWebSpeech = () => {');
   // eslint-disable-next-line no-new-func

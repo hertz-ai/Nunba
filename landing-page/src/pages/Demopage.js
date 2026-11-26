@@ -68,7 +68,7 @@ import {getStableDeviceIdOnce} from '../utils/deviceId';
 import {useTTS} from '../hooks/useTTS';
 // ── Camera frames, streamed while the owner's camera consent is on file ──
 import {setCameraConsent, useConsentedCameraStream} from '../hooks/useCameraConsent';
-import {sttConfigMessage, startContinuousRecognition, addressedToNunba, micTurnText, OPEN_MIC_CUE, MIC_STOPPED_CUE, openSttLink} from '../hooks/useSpeechRecognition';
+import {sttConfigMessage, startContinuousRecognition, addressedToNunba, micTurnText, OPEN_MIC_CUE, MIC_STOPPED_CUE, openSttLink, agentVoiceTailMs, hearsAgentVoice} from '../hooks/useSpeechRecognition';
 import {getTtsAudioElement} from '../services/ttsAudioElement';
 import {playTtsClip} from '../services/ttsClipPlayer';
 
@@ -328,6 +328,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   // pins them at their start-of-capture values (both false) and the gate never
   // fires. Same reason handleSendRef exists two lines up.
   const ttsActiveRef = useRef(false);
+  // When the agent's voice last stopped on this page (Date.now()), so the
+  // gate stays shut for a tail after it (_useStreamingWhisper, #289).
+  const agentVoiceEndedAtRef = useRef(null);
 
   // ── HART OS shell bridge (utils/shellBridge.useShellBridge) ──
   // Inside HART OS this page is the desktop's one chat surface: the shell frames
@@ -3640,7 +3643,21 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         const actualRate = audioCtx.sampleRate;
         const needsResample = actualRate !== TARGET_RATE;
         source = audioCtx.createMediaStreamSource(stream);
-        processor = audioCtx.createScriptProcessor(4096, 1, 1);
+        const FRAME_SAMPLES = 4096;
+        processor = audioCtx.createScriptProcessor(FRAME_SAMPLES, 1, 1);
+        // How long the mic stays deaf after the agent's voice stops here:
+        // the frame being captured as it stopped plus the latencies this
+        // graph reports (useSpeechRecognition.agentVoiceTailMs).  Read again
+        // at each stop and logged, so a live run shows what it was.
+        const micTrack = stream.getAudioTracks ? stream.getAudioTracks()[0] : null;
+        const graphLatencies = () => ({
+          outputLatencyS: audioCtx.outputLatency || audioCtx.baseLatency,
+          inputLatencyS: micTrack && micTrack.getSettings ? micTrack.getSettings().latency : undefined,
+        });
+        let tailMs = agentVoiceTailMs({frameSamples: FRAME_SAMPLES, sampleRate: actualRate, ...graphLatencies()});
+        let tailReadFor = null;     // the stop tailMs was read at
+        let deafForVoice = false;   // the gate is shut for the agent's voice
+        let sentSinceEnd = false;   // audio went out since the last end marker
 
         processor.onaudioprocess = (e) => {
           // Echo cancellation: don't send mic audio while TTS is playing
@@ -3655,7 +3672,31 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           // transcribing its own TTS (emoji spoken as its unicode name, and a
           // Whisper non-speech tag). With auto-send at :3122 firing 1s after
           // each final transcript, that closed into a self-driving loop.
-          if (ttsActiveRef.current) return;
+          //
+          // Nor for a tail after the voice stops (#289).  Live 2026-11-26
+          // 10:20:51 on build #5: the frame being captured as a 112 s reply
+          // ended was sent, and it closed an utterance that still held 7 s
+          // of the room from before the voice; Whisper made 'Mm-hmm' of the
+          // 8.4 s, and the open mic sent it as the parent's answer.  So when
+          // the voice starts, the utterance the server holds is ended there
+          // (link.endUtterance, the marker a stop sends), and nothing is
+          // sent again until the tail has passed.
+          const voiceEndedAt = agentVoiceEndedAtRef.current;
+          if (!ttsActiveRef.current && voiceEndedAt !== null && voiceEndedAt !== tailReadFor) {
+            tailReadFor = voiceEndedAt;
+            const latencies = graphLatencies();
+            tailMs = agentVoiceTailMs({frameSamples: FRAME_SAMPLES, sampleRate: actualRate, ...latencies});
+            console.log(`[STT] the agent stopped speaking; the mic stays deaf ${Math.round(tailMs)} ms after it `
+              + `(output latency ${audioCtx.outputLatency}, base latency ${audioCtx.baseLatency}, `
+              + `input latency ${latencies.inputLatencyS})`);
+          }
+          if (hearsAgentVoice(ttsActiveRef.current, voiceEndedAt, Date.now(), tailMs)) {
+            if (!deafForVoice && sentSinceEnd) link.endUtterance();
+            deafForVoice = true;
+            sentSinceEnd = false;
+            return;
+          }
+          deafForVoice = false;
           let float32 = e.inputBuffer.getChannelData(0);
 
           // Resample if AudioContext gave a different rate than 16kHz
@@ -3677,6 +3718,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           // While the socket is down the link holds the frame and sends it
           // once it is back.
           link.send(pcm16.buffer);
+          sentSinceEnd = true;
         };
 
         source.connect(processor);
@@ -4924,8 +4966,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
   // Keep the echo-cancellation gate fed with LIVE playback state — see
   // ttsActiveRef's declaration. Assigned in render body (not an effect) so it
-  // is already current by the time the next audio frame is processed.
-  ttsActiveRef.current = tts.isSpeaking || isPlayingResponse;
+  // is already current by the time the next audio frame is processed.  The
+  // moment the voice stops is noted too: the gate stays shut for a tail
+  // after it (agentVoiceEndedAtRef, #289).
+  const agentVoiceOn = tts.isSpeaking || isPlayingResponse;
+  if (ttsActiveRef.current && !agentVoiceOn) agentVoiceEndedAtRef.current = Date.now();
+  ttsActiveRef.current = agentVoiceOn;
 
   // ── Manual retry for failed messages ──
   const handleRetryMessage = useCallback((messageId) => {

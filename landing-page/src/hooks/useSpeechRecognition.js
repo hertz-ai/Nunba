@@ -63,6 +63,27 @@ export function sttConfigMessage(language, {continuous = false} = {}) {
   return message;
 }
 
+// How long a mic stays deaf after the agent's voice stops on the page, in
+// ms: the frame being captured as it stopped (frameSamples at sampleRate),
+// plus the latency the audio graph reports on the way out to the speakers
+// and on the way in from the microphone.  A latency the browser does not
+// report counts as nothing.  #289, live 2026-11-26 10:20:51: the frame being
+// captured as a 112 s reply ended went to the speech server, and Whisper
+// made 'Mm-hmm' of it for the parent's answer.
+export function agentVoiceTailMs({frameSamples, sampleRate, outputLatencyS, inputLatencyS} = {}) {
+  const ms = (s) => (Number.isFinite(s) && s > 0 ? s * 1000 : 0);
+  const frame = frameSamples > 0 && sampleRate > 0 ? (frameSamples / sampleRate) * 1000 : 0;
+  return frame + ms(outputLatencyS) + ms(inputLatencyS);
+}
+
+// Whether what a mic captures `now` may carry the agent's own voice: while
+// it plays on the page (`voiceOn`), and until `tailMs` after it stopped at
+// `voiceEndedAt` (ms on the clock `now` reads).  Such audio is never sent.
+export function hearsAgentVoice(voiceOn, voiceEndedAt, now, tailMs) {
+  if (voiceOn) return true;
+  return typeof voiceEndedAt === 'number' && now - voiceEndedAt < tailMs;
+}
+
 // How long a mic waits before each try to get its speech socket back.  After
 // the last one it gives up and says so.  Owner 2026-11-24: the chat mic's
 // socket died at 14:39, the button kept showing Stop, nothing reconnected, and
@@ -80,6 +101,9 @@ const STT_STEADY_MS = 5000;
 //
 //   send(frame)   streams a PCM frame; while the socket is down the frame is
 //                 held and sent, in order, once it is back
+//   endUtterance()  ends the utterance the server holds now (the marker a
+//                 stop sends, {control:'final'}), in order after the frames
+//                 before it; the socket stays open
 //   finish(waitMs, then)  ends the stream: asks for the last words
 //                 ({control:'final'}), closes after waitMs, then calls `then`
 //
@@ -98,10 +122,12 @@ export function openSttLink(url, {config, onMessage, onOpen, onGiveUp} = {}) {
 
   const isOpen = () => !!ws && ws.readyState === WebSocket.OPEN;
 
+  // An end marker (endUtterance) is held as text among the frames, in
+  // order, and counts no bytes.
   const flush = () => {
     while (held.length && isOpen()) {
       const frame = held.shift();
-      heldBytes -= frame.byteLength;
+      heldBytes -= frame.byteLength || 0;
       ws.send(frame);
     }
   };
@@ -167,10 +193,24 @@ export function openSttLink(url, {config, onMessage, onOpen, onGiveUp} = {}) {
       }
       held.push(frame);
       heldBytes += frame.byteLength;
-      while (heldBytes > STT_HELD_AUDIO_BYTES && held.length) heldBytes -= held.shift().byteLength;
+      while (heldBytes > STT_HELD_AUDIO_BYTES && held.length) heldBytes -= held.shift().byteLength || 0;
       flush();
     },
     isOpen,
+    // End the utterance the server holds now, after the frames already
+    // given; held like a frame while the socket is down.  The chat page
+    // sends it when the agent starts speaking (#289), so words said before
+    // are never joined to what is heard after.
+    endUtterance() {
+      if (finished) return;
+      const marker = JSON.stringify({control: 'final'});
+      if (isOpen() && !held.length) {
+        ws.send(marker);
+        return;
+      }
+      held.push(marker);
+      flush();
+    },
     // Drop the stream without asking for its last words (unmount, a page
     // that went away): no final, no reconnect.
     close() {
