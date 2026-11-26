@@ -8382,6 +8382,22 @@ def main():
                     except Exception:
                         pass
 
+                def on_companion_open_ask(self, prompt_id=None, ask_id=None, agent_name=None):
+                    """Open on an agent's question in the floating window
+                    (design_1125 A): the main window comes forward on that
+                    agent's chat, where the question is (the page's
+                    useOpenAgentChat hook takes the event)."""
+                    from desktop.companion_open_ask import open_agent_chat_script
+                    script = open_agent_chat_script(prompt_id, ask_id, agent_name)
+                    try:
+                        if _window:
+                            _window.show()
+                            _window.restore()
+                            _window.evaluate_js(script)
+                    except Exception:
+                        logger.warning("companion: the agent's chat for question %s was not "
+                                       "opened", ask_id, exc_info=True)
+
                 def on_companion_prompt(self, text, context=None):
                     """User submitted a quick prompt from the floating input bar.
 

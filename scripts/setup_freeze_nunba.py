@@ -574,6 +574,9 @@ build_exe_options = {
                           # imported in main() before the main window is
                           # created, so a miss would stop the app, not
                           # just the companion (review of c8968c3b).
+        "desktop.companion_open_ask",  # The companion's Open on an agent's
+                          # question (design_1125 A): a function-local
+                          # import in app.py, which the tracer misses.
         "desktop.boot_record",  # One durable line per boot decision.  Every
                           # import of it is function-local (inside app.py's
                           # companion block, on BOTH the success and the

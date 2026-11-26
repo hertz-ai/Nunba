@@ -1,13 +1,13 @@
 
 import { CHAT_ACTION_THINKING, CHAT_BUBBLE_PRIORITY } from '../../constants/chatBubble';
-import { CONSENT_ANSWER_TYPES, answerCoversAsk } from '../../constants/consentAsks';
+import { CONSENT_ANSWER_TYPES, answerCoversAsk, askerOf } from '../../constants/consentAsks';
 import { steerError } from '../../constants/steerOutcome';
 import useComputerActivity from '../../hooks/useComputerActivity';
 import realtimeService from '../../services/realtimeService';
 import { dashboardApi } from '../../services/socialApi';
 import { COMPANION_CARD_RADIUS, COMPANION_GLASS_SURFACE } from '../../theme/hartGlass';
 import { makeMsgId, rememberOwnTurn } from '../../utils/chatRetry';
-import { ConsentPromptOverlay } from '../AgentOverlay/AgentOverlay';
+import { ASK_LATER_MS, ConsentPromptOverlay, isAgentQuestion } from '../AgentOverlay/AgentOverlay';
 import VoiceVisualizer from '../VoiceVisualizer';
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
@@ -122,6 +122,19 @@ function companionApi(method, ...args) {
   } catch (e) {
     /* not in the pywebview companion — no-op */
   }
+}
+
+// What an agent's question asks, for its card here: the first of its field
+// labels, its reason and its title that holds a question mark (HARTOS sends
+// no form or approval without one, person_ask._asks_its_question), else the
+// first of them that says anything.
+const QUESTION_MARK = /[?？؟;՞፧]/;
+function questionText(card) {
+  const fields = Array.isArray(card.fields) ? card.fields : [];
+  const texts = [...fields.map((f) => f && f.label), card.description, card.title]
+    .filter((t) => typeof t === 'string' && t.trim())
+    .map((t) => t.trim());
+  return texts.find((t) => QUESTION_MARK.test(t)) || texts[0] || '';
 }
 
 // The window shape for a presence state, in CSS px of this page.
@@ -461,7 +474,17 @@ export default function VoiceOrbPage() {
   // gate that waits re-sends the same ask every 3 s, and after "Not now" it
   // may show again.
   const [asks, setAsks] = useState([]);
-  const asking = asks.length > 0;
+  // An agent's questions waiting for their person (HARTOS person_ask, the
+  // kinds a chat answers: isAgentQuestion), oldest first, one card at a time
+  // after any consent ask.  Owner 2026-11-25 (design_1125 A): asked here
+  // "just like how we used to ask consent earlier", while Nunba is not in
+  // front (the host hides this window over it, desktop/main_page_presence.py).
+  // Keyed by ask_id; ask.answered from any surface takes one away.
+  const [questions, setQuestions] = useState([]);
+  // Questions put off here with Later: ask_id -> the timer that brings the
+  // question back after ASK_LATER_MS, as the main window's Later does.
+  const laterRef = useRef(new Map());
+  const asking = asks.length > 0 || questions.length > 0;
   // The computer-use projection, reduced by the ONE hook NunbaChat also
   // reads: the card and the guidance route can never disagree.
   const {activity: computerActivity, liveRun} = useComputerActivity();
@@ -502,10 +525,29 @@ export default function VoiceOrbPage() {
   }, []);
 
   useEffect(() => {
+    const later = laterRef.current;
     function onAgentUi(payload) {
-      if (!payload || payload.type !== 'consent.request') return;
-      setAsks((prev) => (payload.msg_id && prev.some((a) => a.msg_id === payload.msg_id)
+      if (!payload) return;
+      if (payload.type === 'consent.request') {
+        setAsks((prev) => (payload.msg_id && prev.some((a) => a.msg_id === payload.msg_id)
+          ? prev : [...prev, payload]));
+        return;
+      }
+      // The same question sent again (a reconnect's drain) shows once, and
+      // one put off with Later stays put off.
+      if (!isAgentQuestion(payload) || later.has(payload.ask_id)) return;
+      setQuestions((prev) => (prev.some((q) => q.ask_id === payload.ask_id)
         ? prev : [...prev, payload]));
+    }
+    // An agent's question answered or closed on any surface: HARTOS sends
+    // ask.answered with its id (person_ask), and it leaves here too, put off
+    // or not.
+    function onQuestionClosed(closed) {
+      const askId = closed && closed.ask_id;
+      if (!askId) return;
+      clearTimeout(later.get(askId));
+      later.delete(askId);
+      setQuestions((prev) => prev.filter((q) => q.ask_id !== askId));
     }
     // Answered on any surface (the main window, another device, a network
     // guest): HARTOS broadcasts the answer to every device of the user, and
@@ -516,10 +558,34 @@ export default function VoiceOrbPage() {
     const unsubs = [
       realtimeService.on('agent.ui.update', onAgentUi),
       ...CONSENT_ANSWER_TYPES.map((t) => realtimeService.on(t, onAnswer)),
+      realtimeService.on('ask.answered', onQuestionClosed),
     ];
-    return () => unsubs.forEach((u) => u && u());
+    return () => {
+      unsubs.forEach((u) => u && u());
+      later.forEach((timer) => clearTimeout(timer));
+      later.clear();
+    };
   }, []);
   const answerAsk = useCallback(() => setAsks((prev) => prev.slice(1)), []);
+  // Open: the main window comes forward on the asking agent's chat, where the
+  // question is (app.py on_companion_open_ask; the page's useOpenAgentChat).
+  // It is answered there; this window lets it go.
+  const openQuestion = useCallback((q) => {
+    setQuestions((prev) => prev.filter((x) => x.ask_id !== q.ask_id));
+    companionApi('on_companion_open_ask', q.prompt_id, q.ask_id, q.agent_name);
+  }, []);
+  // Later: off this window now, back after ASK_LATER_MS unless it is answered
+  // anywhere meanwhile.  Nothing is sent: the question stays open on every
+  // other surface.
+  const putOffQuestion = useCallback((q) => {
+    const later = laterRef.current;
+    setQuestions((prev) => prev.filter((x) => x.ask_id !== q.ask_id));
+    clearTimeout(later.get(q.ask_id));
+    later.set(q.ask_id, setTimeout(() => {
+      later.delete(q.ask_id);
+      setQuestions((prev) => (prev.some((x) => x.ask_id === q.ask_id) ? prev : [...prev, q]));
+    }, ASK_LATER_MS));
+  }, []);
 
   // Skin follows the admin setting, live across documents.
   useEffect(() => {
@@ -579,8 +645,8 @@ export default function VoiceOrbPage() {
     return () => { if (typeof unsub === 'function') unsub(); };
   }, []);
 
-  // Presence: an ask waiting for the owner, or the owner reaching for it,
-  // wins ('shown'), then the agent talking ('orb', lingering one idle window
+  // Presence: an ask waiting for the owner (consent, or an agent's
+  // question), or the owner reaching for it, wins ('shown'), then the agent talking ('orb', lingering one idle window
   // past the clip), else idle ('hidden'). Decided on every change of
   // speaking or asking and once a second, like a taskbar's auto-hide.
   useEffect(() => {
@@ -680,7 +746,7 @@ export default function VoiceOrbPage() {
         overflow: 'hidden',
       }}
     >
-      {asking ? (
+      {asks.length > 0 ? (
         // The ask in the orb's place: AgentOverlay's own card, answered
         // through the one consent API.  Scrolls inside the 220x310 card; the
         // buttons opt out of window drag so they take the click.
@@ -693,6 +759,48 @@ export default function VoiceOrbPage() {
           }}
         >
           <ConsentPromptOverlay data={asks[0]} onDismiss={answerAsk} />
+        </div>
+      ) : questions.length > 0 ? (
+        // An agent's question in the orb's place: who asks and what.  It is
+        // answered in its chat (Open), not here, so its answer has one door.
+        <div
+          data-testid="companion-question"
+          style={{
+            flex: '1 1 auto', alignSelf: 'stretch', minHeight: 0,
+            display: 'flex', flexDirection: 'column', justifyContent: 'center',
+            overflow: 'auto', color: '#fff', fontSize: 12, padding: '8px 6px',
+            WebkitAppRegion: 'no-drag',
+          }}
+        >
+          <div style={{fontSize: 11, fontWeight: 700, color: '#9B94FF', marginBottom: 4}}>
+            {`${askerOf(questions[0])} asks`}
+          </div>
+          <div style={{fontWeight: 500, color: '#F3F4F6', lineHeight: 1.35}}>
+            {questionText(questions[0])}
+          </div>
+          <div style={{display: 'flex', gap: 8, marginTop: 10}}>
+            <button
+              type="button"
+              onClick={() => openQuestion(questions[0])}
+              style={{
+                flex: 1, padding: '6px 0', borderRadius: 10, border: 'none',
+                background: ACCENT, color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+              }}
+            >
+              Open
+            </button>
+            <button
+              type="button"
+              onClick={() => putOffQuestion(questions[0])}
+              style={{
+                flex: 1, padding: '6px 0', borderRadius: 10,
+                border: '1px solid rgba(140, 130, 255, 0.45)', background: 'transparent',
+                color: '#D6D2FF', fontSize: 12, cursor: 'pointer',
+              }}
+            >
+              Later
+            </button>
+          </div>
         </div>
       ) : (
         <>

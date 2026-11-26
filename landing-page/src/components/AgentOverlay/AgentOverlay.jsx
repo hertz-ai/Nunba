@@ -520,6 +520,17 @@ export function askHasSecret(card) {
     || [f.name, f.key, f.field, f.label].some((v) => typeof v === 'string' && SECRET_FIELD.test(v))));
 }
 
+/**
+ * Whether `card` is an agent's question a person answers (HARTOS person_ask):
+ * it carries its ask id, is one of the kinds a chat answers, and asks for
+ * no secret.  The one rule for the chat (askBelongsInChat) and the floating
+ * window (VoiceOrbPage, design_1125 A).
+ */
+export function isAgentQuestion(card) {
+  return Boolean(card && card.ask_id
+    && ASK_CHAT_TYPES.has(card.type || card.component_type) && !askHasSecret(card));
+}
+
 /** How an in-chat ask's bubble ends: these states are final. */
 export const ASK_CLOSED_STATES = new Set(['here', 'dismissed', 'elsewhere', 'gone']);
 
@@ -615,9 +626,7 @@ export function minutesText(ms) {
  * or null when no agent chat is in front).
  */
 export function askBelongsInChat(card, chat) {
-  if (!card || !card.ask_id || !chat || !chat.promptId) return false;
-  if (!ASK_CHAT_TYPES.has(card.type || card.component_type)) return false;
-  if (askHasSecret(card)) return false;
+  if (!isAgentQuestion(card) || !chat || !chat.promptId) return false;
   if (card.prompt_id == null || String(card.prompt_id) !== String(chat.promptId)) return false;
   // On a surface more than one person signs in to, only her own asks.
   if (card.user_id != null && card.user_id !== ''
