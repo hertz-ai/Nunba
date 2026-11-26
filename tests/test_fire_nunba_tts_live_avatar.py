@@ -58,6 +58,7 @@ def publish(monkeypatch, tmp_path):
 def test_a_video_turn_publishes_its_face(publish):
     cr._fire_nunba_tts('Hello, Arun!', 'u1', 'req-1', 'en', media_mode='video', avatar_id=1000007)
     assert publish.calls == [{'audio_path': publish.wav, 'avatar_id': 1000007, 'media_mode': 'video',
+                              'user_id': 'u1',  # the stream is that user's (a phone of another is refused)
                               'phone_base': 'http://192.168.0.5:5000'}]
     assert len(publish.sent) == 1
     assert publish.sent[0]['generated_video_url'] == '/avatar/live/abcdef012345.mp4'

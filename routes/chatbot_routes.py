@@ -164,7 +164,7 @@ def _fire_nunba_tts(text, user_id, request_id, language='en',
                         from core.port_registry import get_advertisable_base_url
                         from integrations.service_tools.avatarforcing_tool import add_live_avatar
                         add_live_avatar(_payload, audio_path=audio_path, avatar_id=avatar_id,
-                                        media_mode=media_mode,
+                                        media_mode=media_mode, user_id=user_id,
                                         phone_base=get_advertisable_base_url())
                     except Exception as e:
                         logger.warning(f"Nunba TTS: live avatar skipped: {e}")

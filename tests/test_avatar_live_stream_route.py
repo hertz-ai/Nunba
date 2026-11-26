@@ -143,3 +143,76 @@ def test_delete_of_a_bad_sid_never_reaches_the_sidecar(app_client, monkeypatch):
     import main
     monkeypatch.setattr(main.requests, 'delete', lambda *a, **k: pytest.fail('reached the sidecar'))
     assert app_client.delete('/avatar/live/ABC.mp4').status_code == 404
+
+
+# ── whose stream it is: an allowed phone watches or stops only its user's streams ──
+
+PHONE = {'REMOTE_ADDR': '192.168.0.77'}
+
+
+@pytest.fixture
+def phone_of(monkeypatch):
+    """The request is a phone the owner allowed, whose token names this user: marked the way
+    HARTOS's API gate (security.middleware._admit_owner_allowed_device) marks one -- the same
+    mark tests/test_a_large_phone_frame_is_shrunk.py sets -- in place of main's before-request
+    handlers for this test, so the route's own check (routes.auth.admitted_device_user) runs
+    unpatched."""
+    import main
+    from flask import g
+
+    def as_user(user):
+        def _admitted_phone():
+            g.auth_source = 'device'
+            g.device_public_key = 'phone-key-under-test'
+            g.jwt_payload = {'user_id': user}
+        monkeypatch.setitem(main.app.before_request_funcs, None, [_admitted_phone])
+    return as_user
+
+
+@pytest.fixture
+def owned_by(monkeypatch):
+    from integrations.service_tools import avatarforcing_tool
+
+    def owner(user):
+        monkeypatch.setattr(avatarforcing_tool, 'stream_owner', lambda sid: user)
+    return owner
+
+
+def test_a_phone_watches_its_own_users_stream(app_client, sidecar, phone_of, owned_by):
+    phone_of('42')
+    owned_by('42')
+    r = app_client.get('/avatar/live/abcdef012345.mp4', environ_base=PHONE)
+    assert r.status_code == 200 and r.data == b'moovfrag1frag2'
+
+
+@pytest.mark.parametrize('owner', ['43', None])
+def test_another_users_stream_is_answered_like_none(app_client, sidecar, phone_of, owned_by, owner):
+    """A shared node's other user (or a stream whose user is unknown): 404, as for a sid that
+    does not exist, and the sidecar is never asked."""
+    phone_of('42')
+    owned_by(owner)
+    r = app_client.get('/avatar/live/abcdef012345.mp4', environ_base=PHONE)
+    r.get_data()  # a relayed stream holds its request context until read
+    assert r.status_code == 404
+    assert 'url' not in sidecar
+
+
+def test_a_phone_cannot_stop_another_users_stream(app_client, monkeypatch, phone_of, owned_by):
+    import main
+    from integrations.service_tools import avatarforcing_tool
+    monkeypatch.setattr(avatarforcing_tool, 'sidecar_port', lambda: 4321)
+    reached = []
+
+    class _Ok:
+        status_code = 200
+    monkeypatch.setattr(main.requests, 'delete', lambda *a, **k: reached.append(a) or _Ok())
+    phone_of('42')
+    owned_by('43')
+    assert app_client.delete('/avatar/live/abcdef012345.mp4', environ_base=PHONE).status_code == 404
+    assert reached == [], 'another user\'s stop reached the sidecar'
+
+
+def test_this_machine_watches_any_stream(app_client, sidecar, owned_by):
+    owned_by('43')
+    r = app_client.get('/avatar/live/abcdef012345.mp4')
+    assert r.get_data() == b'moovfrag1frag2' and r.status_code == 200

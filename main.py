@@ -2320,12 +2320,19 @@ def avatar_live_stream(sid):
     made.  DELETE: the page left the reply (stopped, barged in, switched):
     the sidecar stops generating it.  Said explicitly because a viewer
     leaving a relayed stream is not always seen here (Hypercorn keeps
-    accepting writes after the client is gone).
+    accepting writes after the client is gone).  This machine and the local
+    token watch any stream; an allowed phone acts as its token's user, so it
+    watches or stops only the streams of that user's turns, and another
+    user's stream is answered exactly like one that does not exist.
     """
     if not _re.fullmatch(r'[0-9a-f]{12}', sid or ''):  # main's module-level import
         return jsonify({'error': 'no such stream'}), 404
     try:
-        from integrations.service_tools.avatarforcing_tool import sidecar_port
+        from integrations.service_tools.avatarforcing_tool import sidecar_port, stream_owner
+        from routes.auth import admitted_device_user
+        phone_user = admitted_device_user()  # None for this machine and the local token
+        if phone_user is not None and phone_user != stream_owner(sid):
+            return jsonify({'error': 'no such stream'}), 404
         port = sidecar_port()
     except Exception as e:
         logging.warning(f"avatar stream {sid}: model lookup failed: {e}")
