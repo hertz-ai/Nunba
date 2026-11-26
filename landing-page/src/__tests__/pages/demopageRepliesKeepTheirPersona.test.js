@@ -7,9 +7,10 @@
  * `persona` on the /chat reply and on every agent message it pushes.  The
  * page built each reply's message from a fixed set of fields, so the persona
  * never reached the chat header (components/chat/AgentPersonaLabel, which
- * reads the newest one).  A pushed message also keeps the agent that pushed
- * it (`promptId`), so another agent's message never names this chat's
- * persona (utils/agentPersona.newestPersona).
+ * reads the newest one).  Every reply also keeps the agent it came from
+ * (`promptId`): a pushed message its own prompt_id, a /chat reply the agent
+ * its turn was sent to.  Only the open agent's replies name the header's
+ * persona (utils/agentPersona.newestPersona; review of d899016f, M1).
  *
  * Demopage is too large to render in a unit test, so each place that turns
  * a reply into a message is cut out of Demopage.js and run as written (the
@@ -62,12 +63,18 @@ const PUSHED = [
 ];
 
 // /chat replies (handleSend and the agent-creation turns): the reply object
-// each one reads, and the text it shows.
+// each one reads, the text it shows, and the page state that names the
+// agent the turn was sent to (review of d899016f, M1: a /chat reply kept no
+// agent, so after an @mention switch the previous agent's persona counted).
 const REPLIES = [
-  ['a turn', 'if (!cardConsumedText && !replyPushed && responseText) {', 'resultData', 'responseText'],
-  ['a plan run', 'text: plan.task_description,', 'resultData', 'responseText'],
-  ['creation, next step', 'const contText = contData.text || contData.response;', 'contData', 'contText'],
-  ['creation, the task', 'const execText = execData.text || execData.response;', 'execData', 'execText'],
+  ['a turn', 'if (!cardConsumedText && !replyPushed && responseText) {', 'resultData', 'responseText',
+    {turnAgent: {prompt_id: SPEECH}}],
+  ['a plan run', 'text: plan.task_description,', 'resultData', 'responseText',
+    {promptId: SPEECH}],
+  ['creation, next step', 'const contText = contData.text || contData.response;', 'contData', 'contText',
+    {currentAgent: {prompt_id: SPEECH}}],
+  ['creation, the task', 'const execText = execData.text || execData.response;', 'execData', 'execText',
+    {currentAgentRef: {current: {prompt_id: SPEECH}}, contData: {}}],
 ];
 
 describe('a pushed agent message keeps the persona it named and the agent that pushed it', () => {
@@ -85,16 +92,18 @@ describe('a pushed agent message keeps the persona it named and the agent that p
   });
 });
 
-describe('a /chat reply keeps the persona it named', () => {
-  test.each(REPLIES)('%s', (_name, marker, replyVar, textVar) => {
+describe('a /chat reply keeps the persona it named and the agent the turn was sent to', () => {
+  test.each(REPLIES)('%s', (_name, marker, replyVar, textVar, turn) => {
     const reply = {text: 'Well done!', persona: 'Child', served_by: 'local'};
-    const message = built(marker, {[replyVar]: reply, [textVar]: 'Well done!'});
+    const message = built(marker, {...turn, [replyVar]: reply, [textVar]: 'Well done!'});
     expect(message.type).toBe('assistant');
     expect(message.persona).toBe('Child');
+    expect(message.promptId).toBe(SPEECH);
   });
 
-  test.each(REPLIES)('%s: a reply that names none keeps none', (_name, marker, replyVar, textVar) => {
-    expect(built(marker, {[replyVar]: {text: 'Hello!'}, [textVar]: 'Hello!'}).persona)
-      .toBeUndefined();
+  test.each(REPLIES)('%s: a reply that names none keeps none', (_name, marker, replyVar, textVar, turn) => {
+    const message = built(marker, {...turn, [replyVar]: {text: 'Hello!'}, [textVar]: 'Hello!'});
+    expect(message.persona).toBeUndefined();
+    expect(message.promptId).toBe(SPEECH);
   });
 });

@@ -997,6 +997,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             servedBy: contData.served_by,
             nodeTier: contData.node_tier,
             persona: contData.persona,
+            // The agent this turn was sent to (the server's id when it
+            // minted one): only the open agent's replies name its persona.
+            promptId: currentAgent?.prompt_id || contData.prompt_id,
           }]);
           setShouldScroll(true);
         }
@@ -1067,6 +1070,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                       servedBy: execData.served_by,
                       nodeTier: execData.node_tier,
                       persona: execData.persona,
+                      promptId: currentAgentRef.current?.prompt_id || contData.prompt_id,
                     }]);
                     setShouldScroll(true);
                   }
@@ -4758,6 +4762,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                 // The persona HARTOS named for this person in the agent
                 // (design_1125 B): the chat header shows the newest.
                 persona: resultData.persona,
+                // The agent this turn was sent to (an @mention's agent too):
+                // the header counts only the open agent's own replies.
+                promptId: turnAgent?.prompt_id,
                 timestamp: new Date(),
                 // Draft-first: tag with speculationId so the expert
                 // response arriving via WAMP can replace this bubble
@@ -4950,6 +4957,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           servedBy: resultData.served_by,
           nodeTier: resultData.node_tier,
           persona: resultData.persona,
+          promptId,
         }]);
       } else {
         // No text back: say so, rather than end the run with nothing shown.
