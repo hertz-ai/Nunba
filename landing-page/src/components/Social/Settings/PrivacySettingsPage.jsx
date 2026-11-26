@@ -545,6 +545,69 @@ function AuditHistory({rows, expanded, onToggle}) {
 // parallel data path, and zero changes to the cloud_capability logic.
 // Default OFF.  Revoke is an instant kill-switch: HARTOS
 // consent_api.revoke_consent ends every active grant of the type.
+
+// The confirmation a card asks before it turns on: its own words and an
+// "I understand" box that must be ticked, cleared each time it opens.  The
+// chat bar's camera switch asks this same one, with CAMERA_CAPTURE_CARD's
+// words, so its On says what it allows before anything is granted (owner
+// 11-22: a whole-kind switch says so before it is pressed).
+export function ConsentConfirmDialog({
+  open,
+  busy = false,
+  onClose,
+  onConfirm,
+  testId,
+  Icon = Cloud,
+  confirmTitle,
+  confirmText,
+  understandLabel,
+  confirmLabel,
+}) {
+  const [understood, setUnderstood] = useState(false);
+  useEffect(() => { if (open) setUnderstood(false); }, [open]);
+
+  return (
+    <Dialog
+      open={open}
+      onClose={busy ? undefined : onClose}
+      maxWidth="sm"
+      fullWidth
+    >
+      <DialogTitle sx={{fontWeight: 600}}>{confirmTitle}</DialogTitle>
+      <DialogContent>
+        <DialogContentText sx={{mb: 2}}>
+          {confirmText}
+        </DialogContentText>
+        <FormControlLabel
+          control={
+            <Checkbox
+              checked={understood}
+              onChange={(e) => setUnderstood(e.target.checked)}
+              inputProps={{'data-testid': `${testId}-understand`}}
+            />
+          }
+          label={understandLabel}
+        />
+      </DialogContent>
+      <DialogActions sx={{px: 3, pb: 2}}>
+        <Button onClick={onClose} disabled={busy} color="inherit">
+          Cancel
+        </Button>
+        <Button
+          onClick={onConfirm}
+          disabled={!understood || busy}
+          variant="contained"
+          data-testid={`${testId}-confirm`}
+          startIcon={busy ? <CircularProgress size={16} /> : <Icon />}
+          sx={{bgcolor: '#6C63FF', '&:hover': {bgcolor: '#5A52E0'}}}
+        >
+          {confirmLabel}
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
 function BlanketConsentCard({
   consentType,
   Icon = Cloud,
@@ -565,7 +628,6 @@ function BlanketConsentCard({
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
-  const [understood, setUnderstood] = useState(false);
   const [snack, setSnack] = useState(null);
 
   const refresh = useCallback(async () => {
@@ -584,7 +646,6 @@ function BlanketConsentCard({
   }, [consentType]);
 
   useEffect(() => { refresh(); }, [refresh]);
-  useEffect(() => { if (confirmOpen) setUnderstood(false); }, [confirmOpen]);
 
   const onGrant = useCallback(async () => {
     setBusy(true);
@@ -661,44 +722,18 @@ function BlanketConsentCard({
         </Button>
       )}
 
-      <Dialog
+      <ConsentConfirmDialog
         open={confirmOpen}
-        onClose={busy ? undefined : () => setConfirmOpen(false)}
-        maxWidth="sm"
-        fullWidth
-      >
-        <DialogTitle sx={{fontWeight: 600}}>{confirmTitle}</DialogTitle>
-        <DialogContent>
-          <DialogContentText sx={{mb: 2}}>
-            {confirmText}
-          </DialogContentText>
-          <FormControlLabel
-            control={
-              <Checkbox
-                checked={understood}
-                onChange={(e) => setUnderstood(e.target.checked)}
-                inputProps={{'data-testid': `${testId}-understand`}}
-              />
-            }
-            label={understandLabel}
-          />
-        </DialogContent>
-        <DialogActions sx={{px: 3, pb: 2}}>
-          <Button onClick={() => setConfirmOpen(false)} disabled={busy} color="inherit">
-            Cancel
-          </Button>
-          <Button
-            onClick={onGrant}
-            disabled={!understood || busy}
-            variant="contained"
-            data-testid={`${testId}-confirm`}
-            startIcon={busy ? <CircularProgress size={16} /> : <Icon />}
-            sx={{bgcolor: '#6C63FF', '&:hover': {bgcolor: '#5A52E0'}}}
-          >
-            {confirmLabel}
-          </Button>
-        </DialogActions>
-      </Dialog>
+        busy={busy}
+        onClose={() => setConfirmOpen(false)}
+        onConfirm={onGrant}
+        testId={testId}
+        Icon={Icon}
+        confirmTitle={confirmTitle}
+        confirmText={confirmText}
+        understandLabel={understandLabel}
+        confirmLabel={confirmLabel}
+      />
 
       <Snackbar
         open={Boolean(snack)}
@@ -1067,8 +1102,9 @@ const SCREEN_CAPTURE_CARD = {
 // card: HARTOS VisionService's camera channel, asked for by the
 // Request_Camera_Access tool.  Before the consent migration the camera had
 // no consent type, so this ask was a LiquidUI 'approval' card that wrote no
-// record — nothing to list here and nothing to revoke (#863).
-const CAMERA_CAPTURE_CARD = {
+// record — nothing to list here and nothing to revoke (#863).  The chat bar's
+// camera switch asks this card's confirmation before it turns the camera on.
+export const CAMERA_CAPTURE_CARD = {
   consentType: 'camera_capture',
   Icon: Videocam,
   title: 'Agents seeing through your camera',

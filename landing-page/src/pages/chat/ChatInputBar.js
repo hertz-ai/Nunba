@@ -1,4 +1,7 @@
 /* eslint-disable no-unused-vars */
+import {
+  CAMERA_CAPTURE_CARD, ConsentConfirmDialog,
+} from '../../components/Social/Settings/PrivacySettingsPage';
 import {hasNativeFilePicker} from '../../utils/nativeFilePicker';
 
 import {
@@ -69,10 +72,13 @@ const ChatInputBar = ({
   onToggleShowThinkingTraces,
   showThinkingTraces,
   // The camera on/off switch: the same consent as the Privacy page's camera
-  // card (Demopage wires it to useCameraConsent's setCameraConsent).
+  // card (Demopage wires it to useCameraConsent's setCameraConsent).  On
+  // lets every agent use the camera, so it first asks that card's own
+  // confirmation; Off is one press.
   onToggleCamera,
   cameraOn,
 }) => {
+  const [cameraConfirmOpen, setCameraConfirmOpen] = React.useState(false);
   return (
     <div className="bg-black pt-4 border-t border-gray-700 flex justify-center flex-col mt-2 mb-2 sticky bottom-0 z-10">
       {/* Message Queue */}
@@ -354,15 +360,29 @@ const ChatInputBar = ({
           </button>
         )}
 
-        {/* Camera on/off: off stops the camera at once */}
+        {/* Camera on/off: off stops the camera at once; on asks first */}
         {onToggleCamera && (
-          <button onClick={onToggleCamera}
+          <button onClick={cameraOn ? onToggleCamera : () => setCameraConfirmOpen(true)}
             className={`btn-feedback p-1 btn-press ${cameraOn ? 'text-green-400' : 'text-gray-500 hover:text-gray-300'}`}
             title={cameraOn ? 'Camera on (click to turn off)' : 'Camera off (click to turn on)'}
             aria-label={cameraOn ? 'Turn camera off' : 'Turn camera on'}
             aria-pressed={Boolean(cameraOn)}>
             {cameraOn ? <Video className="w-4 h-4" /> : <VideoOff className="w-4 h-4" />}
           </button>
+        )}
+        {onToggleCamera && (
+          <ConsentConfirmDialog
+            {...CAMERA_CAPTURE_CARD}
+            testId="chat-camera"
+            open={cameraConfirmOpen}
+            onClose={() => setCameraConfirmOpen(false)}
+            onConfirm={() => {
+              setCameraConfirmOpen(false);
+              // The page's handler flips the current answer: Allow only
+              // ever turns the camera on.
+              if (!cameraOn) onToggleCamera();
+            }}
+          />
         )}
 
         {/* Memory panel */}
