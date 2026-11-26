@@ -816,7 +816,11 @@ threading.Thread(target=_deferred_platform_init, daemon=True,
 # Security: API Token Authentication for sensitive endpoints
 # =============================================================================
 # Auth decorators — single source of truth in routes/auth.py
-from routes.auth import _is_local_request, require_local_or_token  # noqa: E402
+from routes.auth import (  # noqa: E402
+    _is_local_request,
+    require_local_or_token,
+    require_local_token_or_device,
+)
 
 # Register Nunba AI health endpoints
 try:
@@ -2299,6 +2303,63 @@ def harthash():
     """
     from desktop.boot_record import build_identity
     return jsonify(build_identity())
+
+
+@app.route('/avatar/live/<sid>.mp4', methods=["GET", "DELETE"])
+@require_local_token_or_device
+def avatar_live_stream(sid):
+    """One spoken reply's live talking-avatar stream.
+
+    HARTOS's add_live_avatar (integrations/service_tools/avatarforcing_tool.py)
+    put this path in the reply's TTS bundle: generated_video_url for the
+    page, video_link.video (on the advertised base) for a phone.  The model
+    (AvatarForcing, a RuntimeToolManager sidecar managed like every other
+    model) listens on loopback only, so this node's own origin serves its
+    stream, as /tts/audio serves the audio of the same reply.  GET: one
+    fragmented MP4 (H.264 + AAC), relayed chunk by chunk while the frames are
+    made.  DELETE: the page left the reply (stopped, barged in, switched):
+    the sidecar stops generating it.  Said explicitly because a viewer
+    leaving a relayed stream is not always seen here (Hypercorn keeps
+    accepting writes after the client is gone).
+    """
+    if not _re.fullmatch(r'[0-9a-f]{12}', sid or ''):  # main's module-level import
+        return jsonify({'error': 'no such stream'}), 404
+    try:
+        from integrations.service_tools.avatarforcing_tool import sidecar_port
+        port = sidecar_port()
+    except Exception as e:
+        logging.warning(f"avatar stream {sid}: model lookup failed: {e}")
+        port = None
+    if not port:
+        return jsonify({'error': 'the talking-avatar model is not running'}), 503
+    sidecar = f'http://127.0.0.1:{port}/live.mp4'
+    if request.method == 'DELETE':
+        try:
+            r = requests.delete(sidecar, params={'sid': sid}, json={}, timeout=5)
+            return jsonify({'stopped': r.status_code == 200}), (200 if r.status_code in (200, 404) else 502)
+        except requests.RequestException as e:
+            logging.warning(f"avatar stream {sid}: stop not delivered: {e}")
+            return jsonify({'error': 'the talking-avatar model did not answer'}), 502
+    try:
+        upstream = requests.get(sidecar, params={'sid': sid}, stream=True, timeout=(5, 60))
+    except requests.RequestException as e:
+        logging.warning(f"avatar stream {sid}: sidecar unreachable: {e}")
+        return jsonify({'error': 'the talking-avatar model did not answer'}), 502
+    if upstream.status_code != 200:
+        upstream.close()
+        return jsonify({'error': 'no such stream'}), upstream.status_code
+
+    def relay():
+        try:
+            for chunk in upstream.iter_content(chunk_size=None):
+                if chunk:
+                    yield chunk
+        finally:
+            upstream.close()
+
+    from flask import Response, stream_with_context
+    return Response(stream_with_context(relay()), mimetype='video/mp4',
+                    headers={'Cache-Control': 'no-cache, no-store', 'X-Accel-Buffering': 'no'})
 
 
 @app.route('/api/admin/models', methods=["GET"])

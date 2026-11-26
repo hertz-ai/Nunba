@@ -77,12 +77,27 @@ def _busy_text_for_failure(err_text):
     return None
 
 
-def _fire_nunba_tts(text, user_id, request_id, language='en'):
+def _avatar_id_of(value):
+    """The avatar id a chat body carries, by HARTOS's one reader
+    (core.teacher_avatar.avatar_id_from); None when it carries none."""
+    try:
+        from core.teacher_avatar import avatar_id_from
+        return avatar_id_from(value)
+    except Exception as e:
+        logger.warning(f"avatar id unread (HARTOS core.teacher_avatar unavailable): {e}")
+        return None
+
+
+def _fire_nunba_tts(text, user_id, request_id, language='en',
+                    media_mode=None, avatar_id=None):
     """Synthesize TTS and push audio via SSE — works regardless of HARTOS tier.
 
     Called from chat_route when HARTOS Tier-1 didn't handle TTS.
     Uses Nunba's own tts_engine (kokoro/piper/indic_parler) and pushes
-    the audio URL to the frontend via SSE broadcast.
+    the audio URL to the frontend via SSE broadcast.  On a video turn
+    (media_mode 'video') of an avatar with a face, the same bundle also
+    carries its live talking-face stream: HARTOS's add_live_avatar, the
+    one helper both TTS publishers call.
     """
     # Internal error text must never be spoken.  The reply string was
     # handed straight to TTS, so backend faults got READ ALOUD: the owner
@@ -144,6 +159,15 @@ def _fire_nunba_tts(text, user_id, request_id, language='en'):
                     'request_id': str(request_id),
                     'action': 'TTS',
                 }
+                if media_mode == 'video':
+                    try:
+                        from core.port_registry import get_advertisable_base_url
+                        from integrations.service_tools.avatarforcing_tool import add_live_avatar
+                        add_live_avatar(_payload, audio_path=audio_path, avatar_id=avatar_id,
+                                        media_mode=media_mode,
+                                        phone_base=get_advertisable_base_url())
+                    except Exception as e:
+                        logger.warning(f"Nunba TTS: live avatar skipped: {e}")
                 # Push via ALL transports so every consumer gets audio:
                 # 1. SSE (local Nunba desktop)
                 # 2. Local embedded WAMP (LAN clients)
@@ -3768,7 +3792,9 @@ def _run_chat_turn(data):
                                           (preferred_lang and not preferred_lang.startswith('en')
                                            and result.get('_tier') != 'direct'))
                     if audio_mode and response_text and _nunba_handles_tts:
-                        _fire_nunba_tts(response_text, user_id, request_id, preferred_lang)
+                        _fire_nunba_tts(response_text, user_id, request_id, preferred_lang,
+                                        media_mode=media_mode,
+                                        avatar_id=_avatar_id_of(teacher_avatar_id))
                     return jsonify(response_json)
                 else:
                     logger.warning(f'LangChain returned error or empty: {result}')
@@ -3846,7 +3872,9 @@ def _run_chat_turn(data):
                     'success': True
                 }
                 if audio_mode and response_text:
-                    _fire_nunba_tts(response_text, user_id, request_id, preferred_lang)
+                    _fire_nunba_tts(response_text, user_id, request_id, preferred_lang,
+                                    media_mode=media_mode,
+                                    avatar_id=_avatar_id_of(teacher_avatar_id))
                 return jsonify(_resp)
         except ImportError:
             logger.warning('Llama config not available')

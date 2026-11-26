@@ -34,6 +34,7 @@ import {animateScroll as scrollLibrary} from 'react-scroll';
 import autobahn from 'autobahn';
 import { classifyError, getBackoff, startTurn, MAX_RETRIES, turnHasReply, EMPTY_REPLY_REASON, PUSHED_REPLY_MISSING_REASON } from '../utils/chatRetry';
 import { shouldSpeakLocalReply, isDraftReply, hasServerAudioPayload, shouldPlayPushedClip, speaksPushedText, initialTtsEnabled } from '../utils/ttsGuards';
+import { startLiveAvatar, stopLiveAvatar } from '../utils/liveAvatar';
 import { mergeRestoredMessages } from '../utils/mergeRestoredMessages';
 import { normalizeRestoredMessages } from '../utils/normalizeRestoredMessages';
 import { holdsAgentChat, isSetupCard, restoreServerHistory } from '../utils/serverChatHistory';
@@ -1949,6 +1950,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
   const changeMediaMode = (newMode) => {
     setMediaMode(newMode);
+    // A live avatar reply lives in the video element this change replaces (its onStop
+    // clears the speaking state); the mode's own video choice below then applies.
+    stopLiveAvatar();
 
     if (newMode === 'text') {
       // Text mode: stop all media
@@ -2108,6 +2112,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       }
       return;
     }
+    stopLiveAvatar(); // a reply heard as audio takes over from a live avatar reply
     const el = getTtsAudioElement();
     const outcome = playTtsClip(el, data.generated_audio_url, {
       onStart: () => {
@@ -2128,6 +2133,83 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     });
     console.log('[TTS] Clip', outcome + ':', data.generated_audio_url);
   }, []);
+
+  // Talking avatar: on a video turn of an agent with a face, the pushed TTS bundle also
+  // carries generated_video_url, a live stream of the agent's portrait speaking the reply
+  // (HARTOS avatarforcing_tool.add_live_avatar; utils/liveAvatar plays it). The same
+  // bundle arrives on both the WAMP and the SSE path, so it is deduped by URL like the
+  // audio player. A bundle without a stream, a browser that cannot play it, or a stream
+  // that fails to start plays the reply's audio exactly as before (playPushedTts).
+  const mediaModeRef = useRef(mediaMode);
+  useEffect(() => { mediaModeRef.current = mediaMode; }, [mediaMode]);
+  const liveAvatarRef = useRef(null);
+  const lastAvatarClipRef = useRef(null);
+  const idleVideoUrlRef = useRef(null);
+  useEffect(() => { idleVideoUrlRef.current = idleVideoUrl; }, [idleVideoUrl]);
+  const playReply = useCallback((data) => {
+    const stream = data && data.generated_video_url;
+    // Only where the agent's <video> is on the page (video mode); anywhere else the
+    // reply is heard, as before.
+    if (stream && mediaModeRef.current === 'video'
+        && shouldPlayPushedClip(data, requestIdRef.current, ttsEnabledRef.current)) {
+      if (lastAvatarClipRef.current === stream) return;
+      lastAvatarClipRef.current = stream;
+      const live = startLiveAvatar({streamUrl: stream, seconds: data.video_seconds});
+      if (live) {
+        getTtsAudioElement().pause(); // an earlier reply's clip yields to this one
+        live.fallback = () => playPushedTts(data);
+        live.onEarlyStop = () => { // stopped before the element took it
+          if (liveAvatarRef.current === live) liveAvatarRef.current = null;
+          setIsPlayingResponse(false);
+          setVideoUrl(idleVideoUrlRef.current || null);
+        };
+        liveAvatarRef.current = live;
+        setIsPlayingResponse(true);
+        setVideoUrl(live.url);
+        // The element must take the stream soon; if it never does, the reply is heard.
+        setTimeout(() => {
+          if (!live.attached && live.active && liveAvatarRef.current === live) {
+            live.stop();
+            liveAvatarRef.current = null;
+            setVideoUrl(idleVideoUrlRef.current || null);
+            live.fallback();
+          }
+        }, 2500);
+        return;
+      }
+    }
+    playPushedTts(data);
+  }, [playPushedTts]);
+  useEffect(() => {
+    const live = liveAvatarRef.current;
+    if (live && !live.attached && videoUrl === live.url && videoRef.current) {
+      const done = () => {
+        if (liveAvatarRef.current === live) liveAvatarRef.current = null;
+        setIsPlayingResponse(false);
+      };
+      live.attach(videoRef.current, {
+        onEnd: ({natural} = {}) => {
+          done();
+          // Ended early (no 'ended' event): handleMediaEnded will not bring the idle face back.
+          if (!natural) setVideoUrl(idleVideoUrlRef.current || null);
+        },
+        onFail: () => {
+          // Nothing of it could play: back to the idle face, and the reply is heard.
+          done();
+          setVideoUrl(idleVideoUrlRef.current || null);
+          live.fallback();
+        },
+        onStop: () => {
+          // Stopped (barge-in, speaker off, a new reply, a switch): not speaking any more,
+          // and the face goes back to idle instead of freezing mid-word.
+          done();
+          setVideoUrl(idleVideoUrlRef.current || null);
+        },
+      });
+    }
+  }, [videoUrl]);
+  // Leaving the page stops a live reply (and its generation on the server).
+  useEffect(() => () => stopLiveAvatar(), []);
 
   const handleDataReceived = useCallback((data) => {
     logger.log('🚦 handleDataReceived START');
@@ -2261,7 +2343,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       // listener also receives): the same single player, deduped by URL.
       if (parsed.action === 'TTS' && parsed.generated_audio_url) {
         logger.log('TTS AUDIO RECEIVED:', parsed.generated_audio_url);
-        playPushedTts(parsed);
+        playReply(parsed);
         return;
       }
 
@@ -2933,7 +3015,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       console.log('[TTS] Event received:', data.generated_audio_url, 'req:', data.request_id);
       // playPushedTts decides whose turn the clip is; this listener only
       // hands it over, as the WAMP path does.
-      playPushedTts(data);
+      playReply(data);
     });
 
     // Setup progress — TTS engine install, model downloads.
@@ -3179,6 +3261,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   };
 
   const handleVideoError = (e) => {
+    // A live avatar reply handles its own errors (utils/liveAvatar falls back to the audio);
+    // hiding the element would hide every later reply and the idle face with it.
+    if (liveAvatarRef.current && e.target.src === liveAvatarRef.current.url) return;
     e.target.style.display = 'none';
   };
 
@@ -3236,6 +3321,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   };
 
   const handleButtonClick = (chat) => {
+    stopLiveAvatar(); // the last agent's live reply ends with its chat
     setVideoUrl(null);
     setCurrentAgent(chat);
     logger.log('hello');
@@ -4104,6 +4190,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   const handleLoadedMetadata = (event) => {
     if (videoRef.current) {
       setDuration(videoRef.current.duration);
+      // A live avatar reply decides itself when to play (utils/liveAvatar: only once what
+      // is buffered covers the rest of the reply).
+      if (liveAvatarRef.current && videoUrl === liveAvatarRef.current.url) return;
       handlePlay();
     }
   };
@@ -4233,6 +4322,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       }
     } catch {}
 
+    // Barge-in: a live avatar reply (not tracked by tts.isSpeaking) stops on a send too.
+    stopLiveAvatar();
     // Barge-in: stop any playing TTS when user sends a new message
     if (tts.isSpeaking) {
       tts.stop();
@@ -4442,6 +4533,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               conversation_id: conversationId,
               media_mode: mediaMode || 'audio',
               prompt_id: _promptIdForBackend,
+              // A video turn names the avatar this agent speaks as, for its face (and its
+              // voice) in the live reply (HARTOS core/teacher_avatar): the key Android
+              // already sends.  Audio turns stay as they were.
+              ...(mediaMode === 'video' && turnAgent?.teacher_avatar_id
+                ? { teacher_avatar_id: turnAgent.teacher_avatar_id } : {}),
               create_agent: turnAgent?.create_agent || false,
               autonomous_creation: turnAgent?.autonomous_creation || false,
               image_url: userImage || null,

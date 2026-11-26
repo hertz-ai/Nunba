@@ -1,0 +1,145 @@
+"""GET /avatar/live/<sid>.mp4 -- the node serves a reply's live talking-avatar stream.
+
+HARTOS's add_live_avatar puts this path in a reply's TTS bundle (the page's
+generated_video_url, a phone's video_link.video).  The model's sidecar listens on
+loopback only, so main.py relays it.  Pinned here: the stream is relayed chunk by
+chunk as the sidecar sends it, only a session id reaches the sidecar, a stopped
+model answers 503 (the page then plays the reply's audio), the upstream
+connection is closed once the relay ends, and DELETE (the page leaving a reply)
+is what stops the generation -- a relayed viewer that disconnects is not always
+seen here (Hypercorn keeps accepting writes), so the page says it.
+"""
+import os
+import sys
+
+import pytest
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+
+@pytest.fixture(scope='module')
+def app_client():
+    try:
+        from main import app
+    except Exception as e:
+        pytest.skip(f"Flask app not available: {e}")
+    app.config['TESTING'] = True
+    with app.test_client() as c:
+        yield c
+
+
+class _Upstream:
+    def __init__(self, status=200, chunks=(b'moov', b'frag1', b'frag2')):
+        self.status_code, self.chunks, self.closed = status, list(chunks), False
+
+    def iter_content(self, chunk_size=None):
+        yield from self.chunks
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.fixture
+def sidecar(monkeypatch):
+    import main
+    from integrations.service_tools import avatarforcing_tool
+    seen = {}
+
+    def get(url, params=None, stream=False, timeout=None):
+        seen.update(url=url, params=params, stream=stream)
+        return seen.setdefault('upstream', _Upstream())
+    monkeypatch.setattr(avatarforcing_tool, 'sidecar_port', lambda: 4321)
+    monkeypatch.setattr(main.requests, 'get', get)
+    return seen
+
+
+def test_relays_the_sidecars_stream(app_client, sidecar):
+    r = app_client.get('/avatar/live/abcdef012345.mp4')
+    assert r.status_code == 200
+    assert r.mimetype == 'video/mp4'
+    assert r.headers['Cache-Control'] == 'no-cache, no-store'
+    assert r.data == b'moovfrag1frag2'
+    assert sidecar['url'] == 'http://127.0.0.1:4321/live.mp4'
+    assert sidecar['params'] == {'sid': 'abcdef012345'}
+    assert sidecar['stream'] is True
+    assert sidecar['upstream'].closed  # the relay let go of the sidecar's stream
+
+
+@pytest.mark.parametrize('sid', ['ABCDEF012345', 'abc', 'abcdef0123456', 'abcdef01234g'])
+def test_only_a_session_id_reaches_the_sidecar(app_client, sidecar, sid):
+    r = app_client.get(f'/avatar/live/{sid}.mp4')
+    assert r.status_code == 404
+    assert 'url' not in sidecar
+
+
+def test_a_path_climbing_out_never_reaches_the_sidecar(app_client, sidecar):
+    # the encoded slashes are normalized away before routing, so this is some
+    # other page (the SPA's catch-all), never a stream
+    r = app_client.get('/avatar/live/..%2f..%2fx.mp4')
+    assert r.mimetype != 'video/mp4'
+    assert 'url' not in sidecar
+
+
+def test_model_not_running_is_503(app_client, monkeypatch):
+    from integrations.service_tools import avatarforcing_tool
+    monkeypatch.setattr(avatarforcing_tool, 'sidecar_port', lambda: None)
+    r = app_client.get('/avatar/live/abcdef012345.mp4')
+    assert r.status_code == 503
+
+
+def test_unknown_session_passes_the_sidecars_404(app_client, monkeypatch):
+    import main
+    from integrations.service_tools import avatarforcing_tool
+    up = _Upstream(status=404)
+    monkeypatch.setattr(avatarforcing_tool, 'sidecar_port', lambda: 4321)
+    monkeypatch.setattr(main.requests, 'get', lambda *a, **k: up)
+    r = app_client.get('/avatar/live/abcdef012345.mp4')
+    assert r.status_code == 404
+    assert up.closed
+
+
+def test_sidecar_unreachable_is_502(app_client, monkeypatch):
+    import main
+    import requests
+    from integrations.service_tools import avatarforcing_tool
+
+    def refuse(*a, **k):
+        raise requests.ConnectionError('refused')
+    monkeypatch.setattr(avatarforcing_tool, 'sidecar_port', lambda: 4321)
+    monkeypatch.setattr(main.requests, 'get', refuse)
+    assert app_client.get('/avatar/live/abcdef012345.mp4').status_code == 502
+
+
+def test_another_machine_without_a_credential_is_refused(app_client, sidecar):
+    r = app_client.get('/avatar/live/abcdef012345.mp4',
+                       environ_base={'REMOTE_ADDR': '192.168.0.77'})
+    assert r.status_code in (401, 403)
+    assert 'url' not in sidecar
+
+
+def test_delete_tells_the_sidecar_to_stop(app_client, monkeypatch):
+    """The page leaving a reply stops its generation: Hypercorn never reports a relayed
+    viewer that left, so the page says it (liveAvatar.stop -> DELETE)."""
+    import main
+    from integrations.service_tools import avatarforcing_tool
+    sent = {}
+
+    class _Ok:
+        status_code = 200
+
+    def delete(url, params=None, json=None, timeout=None):
+        sent.update(url=url, params=params, json=json)
+        return _Ok()
+    monkeypatch.setattr(avatarforcing_tool, 'sidecar_port', lambda: 4321)
+    monkeypatch.setattr(main.requests, 'delete', delete)
+    r = app_client.delete('/avatar/live/abcdef012345.mp4')
+    assert r.status_code == 200 and r.get_json() == {'stopped': True}
+    assert sent == {'url': 'http://127.0.0.1:4321/live.mp4', 'params': {'sid': 'abcdef012345'}, 'json': {}}
+
+
+def test_delete_of_a_bad_sid_never_reaches_the_sidecar(app_client, monkeypatch):
+    import main
+    monkeypatch.setattr(main.requests, 'delete', lambda *a, **k: pytest.fail('reached the sidecar'))
+    assert app_client.delete('/avatar/live/ABC.mp4').status_code == 404
