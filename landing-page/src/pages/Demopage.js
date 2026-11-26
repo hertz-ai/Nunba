@@ -3565,10 +3565,23 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         // cannot (useSpeechRecognition.openSttLink, shared with the hook).
         // Owner 2026-11-24: this mic's socket died at 14:39, the button kept
         // showing Stop, and nothing said from 15:00 to 15:06 was heard.
+        // The speech server's plain words for why nothing was heard yet
+        // (whisper_tool: the voice model is still downloading, or this
+        // computer cannot run one for the person's language).  Every pause
+        // repeats it, so it shows once until words are heard again.
+        let lastNotice = '';
         const onMessage = (evt) => {
           try {
             const data = JSON.parse(evt.data);
+            if (data.notice && !data.text?.trim()) {
+              if (data.notice !== lastNotice) {
+                lastNotice = data.notice;
+                pushNotification({ type: 'info', message: data.notice });
+              }
+              return;
+            }
             if (data.text?.trim()) {
+              lastNotice = '';
               if (data.is_final) {
                 const words = micTurnText(data.text);
                 if (!words) return;

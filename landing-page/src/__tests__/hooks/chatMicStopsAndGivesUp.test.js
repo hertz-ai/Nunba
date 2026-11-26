@@ -198,6 +198,29 @@ describe('the chat page mic', () => {
     expect(sockets[0].url).toBe('ws://127.0.0.1:8005');
   });
 
+  test('the server saying why nothing was heard reaches the person once, never as words', async () => {
+    // whisper_tool sends {"notice"} when it cannot hear the person yet (the
+    // voice model is still downloading, or none for their language fits this
+    // computer), on every pause (coordinator #284).
+    const notice = 'The voice model is still downloading. Speech will be heard once it is ready.';
+    const page = await started(chatPage());
+    sockets[0].onmessage({data: JSON.stringify({notice})});
+    sockets[0].onmessage({data: JSON.stringify({notice})});
+    jest.advanceTimersByTime(2000);
+
+    expect(page.toasts).toEqual([{type: 'info', message: notice}]);
+    expect(page.composer).toEqual([]);
+    expect(page.sent).toEqual([]);
+    expect(page.recording).toEqual([true]);   // the mic stays on
+
+    // Once words are heard, a later notice is news again.
+    sockets[0].say('hello there', true);
+    jest.advanceTimersByTime(2000);
+    sockets[0].onmessage({data: JSON.stringify({notice})});
+    expect(page.sent).toEqual(['hello there']);
+    expect(page.toasts).toEqual([{type: 'info', message: notice}, {type: 'info', message: notice}]);
+  });
+
   test('a mic the page opened asks the server to end utterances at a pause', async () => {
     await started(chatPage({unprompted: true}));
     expect(controls(sockets[0])[0]).toEqual({type: 'config', continuous: true});
