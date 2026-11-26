@@ -265,7 +265,11 @@ function chatPage(open) {
     decryptedUserId: null,
     isGuestMode: true,
     chatApi: {syncAgents: () => Promise.resolve()},
+    // Demopage's live talking face (utils/liveAvatar): switching agents ends the last
+    // agent's live reply with its chat (handleButtonClick, d7f66e18).
+    stopLiveAvatar: jest.fn(),
   };
+  page.stopLiveAvatar = scope.stopLiveAvatar;
   page.run = (code, extra = {}) => {
     const all = {...scope, ...extra};
     const names = Object.keys(all);
@@ -283,6 +287,7 @@ describe('two agents with one name, inside the chat page', () => {
 
     expect(page.settlesOn().prompt_id).toBe(SECOND.prompt_id);
     expect(page.urls).toEqual(['/agents/speech-therapy-companion?id=95568353503']);
+    expect(page.stopLiveAvatar).toHaveBeenCalledTimes(1); // the first agent's live face ends
   });
 
   test('the cloud create form opens the agent it made, not an older one of that name', async () => {
