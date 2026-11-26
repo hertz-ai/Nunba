@@ -60,20 +60,29 @@ const PLAN_RUN = `${cutAfter('text: plan.task_description,', '      if (response
 const AGENT = '353';
 const DESK = 'desk-device-1';
 
-// One chat page: one message list, and the page's ways in.
-function page(initial = []) {
+// One chat page: one message list, and the page's ways in.  `speech`: the
+// speaker is on and this page speaks the pushed text (speaksPushedText).
+function page(initial = [], {speech = false} = {}) {
   let messages = initial.slice();
+  // What ChatMessageList types: the row animatingMessageIndex names, while
+  // duration > 0 (ChatMessageList.js, `animatingMessageIndex === index &&
+  // duration > 0`).
+  let animating = null;
+  let duration = 0;
+  const spoken = [];
   const noop = () => {};
   const scope = {
     repeatsShownMessage,
     setMessages: (v) => { messages = typeof v === 'function' ? v(messages) : v; },
-    setAnimatingMessageIndex: noop, setShouldScroll: noop, setLoading: noop,
+    setAnimatingMessageIndex: (v) => { animating = typeof v === 'function' ? v(animating) : v; },
+    setShouldScroll: noop, setLoading: noop,
     setIsRequestInFlight: noop, setUploadedImage: noop, setWaitingText: noop,
-    setDuration: noop, setVideoUrl: noop, setAudioUrl: noop, setIsPlayingResponse: noop,
-    // Text arrives with the speaker off: what is counted is the bubbles.
-    ttsEnabled: false,
-    tts: {isAvailable: true, speak: () => Promise.resolve()},
-    speaksPushedText: () => false,
+    setDuration: (v) => { duration = v; },
+    setVideoUrl: noop, setAudioUrl: noop, setIsPlayingResponse: noop,
+    // By default text arrives with the speaker off: what is counted is the bubbles.
+    ttsEnabled: speech,
+    tts: {isAvailable: true, speak: (text) => { spoken.push(text); return Promise.resolve(); }},
+    speaksPushedText: () => speech,
     shouldSpeakLocalReply: () => false,
     isDraftReply: () => false,
     hasServerAudioPayload: () => false,
@@ -100,6 +109,10 @@ function page(initial = []) {
   return {
     get rows() { return messages; },
     get said() { return messages.filter((m) => m.type === 'assistant').map((m) => m.content); },
+    get spoken() { return spoken; },
+    get duration() { return duration; },
+    // The row index ChatMessageList types now, or null.
+    get typing() { return duration > 0 ? animating : null; },
     // An agent message pushed to this page, in each of its three branches.
     pushText(requestId, text, msgId) {
       run(TEXT_MODE, ['isTextMode', 'parsed', 'extractedText'],
@@ -198,6 +211,51 @@ describe('either copy can come first', () => {
     desktop.reply(TURN, WORDS);
     desktop.pushSpoken(SEND, WORDS, 'a1b2c3');
     expect(desktop.said).toEqual([WORDS]);
+  });
+});
+
+describe('a held-back spoken push: what types and what is said (rv_da3c, finding 3)', () => {
+  // The push's branch still speaks its words and still starts the typewriter
+  // clock (setDuration) after the speech starts; held back, it no longer
+  // moves the typing index to a row.  Before da3c386f it appended a second
+  // bubble and that bubble typed with the voice.
+  const flush = () => new Promise((resolve) => global.setTimeout(resolve, 0));
+  const estimate = (text) => Math.max(2, text.split(/\s+/).length / 2.5);
+
+  test('on a fresh page the reply stays whole and no row types while the voice says it', async () => {
+    const desktop = page([], {speech: true});
+    desktop.reply(TURN, WORDS);
+    desktop.pushSpoken(SEND, WORDS, 'a1b2c3');
+    await flush();
+    expect(desktop.said).toEqual([WORDS]);
+    expect(desktop.spoken).toEqual([WORDS]);
+    expect(desktop.duration).toBe(estimate(WORDS));
+    expect(desktop.typing).toBeNull();
+  });
+
+  test("after an earlier spoken line, the index stays on that line, never the new reply's row", async () => {
+    // TypeWriterSubtitle keeps a finished line finished when it renders
+    // again with a new duration (088e9279), so nothing re-types on screen.
+    const desktop = page([], {speech: true});
+    desktop.pushSpoken('msg_1795685199267_ebpnqv-intermediate-7491', 'A cappuccino sounds delicious!', 'c1');
+    await flush();
+    expect(desktop.typing).toBe(0);
+    desktop.reply(TURN, WORDS);
+    desktop.pushSpoken(SEND, WORDS, 'a1b2c3');
+    await flush();
+    expect(desktop.said).toEqual(['A cappuccino sounds delicious!', WORDS]);
+    expect(desktop.spoken).toEqual(['A cappuccino sounds delicious!', WORDS]);
+    expect(desktop.duration).toBe(estimate(WORDS));
+    expect(desktop.typing).toBe(0);
+  });
+
+  test('in the usual order the push types with the voice and the reply after it moves nothing', async () => {
+    const desktop = page([], {speech: true});
+    desktop.pushSpoken(SEND, WORDS, 'a1b2c3');
+    await flush();
+    desktop.reply(TURN, WORDS);
+    expect(desktop.said).toEqual([WORDS]);
+    expect(desktop.typing).toBe(0);
   });
 });
 
