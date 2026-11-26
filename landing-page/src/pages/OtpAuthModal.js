@@ -649,6 +649,10 @@ const OtpAuthModal = ({
         device_id: deviceId,
       });
       const {user, token} = res.data;
+      // Over a cloud account the recovered guest is a sign-out first (see
+      // handleGuestLogin): no guest token sits beside the account's keys.
+      // Only once the code is accepted, so a wrong code signs nobody out.
+      if (account) await clearAuth();
       // #209/#221 — canonical guest writer.  Same shape as primary
       // register and quick-relogin paths above.
       setGuestIdentity({

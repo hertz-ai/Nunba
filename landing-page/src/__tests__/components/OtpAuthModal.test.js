@@ -489,4 +489,66 @@ describe('OtpAuthModal: the guest screen and a signed-in account', () => {
     expect(localStorage.getItem('access_token')).toBe('guest-jwt-buildra');
     expect(readAuthSession().status).toBe('guest');
   });
+
+  // A recovery code is the third way to the guest (review of 3f882948). Its
+  // form opens from the new-guest screen, shown online when no guest name is
+  // saved. It wrote the recovered guest's JWT beside the account's
+  // encrypted user_id, so the page read that JWT as the account's token.
+  const recoverWithACode = (onClose) => {
+    authApi.guestRecover.mockReset();
+    renderModal({forceGuestMode: true, onClose});
+    fireEvent.click(
+      screen.getByRole('button', {name: /recover guest session/i})
+    );
+    fireEvent.change(
+      screen.getByPlaceholderText('amber breeze coral drift ember frost'),
+      {target: {value: 'amber breeze coral drift ember frost'}}
+    );
+  };
+
+  test('a recovery code over an account: the account is signed out, the page is the recovered guest', async () => {
+    seedAccountAfter401(); // no guest name saved: the new-guest screen
+    const onClose = jest.fn();
+    recoverWithACode(onClose);
+    authApi.guestRecover.mockResolvedValue({
+      data: {
+        user: {id: 'g-recovered', display_name: 'Radiant.Green.buildra'},
+        token: 'guest-jwt-recovered',
+      },
+    });
+    fireEvent.click(screen.getByRole('button', {name: 'Recover Session'}));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+
+    const s = readAuthSession();
+    // Before the fix: {status: 'cloud', cloudToken: 'guest-jwt-recovered'}.
+    expect({status: s.status, cloudToken: s.tokens.cloud}).toEqual({
+      status: 'guest',
+      cloudToken: null,
+    });
+    expect(s.identity.user_id).toBe('g-recovered');
+    expect(s.account).toBeNull();
+    ['user_id', 'email_address', 'phone_number', 'refresh_token'].forEach((k) =>
+      expect(localStorage.getItem(k)).toBeNull());
+    expect(localStorage.getItem('access_token')).toBe('guest-jwt-recovered');
+    expect(axiosPosts().flatMap((fn) => fn.mock.calls)).toEqual([
+      ['/api/storage/set', {user_id: '', access_token: '', email: ''}, {timeout: 3000}],
+    ]);
+  });
+
+  test('a wrong recovery code signs nobody out', async () => {
+    seedAccountAfter401();
+    recoverWithACode(jest.fn());
+    authApi.guestRecover.mockRejectedValue(new Error('Request failed with status code 400'));
+    fireEvent.click(screen.getByRole('button', {name: 'Recover Session'}));
+    expect(
+      await screen.findByText('Invalid recovery code. Please try again.')
+    ).toBeInTheDocument();
+    expect(localStorage.getItem('user_id')).toBe('ENC:10202');
+    expect(localStorage.getItem('email_address')).toBe('ENC:sales@hertzai.com');
+    expect(axiosPosts().flatMap((fn) => fn.mock.calls)).toEqual([]);
+    expect(readAuthSession().account).toEqual({
+      email: 'sales@hertzai.com',
+      phone: '+919000000001',
+    });
+  });
 });
