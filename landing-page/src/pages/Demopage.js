@@ -993,7 +993,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         const contText = contData.text || contData.response;
 
         if (contText) {
-          setMessages((prev) => [...prev, {
+          const contMessage = {
             type: 'assistant',
             content: contText,
             source: contData.source,
@@ -1003,7 +1003,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             // The agent this turn was sent to (the server's id when it
             // minted one): only the open agent's replies name its persona.
             promptId: currentAgent?.prompt_id || contData.prompt_id,
-          }]);
+            // The turn it ends: a send of this turn already showing these
+            // words is this reply (constants/chatBubble.repeatsShownMessage).
+            requestId: contTurn,
+          };
+          setMessages((prev) => (repeatsShownMessage(contMessage, prev) ? prev : [...prev, contMessage]));
           setShouldScroll(true);
         }
 
@@ -1066,7 +1070,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                   const execData = execResult || {};
                   const execText = execData.text || execData.response;
                   if (execText) {
-                    setMessages((prev) => [...prev, {
+                    // A REUSE turn of the new agent: its newest send is
+                    // often this reply (repeatsShownMessage, as in handleSend).
+                    const execMessage = {
                       type: 'assistant',
                       content: execText,
                       source: execData.source,
@@ -1074,7 +1080,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                       nodeTier: execData.node_tier,
                       persona: execData.persona,
                       promptId: currentAgentRef.current?.prompt_id || contData.prompt_id,
-                    }]);
+                      requestId: execTurn,
+                    };
+                    setMessages((prev) => (repeatsShownMessage(execMessage, prev) ? prev : [...prev, execMessage]));
                     setShouldScroll(true);
                   }
                   // Clean up autonomous state
@@ -5039,7 +5047,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       const resultData = result?.data || result || {};
       const responseText = resultData.text || resultData.response;
       if (responseText) {
-        setMessages((prev) => [...prev, {
+        // A plan run of a matched agent is a REUSE turn: its newest send is
+        // often this reply (repeatsShownMessage, as in handleSend).
+        const planMessage = {
           type: 'assistant',
           content: responseText,
           source: resultData.source || null,
@@ -5047,7 +5057,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           nodeTier: resultData.node_tier,
           persona: resultData.persona,
           promptId,
-        }]);
+          requestId: planTurn,
+        };
+        setMessages((prev) => (repeatsShownMessage(planMessage, prev) ? prev : [...prev, planMessage]));
       } else {
         // No text back: say so, rather than end the run with nothing shown.
         setMessages((prev) => [...prev, { type: 'system', content: EMPTY_REPLY_REASON }]);

@@ -70,11 +70,11 @@ const REPLIES = [
   ['a turn', 'if (!cardConsumedText && !replyPushed && responseText) {', 'resultData', 'responseText',
     {turnAgent: {prompt_id: SPEECH}, msgId: 'msg_1795685299811_zbw1jq'}],
   ['a plan run', 'text: plan.task_description,', 'resultData', 'responseText',
-    {promptId: SPEECH}],
+    {promptId: SPEECH, planTurn: 'msg_1'}],
   ['creation, next step', 'const contText = contData.text || contData.response;', 'contData', 'contText',
-    {currentAgent: {prompt_id: SPEECH}}],
+    {currentAgent: {prompt_id: SPEECH}, contTurn: 'msg_2'}],
   ['creation, the task', 'const execText = execData.text || execData.response;', 'execData', 'execText',
-    {currentAgentRef: {current: {prompt_id: SPEECH}}, contData: {}}],
+    {currentAgentRef: {current: {prompt_id: SPEECH}}, contData: {}, execTurn: 'msg_3'}],
 ];
 
 describe('a pushed agent message keeps the persona it named and the agent that pushed it', () => {

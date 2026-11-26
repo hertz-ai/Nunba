@@ -27,12 +27,19 @@ const {isRemoteChatTurn} = require('../../services/realtimeService');
 
 const SRC = fs.readFileSync(path.join(__dirname, '..', '..', 'pages', 'Demopage.js'), 'utf8');
 
-function cut(start, end) {
-  const a = SRC.indexOf(start);
+function cut(start, end, from = 0) {
+  const a = SRC.indexOf(start, from);
   if (a < 0) throw new Error(`Demopage marker not found: ${start}`);
   const b = SRC.indexOf(end, a + start.length);
   if (b < 0) throw new Error(`Demopage end marker not found after ${start}: ${end}`);
   return SRC.slice(a, b);
+}
+
+// The cut from `start` to `end` that comes after `anchor`.
+function cutAfter(anchor, start, end) {
+  const at = SRC.indexOf(anchor);
+  if (at < 0) throw new Error(`Demopage anchor not found: ${anchor}`);
+  return cut(start, end, at);
 }
 
 // handleDataReceived's three branches that append a pushed agent line,
@@ -43,6 +50,12 @@ const WITH_AUDIO = cut('      if (hasAudio) {', '      if (parsed.page_image_url
 const REPLY = `${cut('if (!cardConsumedText && !replyPushed && responseText) {',
   '} else if (!cardConsumedText && !replyPushed && !notAddressed) {')}}`;
 const MIRROR = cut('    return subscribeChatNew((row) => {', '\n  }, []);');
+// The page's other turns that end with a /chat reply: an autonomous creation
+// step (CREATE), the new agent's auto-executed task and a plan run of the
+// matched agent (both REUSE turns).
+const CREATION_STEP = cut('        if (contText) {', '        if (contData.agent_status) {');
+const AUTO_EXECUTE = cut('                  if (execText) {', '                  // Clean up autonomous state');
+const PLAN_RUN = `${cutAfter('text: plan.task_description,', '      if (responseText) {', '      } else {')}}`;
 
 const AGENT = '353';
 const DESK = 'desk-device-1';
@@ -113,6 +126,19 @@ function page(initial = []) {
     // A turn of another device, mirrored here by chat.new.
     mirror(row) {
       run(MIRROR, [], [])({prompt_id: AGENT, channel_type: 'chat', device_id: 'tablet-1', ...row});
+    },
+    // The /chat replies of the page's other turns, sent as `turnId`.
+    creationStep(turnId, text) {
+      run(CREATION_STEP, ['contText', 'contData', 'currentAgent', 'contTurn'],
+        [text, {text, source: 'langchain_local', served_by: 'local'}, {prompt_id: AGENT}, turnId]);
+    },
+    autoExecute(turnId, text) {
+      run(AUTO_EXECUTE, ['execText', 'execData', 'contData', 'execTurn'],
+        [text, {text, source: 'langchain_local', served_by: 'local'}, {prompt_id: AGENT}, turnId]);
+    },
+    planRun(turnId, text) {
+      run(PLAN_RUN, ['responseText', 'resultData', 'promptId', 'planTurn'],
+        [text, {text, source: 'langchain_local', served_by: 'local'}, AGENT, turnId]);
     },
   };
 }
@@ -270,5 +296,50 @@ describe('what keeps showing', () => {
     desktop.pushText(TURN, 'Again!', 'm1');
     desktop.pushText(TURN, 'Again!', 'm2');
     expect(desktop.said).toEqual(['Again!', 'Again!']);
+  });
+});
+
+describe("the page's other turns that end with a /chat reply (rv_da3c, finding 1)", () => {
+  // da3c386f covered handleSend's reply only.  The auto-executed task of a
+  // new agent and a plan run of a matched agent are REUSE turns too, whose
+  // newest send HARTOS makes the reply; a creation step is held to the
+  // same rule.  A CREATE send's id has no number after the mark.
+  const RUN = 'msg_1795690000000_x1y2z3';
+  const ANSWER = 'Here is the plan for your cafe lesson.';
+
+  test("the new agent's auto-executed task: its send, then the same reply, shows once", () => {
+    const desktop = page();
+    desktop.pushText(`${RUN}-intermediate-1111`, ANSWER, 'x1');
+    desktop.autoExecute(RUN, ANSWER);
+    expect(desktop.said).toEqual([ANSWER]);
+  });
+
+  test('a plan run: its send, then the same reply, shows once', () => {
+    const desktop = page();
+    desktop.pushText(`${RUN}-intermediate-2222`, ANSWER, 'x2');
+    desktop.planRun(RUN, ANSWER);
+    expect(desktop.said).toEqual([ANSWER]);
+  });
+
+  test('a creation step: its send, then the same reply, shows once', () => {
+    const desktop = page();
+    desktop.pushText(`${RUN}-intermediate`, ANSWER, 'x3');
+    desktop.creationStep(RUN, ANSWER);
+    expect(desktop.said).toEqual([ANSWER]);
+  });
+
+  test("an auto-executed task's reply, then its push brought late, shows once", () => {
+    const desktop = page();
+    desktop.autoExecute(RUN, ANSWER);
+    desktop.pushText(`${RUN}-intermediate-1111`, ANSWER, 'x1');
+    expect(desktop.said).toEqual([ANSWER]);
+  });
+
+  test("a creation step's reply in other words than its send shows", () => {
+    const desktop = page();
+    desktop.pushText(`${RUN}-intermediate`, 'What should the agent be called?', 'x4');
+    desktop.creationStep(RUN, 'I need your input to finish building this agent.');
+    expect(desktop.said).toEqual(['What should the agent be called?',
+      'I need your input to finish building this agent.']);
   });
 });
