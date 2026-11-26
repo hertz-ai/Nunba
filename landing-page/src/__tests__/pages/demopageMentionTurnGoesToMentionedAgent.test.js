@@ -73,6 +73,7 @@ function page() {
     let msgs = [];
     const messagesRef = {current: msgs};
     const scope = {
+      stopLiveAvatar: () => false, // utils/liveAvatar: the page's cut code stops a live avatar reply (none here)
       // what the person typed
       inputMessage: text,
       fileUrl: null, userImage: null, pdffileUrl: null,
@@ -214,6 +215,7 @@ describe('every save names the agent it saves', () => {
     // The cleanup is made on the first render, so the currentAgent it sees is
     // the agent open when the page mounted (A).  The agent open now is B.
     const scope = {
+      stopLiveAvatar: () => false, // utils/liveAvatar: the page's cut code stops a live avatar reply (none here)
       currentAgent: AGENT_A,
       currentAgentRef: {current: AGENT_B},
       messagesRef: {current: [{type: 'user', content: 'hello'}, {type: 'assistant', content: 'hi'}]},

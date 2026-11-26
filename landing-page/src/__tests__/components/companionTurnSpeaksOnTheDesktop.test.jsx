@@ -76,6 +76,7 @@ function desktopWindow() {
   });
   const requestIdRef = {current: null};
   const scope = {
+    stopLiveAvatar: () => false, // utils/liveAvatar: the page's cut code stops a live avatar reply (none here)
     ...mods.guards,
     ...mods.player,
     getTtsAudioElement: () => el,

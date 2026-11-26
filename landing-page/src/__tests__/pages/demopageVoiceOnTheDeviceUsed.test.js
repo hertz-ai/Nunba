@@ -46,6 +46,7 @@ function desktopPage({turn = null} = {}) {
     play() { return Promise.resolve(); },
   };
   const scope = {
+    stopLiveAvatar: () => false, // utils/liveAvatar: the page's cut code stops a live avatar reply (none here)
     ...require('../../utils/ttsGuards'),
     ...require('../../services/ttsClipPlayer'),
     getTtsAudioElement: () => el,
