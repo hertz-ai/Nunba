@@ -28,7 +28,7 @@ import { WAMP_LOCAL_URL, WAMP_CLOUD_URL, SOCIAL_API_URL } from '../config/apiBas
 import { selectPdf, selectImage } from '../utils/attachmentUpload';
 import { isLocalBackendHost, localWampUrl } from '../utils/backendHost';
 import { rememberServerPromptId } from '../utils/promptId';
-import { CHAT_BUBBLE_PRIORITY, CHAT_ACTION_THINKING, CHAT_ACTION_STATUS, isOtherTurnEnvelope } from '../constants/chatBubble';
+import { CHAT_BUBBLE_PRIORITY, CHAT_ACTION_THINKING, CHAT_ACTION_STATUS, isOtherTurnEnvelope, repeatsShownMessage } from '../constants/chatBubble';
 import {animateScroll as scrollLibrary} from 'react-scroll';
 
 import autobahn from 'autobahn';
@@ -2615,8 +2615,14 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             // of the open agent's (AgentPersonaLabel).
             persona: parsed.persona,
             promptId: parsed.prompt_id,
+            // Its turn and its own id: the same words of this turn already
+            // on screen (its /chat reply, another leg of this push) are this
+            // message (constants/chatBubble.repeatsShownMessage).
+            requestId: parsed.request_id,
+            msgId: parsed.msg_id,
           };
           setMessages((prev) => {
+            if (repeatsShownMessage(assistantMessage, prev)) return prev;
             const newMessages = [...prev, assistantMessage];
             setAnimatingMessageIndex(null);
             setShouldScroll(true);
@@ -2645,9 +2651,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           nodeTier: parsed.node_tier,
           persona: parsed.persona,
           promptId: parsed.prompt_id,
+          requestId: parsed.request_id,
+          msgId: parsed.msg_id,
         };
 
         setMessages((prev) => {
+          if (repeatsShownMessage(assistantMessage, prev)) return prev;
           const newMessages = [...prev, assistantMessage];
           setAnimatingMessageIndex(newMessages.length - 1);
           setShouldScroll(true);
@@ -2697,8 +2706,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             nodeTier: parsed.node_tier,
             persona: parsed.persona,
             promptId: parsed.prompt_id,
+            requestId: parsed.request_id,
+            msgId: parsed.msg_id,
           };
           setMessages((prev) => {
+            if (repeatsShownMessage(assistantMessage, prev)) return prev;
             const newMessages = [...prev, assistantMessage];
             setAnimatingMessageIndex(newMessages.length - 1);
             setShouldScroll(true);
@@ -3150,12 +3162,19 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       if (String(row.prompt_id || '') !== openAgent) return;
       setMessages((prev) => {
         if (prev.some((m) => m.messageId === row.msg_id)) return prev;
-        return [...prev, {
+        const mirrored = {
           type: row.role,
           content: row.content,
           messageId: row.msg_id,
+          // Its turn: an agent's reply mirrored here repeats the send of its
+          // turn this page already shows (constants/chatBubble.
+          // repeatsShownMessage).  No msgId: the server's ids are not a
+          // push's.
+          requestId: row.request_id,
           sourceDevice: row.device_id || 'another device',
-        }];
+        };
+        if (repeatsShownMessage(mirrored, prev)) return prev;
+        return [...prev, mirrored];
       });
       setShouldScroll(true);
     });
@@ -4822,6 +4841,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                 // The agent this turn was sent to (an @mention's agent too):
                 // the header counts only the open agent's own replies.
                 promptId: turnAgent?.prompt_id,
+                // The turn this reply ends (handleSend's msgId is the turn's
+                // id): a send of the turn already showing these words is
+                // this reply (constants/chatBubble.repeatsShownMessage).
+                requestId: msgId,
                 timestamp: new Date(),
                 // Draft-first: tag with speculationId so the expert
                 // response arriving via WAMP can replace this bubble
@@ -4856,7 +4879,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                     }
                   }
                 }
-                return [...updated, assistantMessage];
+                // HARTOS makes a turn's newest send its reply, so these words
+                // are usually on screen already, pushed during the turn (live
+                // 2026-11-26: every reply of agents 348, 344 and 353 showed
+                // twice).  Shown once; the thought process above still closes.
+                return repeatsShownMessage(assistantMessage, updated)
+                  ? updated : [...updated, assistantMessage];
               });
               setShouldScroll(true);
 

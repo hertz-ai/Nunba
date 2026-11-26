@@ -68,7 +68,7 @@ const PUSHED = [
 // agent, so after an @mention switch the previous agent's persona counted).
 const REPLIES = [
   ['a turn', 'if (!cardConsumedText && !replyPushed && responseText) {', 'resultData', 'responseText',
-    {turnAgent: {prompt_id: SPEECH}}],
+    {turnAgent: {prompt_id: SPEECH}, msgId: 'msg_1795685299811_zbw1jq'}],
   ['a plan run', 'text: plan.task_description,', 'resultData', 'responseText',
     {promptId: SPEECH}],
   ['creation, next step', 'const contText = contData.text || contData.response;', 'contData', 'contText',

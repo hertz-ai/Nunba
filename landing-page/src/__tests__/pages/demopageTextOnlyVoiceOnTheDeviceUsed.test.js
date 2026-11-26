@@ -33,6 +33,7 @@ const BRANCH = (() => {
 
 const guards = require('../../utils/ttsGuards');
 const {rememberOwnTurn} = require('../../utils/chatRetry');
+const {repeatsShownMessage} = require('../../constants/chatBubble');
 
 const TABLET_TURN = '0507de59-6788-4b36-8a07-7a1ffed3c5f3';
 
@@ -41,6 +42,7 @@ function page({currentTurn = null, ttsEnabled = true} = {}) {
   const shown = [];
   const scope = {
     speaksPushedText: guards.speaksPushedText,
+    repeatsShownMessage, // the branch shows a message once (demopageReplyShowsOnce)
     ttsEnabled,
     tts: {isAvailable: true, speak: (text) => { spoken.push(text); return Promise.resolve(); }},
     requestIdRef: {current: currentTurn},

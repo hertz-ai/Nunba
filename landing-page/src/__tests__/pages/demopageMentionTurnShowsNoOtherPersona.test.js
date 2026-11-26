@@ -27,6 +27,7 @@ const path = require('path');
 const {rememberServerPromptId} = require('../../utils/promptId');
 const chatRetry = require('../../utils/chatRetry');
 const {holdsAgentChat} = require('../../utils/serverChatHistory');
+const {repeatsShownMessage} = require('../../constants/chatBubble');
 
 const SRC = fs.readFileSync(path.join(__dirname, '..', '..', 'pages', 'Demopage.js'), 'utf8');
 
@@ -93,6 +94,7 @@ function page() {
       classifyError: chatRetry.classifyError,
       EMPTY_REPLY_REASON: chatRetry.EMPTY_REPLY_REASON,
       holdsAgentChat,
+      repeatsShownMessage, // the reply shows once (demopageReplyShowsOnce)
       rememberServerPromptId,
       updateMessageStatus: () => {},
       chatApi: {
