@@ -2664,7 +2664,14 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         };
 
         setMessages((prev) => {
-          if (repeatsShownMessage(assistantMessage, prev)) return prev;
+          if (repeatsShownMessage(assistantMessage, prev)) {
+            // Shown already, so no row of its own types.  The voice below
+            // still says it and starts the typewriter clock: left on another
+            // row (another device's line, drawn whole), that row would retype
+            // from blank under these words.
+            setAnimatingMessageIndex(null);
+            return prev;
+          }
           const newMessages = [...prev, assistantMessage];
           setAnimatingMessageIndex(newMessages.length - 1);
           setShouldScroll(true);

@@ -24,6 +24,8 @@ const path = require('path');
 
 const {repeatsShownMessage} = require('../../constants/chatBubble');
 const {isRemoteChatTurn} = require('../../services/realtimeService');
+const guards = require('../../utils/ttsGuards');
+const {rememberOwnTurn} = require('../../utils/chatRetry');
 
 const SRC = fs.readFileSync(path.join(__dirname, '..', '..', 'pages', 'Demopage.js'), 'utf8');
 
@@ -60,9 +62,12 @@ const PLAN_RUN = `${cutAfter('text: plan.task_description,', '      if (response
 const AGENT = '353';
 const DESK = 'desk-device-1';
 
-// One chat page: one message list, and the page's ways in.  `speech`: the
-// speaker is on and this page speaks the pushed text (speaksPushedText).
-function page(initial = [], {speech = false} = {}) {
+// One chat page: one message list, and the page's ways in.  `speech`: false,
+// the speaker is off; true, this page speaks every pushed text; 'by turn', the
+// page's own rule (ttsGuards.speaksPushedText): only a turn this device
+// started is spoken here, another device's is shown only.  `currentTurn`:
+// the turn this page has in flight (requestIdRef).
+function page(initial = [], {speech = false, currentTurn = null} = {}) {
   let messages = initial.slice();
   // What ChatMessageList types: the row animatingMessageIndex names, while
   // duration > 0 (ChatMessageList.js, `animatingMessageIndex === index &&
@@ -80,14 +85,14 @@ function page(initial = [], {speech = false} = {}) {
     setDuration: (v) => { duration = v; },
     setVideoUrl: noop, setAudioUrl: noop, setIsPlayingResponse: noop,
     // By default text arrives with the speaker off: what is counted is the bubbles.
-    ttsEnabled: speech,
+    ttsEnabled: speech !== false,
     tts: {isAvailable: true, speak: (text) => { spoken.push(text); return Promise.resolve(); }},
-    speaksPushedText: () => speech,
+    speaksPushedText: speech === 'by turn' ? guards.speaksPushedText : () => speech,
     shouldSpeakLocalReply: () => false,
     isDraftReply: () => false,
     hasServerAudioPayload: () => false,
     realtimeService: {connected: true},
-    requestIdRef: {current: null},
+    requestIdRef: {current: currentTurn},
     logger: {log: noop, warn: noop},
     setTimeout: () => 0, clearTimeout: noop,
     // the chat.new subscription hands back its listener
@@ -216,11 +221,16 @@ describe('either copy can come first', () => {
 
 describe('a held-back spoken push: what types and what is said (rv_da3c, finding 3)', () => {
   // The push's branch still speaks its words and still starts the typewriter
-  // clock (setDuration) after the speech starts; held back, it no longer
-  // moves the typing index to a row.  Before da3c386f it appended a second
-  // bubble and that bubble typed with the voice.
+  // clock (setDuration) after the speech starts.  Held back, it has no row of
+  // its own to type, so it clears the typing index: the clock it starts then
+  // types no row.  Before da3c386f it appended a second bubble and that
+  // bubble typed with the voice.
   const flush = () => new Promise((resolve) => global.setTimeout(resolve, 0));
   const estimate = (text) => Math.max(2, text.split(/\s+/).length / 2.5);
+
+  beforeEach(() => {
+    try { window.localStorage.clear(); } catch (_) { /* no storage */ }
+  });
 
   test('on a fresh page the reply stays whole and no row types while the voice says it', async () => {
     const desktop = page([], {speech: true});
@@ -233,9 +243,7 @@ describe('a held-back spoken push: what types and what is said (rv_da3c, finding
     expect(desktop.typing).toBeNull();
   });
 
-  test("after an earlier spoken line, the index stays on that line, never the new reply's row", async () => {
-    // TypeWriterSubtitle keeps a finished line finished when it renders
-    // again with a new duration (088e9279), so nothing re-types on screen.
+  test("after an earlier spoken line, nothing retypes: neither that line nor the new reply's row", async () => {
     const desktop = page([], {speech: true});
     desktop.pushSpoken('msg_1795685199267_ebpnqv-intermediate-7491', 'A cappuccino sounds delicious!', 'c1');
     await flush();
@@ -246,7 +254,29 @@ describe('a held-back spoken push: what types and what is said (rv_da3c, finding
     expect(desktop.said).toEqual(['A cappuccino sounds delicious!', WORDS]);
     expect(desktop.spoken).toEqual(['A cappuccino sounds delicious!', WORDS]);
     expect(desktop.duration).toBe(estimate(WORDS));
-    expect(desktop.typing).toBe(0);
+    // The new clock types no row: not the earlier line (row 0), which stays
+    // whole, and not the reply (row 1), which was drawn whole.
+    expect(desktop.typing).toBeNull();
+  });
+
+  test("two devices in voice mode: another device's line does not retype under this device's held-back spoken push", async () => {
+    // rv_da3c's nit 1 on e90604e1.  The tablet's push moves the index to its
+    // row with no clock (its turn is spoken on the tablet only), so the row
+    // is drawn whole.  This desktop's held-back spoken push then started the
+    // clock, and the tablet's row retyped from blank under the desktop's words.
+    rememberOwnTurn(TURN);
+    const desktop = page([], {speech: 'by turn', currentTurn: TURN});
+    desktop.pushSpoken('0507de59-6788-4b36-8a07-7a1ffed3c5f3-intermediate-3185', 'Which drink would you like?', 't1');
+    await flush();
+    expect(desktop.spoken).toEqual([]);
+    expect(desktop.typing).toBeNull();
+    desktop.reply(TURN, WORDS);
+    desktop.pushSpoken(SEND, WORDS, 'a1b2c3');
+    await flush();
+    expect(desktop.said).toEqual(['Which drink would you like?', WORDS]);
+    expect(desktop.spoken).toEqual([WORDS]);
+    expect(desktop.duration).toBe(estimate(WORDS));
+    expect(desktop.typing).toBeNull();
   });
 
   test('in the usual order the push types with the voice and the reply after it moves nothing', async () => {
