@@ -6327,8 +6327,22 @@ def start_flask():
                 user_data_file = get_user_data_file_path()
 
                 if os.path.exists(user_data_file):
-                    with open(user_data_file) as f:
-                        user_data = json.load(f)
+                    # On Windows a read that opens the record while
+                    # set_storage's os.replace swaps it in gets
+                    # PermissionError for an instant (1 of 420 concurrent
+                    # reads, review rv_auth7), and the page took the failed
+                    # read as the sign-in missing.  Try again briefly, as
+                    # the writer does; any other error answers as before.
+                    import time
+                    for _attempt in range(10):
+                        try:
+                            with open(user_data_file) as f:
+                                user_data = json.load(f)
+                            break
+                        except PermissionError:
+                            if _attempt == 9:
+                                raise
+                            time.sleep(0.02 * (_attempt + 1))
 
                     if key in user_data:
                         return jsonify({"success": True, "data": user_data[key]})

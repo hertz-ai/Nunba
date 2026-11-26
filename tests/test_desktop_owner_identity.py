@@ -434,6 +434,64 @@ def test_a_write_waits_out_a_reader_holding_the_record_open(
     assert record == {'user_id': '10202', 'access_token': 'new'}
 
 
+# The read side of the same race (rv_auth7's probe, 11-26: 1 of 420
+# concurrent reads): on Windows a read that opens the record while the
+# writer's os.replace swaps it in gets PermissionError for an instant.
+
+def _read_with_open(key, fake_open):
+    """app.py's own get_storage, reading through ``fake_open``."""
+    from types import SimpleNamespace
+    ns = _route_body('get_storage')
+    ns['open'] = fake_open
+    with _as_caller():
+        ns['request'] = SimpleNamespace(method='GET')
+        return ns['get_storage'](key)
+
+
+def _record_held(home, times):
+    """An open() that refuses the record ``times`` times, the way the
+    replace does, then opens it; returns (open, list of record opens)."""
+    import builtins
+    record = os.path.normcase(os.path.abspath(_record(home)))
+    opens = []
+
+    def held_open(path, *args, **kwargs):
+        if os.path.normcase(os.path.abspath(path)) == record:
+            opens.append(path)
+            if len(opens) <= times:
+                raise PermissionError(13, 'Access is denied', str(path))
+        return builtins.open(path, *args, **kwargs)
+    return held_open, opens
+
+
+def test_a_read_while_the_record_is_being_replaced_gets_the_value(
+        fake_home, gi, clean_owner_env):
+    """RED before the fix: the read answered an error, which the page took
+    as the sign-in missing."""
+    _write(fake_home, json.dumps({'user_id': '10202', 'access_token': 'kong-tok'}))
+    held_open, opens = _record_held(fake_home, times=1)
+    assert _read_with_open('access_token', held_open) == {
+        'success': True, 'data': 'kong-tok'}
+    assert len(opens) == 2
+
+
+def test_a_read_waits_only_for_a_replace_and_not_forever(
+        fake_home, gi, clean_owner_env):
+    """Guard: a record that stays refused is answered with the error after
+    a bounded wait, and any other error is answered at once, as before."""
+    _write(fake_home, json.dumps({'user_id': '10202', 'access_token': 'kong-tok'}))
+    held_open, opens = _record_held(fake_home, times=10 ** 6)
+    reply = _read_with_open('access_token', held_open)
+    assert reply['success'] is False and 'denied' in reply['error']
+    assert 1 <= len(opens) <= 10
+
+    _record(fake_home).write_text('{"user_id": "10202", "access_', encoding='utf-8')
+    not_held, opens = _record_held(fake_home, times=0)
+    reply = _read_with_open('access_token', not_held)
+    assert reply['success'] is False
+    assert len(opens) == 1
+
+
 def test_a_post_of_the_placeholder_keeps_the_owner(fake_home, gi, clean_owner_env):
     """RED before the fix: the record and the export both became 'guest'."""
     _write(fake_home, json.dumps({'user_id': '10202', 'access_token': 'old'}))
