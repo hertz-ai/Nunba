@@ -80,6 +80,11 @@ describe('trailKindFilters', () => {
       ['tool_receipt', 'tool_receipt']]);
   });
 
+  it('names a talking-face reply (HARTOS video_out)', () => {
+    expect(trailKindFilters(['speech_out', 'video_out'])).toEqual([['', 'All'],
+      ['speech_out', 'Spoken replies'], ['video_out', 'Video replies']]);
+  });
+
   it('offers only All when the server sent no kinds', () => {
     expect(trailKindFilters(undefined)).toEqual([['', 'All']]);
     expect(trailKindFilters(['', null, 7])).toEqual([['', 'All']]);

@@ -20,6 +20,7 @@ export const TRAIL_KIND_LABELS = {
   video_caption: 'Video captions',
   llm_call: 'Model calls',
   speech_out: 'Spoken replies',
+  video_out: 'Video replies',
   action: 'Actions',
   security_event: 'Security events',
 };
