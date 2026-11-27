@@ -10,8 +10,8 @@
  *   - chatBubble.isOtherTurnEnvelope is the one rule under both:
  *     __tests__/constants/chatBubble.test.js.
  * Demopage is too large to render in a unit test, so this guard reads the
- * source and pins the wiring only: that handleSend starts a turn with the
- * helper and nothing else, posts that id, and that the clip decision is the
+ * source and pins the wiring only: that each send (handleSend first) starts
+ * a turn with the helper and nothing else, posts that id, and that the clip decision is the
  * helper's answer, not a hand-written comparison.  Review of e578848d showed
  * why: with the mint inline, a one-expression change brought the page-wide
  * id back and every test still passed.
@@ -31,8 +31,14 @@ describe('Demopage starts a turn per send', () => {
   test('the send starts the turn with the helper, and mints no id of its own', () => {
     expect(SRC).not.toMatch(/requestId \|\| uuidv4\(\)/);
     expect(SRC).not.toMatch(/makeMsgId\(/);
+    // Every turn the page starts is a send (handleSend; and the creation
+    // loop's next step, the original task once the agent is built and an
+    // executed plan, which sent no id until the companion follow-up of
+    // 79df4713), each a fresh turn through the helper and nothing else.
     const starts = SRC.match(/startTurn\(/g) || [];
-    expect(starts).toEqual(['startTurn(']);
+    const sends = SRC.match(/const \w+ = startTurn\(requestIdRef\);/g) || [];
+    expect(starts.length).toBeGreaterThan(0);
+    expect(sends).toHaveLength(starts.length);
     expect(SRC).toMatch(/const msgId = startTurn\(requestIdRef\);/);
   });
 
@@ -52,8 +58,12 @@ describe('Demopage starts a turn per send', () => {
   });
 
   test('the send is the only writer of the page\'s request id', () => {
+    // Each write is the turn a send just started, on the line after it.
     const writes = SRC.match(/setRequestId\(/g) || [];
-    expect(writes).toEqual(['setRequestId(']);
+    const paired = SRC.match(
+      /const (\w+) = startTurn\(requestIdRef\);[^\n]*\n\s*setRequestId\(\1\);/g) || [];
+    expect(writes.length).toBeGreaterThan(0);
+    expect(paired).toHaveLength(writes.length);
     // The upload flow used to hand the upload's id to the page, so the next
     // chat turn went out under it.  No server reads a chat turn's id against
     // an upload (the book row and its parse job carry the upload's own).

@@ -46,14 +46,15 @@ pytestmark = pytest.mark.journey
 
 
 # ────────────────────────────────────────────────────────────────────
-# Helper — returns the tool name a given backend maps to via the
-# canonical ``TTSEngine._get_vram_tool_name``.
+# Helper — returns the name a given backend is pinned under:
+# ``TTSEngine._get_lifecycle_name``, the catalog id the lifecycle
+# tracks the voice by (not its VRAM budget name, which nothing tracks).
 # ────────────────────────────────────────────────────────────────────
 
 
 def _tool_name(backend: str) -> str | None:
     from tts.tts_engine import TTSEngine
-    return TTSEngine._get_vram_tool_name(backend)
+    return TTSEngine._get_lifecycle_name(backend)
 
 
 @pytest.fixture
@@ -105,6 +106,15 @@ def tts_engine_under_test(monkeypatch):
         engine, "_can_run_backend",
         lambda backend: backend in runnable,
     )
+    # _select_backend_for_language's first pass takes only voices whose
+    # startup handshake passed (Piper needs only a voice file).  On a fresh
+    # home no handshake ever ran, so English fell to Piper and Chatterbox
+    # Turbo was never pinned: the test depended on the machine's handshake
+    # cache.  Make the runnable voices verified, as on a box that has used them.
+    from tts import tts_handshake as _hs
+    monkeypatch.setattr(_hs, "is_verified_backend",
+                        lambda backend: backend in runnable)
+    monkeypatch.setattr(_hs, "is_known_failed", lambda backend: False)
     # Avoid firing auto-installs against the real network.
     monkeypatch.setattr(
         engine, "_try_auto_install_backend", lambda *a, **kw: None,
@@ -127,11 +137,11 @@ def test_j214_set_language_pins_new_backend(
     mgr = fresh_lifecycle_manager
     engine = tts_engine_under_test
 
-    # Sanity — indic_parler must map to a real VRAM tool name
-    # (it does; "tts_indic_parler" per ENGINE_REGISTRY).
+    # Sanity — indic_parler must map to the name the lifecycle tracks
+    # it by ("tts-indic-parler", its catalog id).
     from tts.tts_engine import BACKEND_INDIC_PARLER
     indic_tool = _tool_name(BACKEND_INDIC_PARLER)
-    assert indic_tool == "tts_indic_parler", (
+    assert indic_tool == "tts-indic-parler", (
         f"Gate 1 caller audit guard: if this changes the pin logic "
         f"must track.  Got: {indic_tool!r}"
     )
@@ -180,8 +190,10 @@ def test_j214_lang_switch_unpins_previous_pins_new(
     # Pre-register BOTH tools as tracked ModelStates so we can
     # observe the flag flipping live (simulates a real RTM that has
     # already started both during normal boot).
-    mgr._on_tool_started(indic_tool, device="gpu", inprocess=False)
-    mgr._on_tool_started(english_tool, device="gpu", inprocess=False)
+    mgr._on_tool_started(indic_tool, device="gpu", inprocess=False,
+                         model_type="tts")
+    mgr._on_tool_started(english_tool, device="gpu", inprocess=False,
+                         model_type="tts")
 
     # User speaks Tamil first — indic pinned, english unpinned default.
     engine.set_language("ta")
@@ -229,7 +241,8 @@ def test_j214_staged_hint_applied_on_tool_started(
 
     # Now RTM fires the hook (first synth).  The hint must be
     # applied to the new state.
-    mgr._on_tool_started(indic_tool, device="gpu", inprocess=False)
+    mgr._on_tool_started(indic_tool, device="gpu", inprocess=False,
+                         model_type="tts")
     with mgr._lock:
         assert mgr._models[indic_tool].pressure_evict_only is True, (
             "staged J214 hint was not applied when the tool started; "
@@ -261,18 +274,20 @@ def test_j214_cpu_only_backend_noop(
     # prev-side either.
     engine._active_backend = None
 
+    # A fresh lifecycle mgr can carry unrelated hints from the
+    # persisted-state file left by a prior boot / other test suites —
+    # we only guard against phantom TTS hints injected by THIS
+    # set_language call.
+    with mgr._lock:
+        before = {k: dict(v) for k, v in mgr._persisted_hints.items()}
+
     # Must not raise.
     engine.set_language("zu")  # Zulu — not in any ladder
 
-    # No NEW hints for any TTS tool should have been staged by the
-    # Piper-only path.  (A fresh lifecycle mgr can carry unrelated
-    # hints from the persisted-state file left by a prior boot /
-    # other test suites — we only guard against phantom TTS hints
-    # injected by THIS set_language call.)
     with mgr._lock:
         tts_hints = {
             k: v for k, v in mgr._persisted_hints.items()
-            if k.startswith("tts_")
+            if k.startswith(("tts_", "tts-")) and before.get(k) != v
         }
         assert not tts_hints, (
             f"Piper path staged phantom TTS hints: {tts_hints!r}"
@@ -288,7 +303,8 @@ def test_j214_set_pressure_evict_only_live(fresh_lifecycle_manager):
     """Direct public-API test.  The admin endpoint and the J214 pin
     both ride this same method — if it regresses, both flows break."""
     mgr = fresh_lifecycle_manager
-    mgr._on_tool_started("tts_indic_parler", device="gpu", inprocess=False)
+    mgr._on_tool_started("tts_indic_parler", device="gpu", inprocess=False,
+                         model_type="tts")
 
     r = mgr.set_pressure_evict_only("tts_indic_parler", True)
     assert r["tracked"] is True

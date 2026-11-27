@@ -61,11 +61,34 @@ export function agentSlug(name) {
  * undefined when nothing matches — callers decide what to do with that, and
  * "fall back to the default agent" is a decision worth making explicitly rather
  * than inheriting from a failed `.find()`.
+ *
+ * `id` is the `?id=<prompt_id>` the gallery card adds to the URL. Two agents
+ * can share a name, and only the id tells them apart, so the id is tried
+ * first. With no id, or an id no agent has, the slug decides as before.
  */
-export function matchAgentBySlug(agents, slugOrName) {
+export function matchAgentBySlug(agents, slugOrName, id) {
+  const list = agents || [];
+  if (id != null && id !== '') {
+    const byId = list.find((a) => a && a.prompt_id != null && String(a.prompt_id) === String(id));
+    if (byId) return byId;
+  }
   const target = agentSlug(slugOrName);
   if (!target) return undefined;
-  return (agents || []).find((a) => a && agentSlug(a.name) === target);
+  return list.find((a) => a && agentSlug(a.name) === target);
+}
+
+/**
+ * The agent page's URL, the one writer every link to it uses: the name slug,
+ * plus `?id=<prompt_id>` when the agent has one, since two agents can share a
+ * name (matchAgentBySlug reads the id first). A name with no Latin letters or
+ * digits slugs to nothing, and "/agents/" alone is the gallery's route, so
+ * its encoded name stands in and the id picks the agent.
+ */
+export function agentPath(agent) {
+  const name = String(agent?.name || '');
+  const segment = agentSlug(name) || encodeURIComponent(name);
+  const id = agent?.prompt_id;
+  return `/agents/${segment}${id != null ? `?id=${encodeURIComponent(id)}` : ''}`;
 }
 
 export default agentSlug;

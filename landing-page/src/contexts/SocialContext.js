@@ -1,4 +1,9 @@
-import useAuthSession, {clearAuth, setGuestIdentity, setAccessToken, silentGuestRefresh} from '../hooks/useAuthSession';
+import useAuthSession, {
+  readAuthSession,
+  setGuestIdentity,
+  setAccessToken,
+  silentGuestRefresh,
+} from '../hooks/useAuthSession';
 import {useReferral} from '../hooks/useReferral';
 import {apiCache} from '../services/apiCache';
 import realtimeService from '../services/realtimeService';
@@ -172,8 +177,12 @@ export function SocialProvider({children}) {
                     role: 'guest',
                   });
                   fetchProfile();
-                } else {
+                } else if (readAuthSession().status === 'guest') {
                   setCurrentUser({ id: guestId, username: guestName || 'User', role: 'guest' });
+                } else {
+                  // A cloud account's keys are here: it signs in again,
+                  // the page does not become the guest.
+                  setCurrentUser(null);
                 }
               })
               .finally(() => setLoading(false));
@@ -252,11 +261,14 @@ export function SocialProvider({children}) {
       const guestId = localStorage.getItem('guest_user_id');
       const guestName = localStorage.getItem('guest_name');
       if (guestId || guestName) {
-        setCurrentUser({
+        // Shown as the guest only when the session itself is a guest; an
+        // account that must sign in again ('pending') is not shown as one
+        // (silentGuestRefresh refuses to mint over it too).
+        setCurrentUser(readAuthSession().status === 'guest' ? {
           id: guestId || `guest-${Date.now()}`,
           username: guestName || 'User',
           role: 'guest',
-        });
+        } : null);
         // Try to silently re-authenticate in the background.  #209 —
         // canonical helper uses guest-register's idempotent device_id
         // path (the correct API; guestRecover requires the 6-word code).
@@ -283,7 +295,11 @@ export function SocialProvider({children}) {
     const handleExpiry = () => {
       // For guests, preserve identity — only clear the token, not the session.
       // The user's name and local mind persist regardless of JWT state.
-      if (localStorage.getItem('guest_mode') === 'true') {
+      // Not when a cloud account's keys are here: guest_mode and a guest id
+      // sit beside an account too.  That page is signed out below, and the
+      // account signs in again.
+      if (localStorage.getItem('guest_mode') === 'true'
+          && readAuthSession().status === 'guest') {
         const guestId = localStorage.getItem('guest_user_id');
         const guestName = localStorage.getItem('guest_name');
         if (guestId || guestName) {
@@ -319,7 +335,10 @@ export function SocialProvider({children}) {
     // registration request firing and the response landing.  Hook's
     // status='guest' requires BOTH; preserving exact original
     // behavior here keeps the SocialContext-derived-state test green.
-    (!currentUser && _authSession._raw.guest_mode);
+    // Not while an account must sign in again ('pending'): that page is
+    // anonymous, as Demopage treats it.
+    (!currentUser && _authSession._raw.guest_mode
+      && _authSession.status !== 'pending');
   const accessTier = useMemo(() => {
     if (currentUser?.role) return currentUser.role;
     // Authenticated user without role field defaults to 'flat'

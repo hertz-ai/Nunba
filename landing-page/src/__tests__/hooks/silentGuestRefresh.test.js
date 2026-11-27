@@ -138,6 +138,66 @@ describe('silentGuestRefresh', () => {
     expect(result).toEqual({token: 'jwt-9', user_id: 'u-9', existing: false});
   });
 
+  // 2026-11-24: every silent path (SocialContext's expired-token mount,
+  // guest restore and 401 handler; Demopage's mount auto-refresh, which
+  // calls this with no arguments) minted a guest over a signed-in account's
+  // keys whenever guest_mode and a guest name were set.  None may now.
+  describe('never mints over a cloud account', () => {
+    const seedAccountAfter401 = () => {
+      localStorage.setItem('user_id', 'ENC:10202');
+      localStorage.setItem('email_address', 'ENC:sales@hertzai.com');
+      localStorage.setItem('phone_number', 'ENC:+919000000001');
+      localStorage.setItem('refresh_token', 'ENC:refresh-1');
+      localStorage.setItem('guest_mode', 'true');
+      localStorage.setItem('guest_user_id', 'hw-guest-1');
+      localStorage.setItem('guest_name', 'Radiant.Green.buildra');
+    };
+
+    beforeEach(() => {
+      mockGuestRegister.mockResolvedValue({
+        data: {user: {id: 'g-minted'}, token: 'guest-jwt-minted', existing: true},
+      });
+    });
+
+    test('a cloud user_id left by a 401: null, no guest-register, every cloud key kept', async () => {
+      seedAccountAfter401();
+      const result = await silentGuestRefresh();
+      expect(result).toBeNull();
+      expect(mockGuestRegister).not.toHaveBeenCalled();
+      expect(localStorage.getItem('access_token')).toBeNull();
+      expect(localStorage.getItem('user_id')).toBe('ENC:10202');
+      expect(localStorage.getItem('email_address')).toBe('ENC:sales@hertzai.com');
+      expect(localStorage.getItem('phone_number')).toBe('ENC:+919000000001');
+      expect(localStorage.getItem('refresh_token')).toBe('ENC:refresh-1');
+      expect(localStorage.getItem('guest_user_id')).toBe('hw-guest-1');
+    });
+
+    test("useStorageSync's pending state (pending_cloud_user_id): null, no guest-register", async () => {
+      localStorage.setItem('pending_cloud_user_id', '10202');
+      localStorage.setItem('pending_cloud_email', 'sales@hertzai.com');
+      localStorage.setItem('guest_mode', 'true');
+      localStorage.setItem('guest_user_id', '10202');
+      localStorage.setItem('guest_name', 'Radiant.Green.buildra');
+      expect(await silentGuestRefresh()).toBeNull();
+      expect(mockGuestRegister).not.toHaveBeenCalled();
+      expect(localStorage.getItem('pending_cloud_user_id')).toBe('10202');
+    });
+
+    test('a token still stored: null, no guest-register, the token kept', async () => {
+      localStorage.setItem('access_token', 'kong-tok');
+      localStorage.setItem('guest_name', 'Radiant.Green.buildra');
+      expect(await silentGuestRefresh()).toBeNull();
+      expect(mockGuestRegister).not.toHaveBeenCalled();
+      expect(localStorage.getItem('access_token')).toBe('kong-tok');
+    });
+
+    test('the HART ceremony name does not get past it either', async () => {
+      seedAccountAfter401();
+      expect(await silentGuestRefresh({guestName: 'kazera'})).toBeNull();
+      expect(mockGuestRegister).not.toHaveBeenCalled();
+    });
+  });
+
   test('fires nunba:auth_changed via setGuestIdentity', async () => {
     localStorage.setItem('guest_name', 'Test.Guest');
     mockGuestRegister.mockResolvedValue({

@@ -48,3 +48,68 @@ export function isOtherTurnEnvelope(requestId, currentRequestId) {
   if (!currentRequestId || !requestId) return false;
   return requestId !== currentRequestId;
 }
+
+// A message an agent sent during a turn carries the turn's id with this mark
+// after it ('<turn>-intermediate', '<turn>-intermediate-<n>').  Mirror of
+// HARTOS core.peer_link.crossbar_publish._TURN_SEND_MARK and the Android
+// app's ChatBubble.TURN_SEND_MARK.
+export const TURN_SEND_MARK = '-intermediate';
+
+// The turn a request id names: the id up to the mark, the whole id with no
+// mark, '' for none (RN ChatBubble.turnIdOf).
+export function turnIdOf(requestId) {
+  if (requestId === undefined || requestId === null) return '';
+  const id = String(requestId);
+  const i = id.indexOf(TURN_SEND_MARK);
+  return i < 0 ? id : id.slice(0, i);
+}
+
+// A send the agent pushed during a turn: its request id carries the mark.
+// The turn's reply, under the turn's own id, does not (RN
+// ChatBubble.isPushedSend).
+function isPushedSend(requestId) {
+  return requestId !== undefined && requestId !== null
+    && String(requestId).includes(TURN_SEND_MARK);
+}
+
+// Whether `message`, an agent's message about to be shown ({type, requestId,
+// msgId, content}), repeats one that `messages` already shows, so the page
+// shows it once.  Mirror of the Android app's ChatBubble.shouldDrop.
+//
+// HARTOS makes a turn's newest send its reply when the turn's words went out
+// through the send tool (reuse_recipe [SYNTHESIS]), so the same words come
+// twice: the send pushed as '<turn>-intermediate-<n>', and the reply on the
+// /chat response (the turn's own id), pushed under that id (a deferred
+// turn's answer) or mirrored from another device (chat.new).  Live
+// 2026-11-26 14:51-15:06 IST, every reply of agents 348, 344 and 353 showed
+// twice.  Either copy can come first: an SSE replay brings the push late.
+//
+// 1. The same non-empty msgId is one message, however many legs brought it
+//    (handleDataReceived's msg_id map forgets after 60 s).
+// 2. Otherwise a copy is a row of the SAME turn (turnIdOf) holding the same
+//    words, every row of the turn read.  A reply and a send of one turn are
+//    one message whatever their msgIds: every publish has its own.
+// 3. Two replies under the turn's own id are one message unless both have
+//    their own msgId.
+// 4. Two sends are never copies: a scheduled send reuses the last turn's id
+//    and repeats its words, a reminder (RN 3781ce460).  A reminder in the
+//    reply's exact words is held back while that reply's row is on screen.
+// 5. Only an agent's message is held back, only by an agent's row.  Words
+//    never match across turns, and a row saved before rows kept a request id
+//    never matches.
+export function repeatsShownMessage(message, messages) {
+  if (!message || message.type !== 'assistant' || !Array.isArray(messages)) return false;
+  const turn = turnIdOf(message.requestId);
+  const words = typeof message.content === 'string' ? message.content.trim() : '';
+  const sent = isPushedSend(message.requestId);
+  return messages.some((row) => {
+    if (!row || row.type !== 'assistant') return false;
+    if (message.msgId && row.msgId === message.msgId) return true;
+    if (!turn.trim() || !words || turnIdOf(row.requestId) !== turn) return false;
+    if (typeof row.content !== 'string' || row.content.trim() !== words) return false;
+    const rowSent = isPushedSend(row.requestId);
+    if (sent && rowSent) return false;
+    if (sent !== rowSent) return true;
+    return !(message.msgId && row.msgId);
+  });
+}

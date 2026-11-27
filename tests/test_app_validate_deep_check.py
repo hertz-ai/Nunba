@@ -20,7 +20,9 @@ History (the bug we're guarding against returning):
         check loop, BEFORE the attribute reads.
 
 Test mode: AST + text scan on app.py.  We cannot exec --validate without
-a frozen bundle; static guards are the right shape here.
+a frozen bundle; static guards are the right shape here.  The build-gate
+class at the end instead runs app.py's real deep-check block, taken out by
+AST, against the HARTOS this process imports.
 """
 import ast
 import os
@@ -135,3 +137,95 @@ class TestDeepCheckTriggersTier1Init:
             f"attribute-check loop at line {attr_loop_lineno}; otherwise "
             "_hartos_backend_available is read before the lazy init runs."
         )
+
+
+SYNC_ENGINE = 'integrations.social.sync_engine'
+RECIPE_SYNC = 'core.recipe_sync'
+#: The HARTOS modules the cloud-agent path imports names from, unguarded.
+CLOUD_PATH_MODULES = (SYNC_ENGINE, RECIPE_SYNC)
+
+
+def _names_the_chat_route_imports_from(module):
+    """The names routes/chatbot_routes.py imports from ``module``."""
+    with open(os.path.join(PROJECT_ROOT, 'routes', 'chatbot_routes.py'),
+              encoding='utf-8') as f:
+        routes = ast.parse(f.read())
+    return sorted({alias.name for node in ast.walk(routes)
+                   if isinstance(node, ast.ImportFrom)
+                   and node.module == module for alias in node.names})
+
+
+class TestTheCloudAgentRuleIsABuildGate:
+    """routes/chatbot_routes.py's cloud-agent rule (_cloud_turn_can_reach_
+    central) imports HARTOS's central-origin rule by name, unguarded
+    (first-party HARTOS imports are never try/except-degraded).  A bundled
+    HARTOS without it would fail every signed-in cloud-agent turn, so
+    --validate must fail that bundle.
+
+    Behavioural: this runs app.py's REAL deep-check block (the _TORCH_HINT
+    and _deep_checks assignments and the loop over _deep_checks, taken from
+    app.py by AST, run as --validate runs them; review rv_e619's probe)
+    against the HARTOS this process imports.  With every name the route
+    imports from sync_engine and recipe_sync (the cloud-agent rule and the
+    pull that runs a central agent here first) it records no failure for
+    them; with any one of them missing it records one, and --validate exits
+    1 on any."""
+
+    @pytest.fixture
+    def deep_check(self, app_ast, monkeypatch):
+        import importlib
+        import sys
+        import types
+        parts = {}
+        for node in ast.walk(app_ast):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id in (
+                            '_TORCH_HINT', '_deep_checks'):
+                        parts[target.id] = node
+            if (isinstance(node, ast.For) and isinstance(node.iter, ast.Call)
+                    and isinstance(node.iter.func, ast.Attribute)
+                    and isinstance(node.iter.func.value, ast.Name)
+                    and node.iter.func.value.id == '_deep_checks'):
+                parts['loop'] = node
+        assert set(parts) == {'_TORCH_HINT', '_deep_checks', 'loop'}, \
+            'the deep-check block of app.py --validate moved'
+        code = compile(ast.Module(body=[parts['_TORCH_HINT'],
+                                        parts['_deep_checks'], parts['loop']],
+                                  type_ignores=[]),
+                       'app.py[deep-check]', 'exec')
+        # The adapter's own check is not under test: a stand-in that passes.
+        adapter = types.ModuleType('routes.hartos_backend_adapter')
+        adapter._hartos_backend_available = True
+        adapter._active_tier = 'Tier-1 (stand-in)'
+        monkeypatch.setitem(sys.modules, 'routes.hartos_backend_adapter',
+                            adapter)
+        if 'HEVOLVE_DB_PATH' not in os.environ:
+            monkeypatch.setenv('HEVOLVE_DB_PATH', ':memory:')
+
+        def run():
+            ns = {'sys': sys, 'importlib': importlib, '_fail': [], '_warn': [],
+                  '_vprint': lambda _line: None}
+            exec(code, ns)
+            return [(mod, why) for mod, why in ns['_fail']
+                    if mod in CLOUD_PATH_MODULES]
+        return run
+
+    def test_the_route_imports_the_rules(self):
+        assert 'central_origin_mismatch' in \
+            _names_the_chat_route_imports_from(SYNC_ENGINE)
+        assert 'pull_recipe' in _names_the_chat_route_imports_from(RECIPE_SYNC)
+
+    def test_a_hartos_with_the_rules_passes_validate(self, deep_check):
+        assert deep_check() == []
+
+    @pytest.mark.parametrize('module, name', [
+        (module, name) for module in CLOUD_PATH_MODULES
+        for name in _names_the_chat_route_imports_from(module)])
+    def test_a_hartos_without_a_name_the_route_imports_fails_validate(
+            self, deep_check, monkeypatch, module, name):
+        import importlib
+        monkeypatch.delattr(importlib.import_module(module), name)
+        failures = deep_check()
+        assert any(mod == module and name in why for mod, why in failures), \
+            f'--validate passed a HARTOS without {module}.{name}'

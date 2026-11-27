@@ -77,6 +77,11 @@ BACKEND_NONE = "none"
 # previously-demoted engine gives it a fresh chance).
 _TTS_STATE_SCHEMA = 1
 _DEMOTION_TTL_SECONDS = 7 * 86400
+# The same file keeps the languages lines were last spoken in
+# ('spoken_languages', newest last), so the boot warm-up (main.py
+# _warmup_tts) starts those voices before anyone speaks.  This many are
+# kept: each is a voice the warm-up starts.
+_SPOKEN_LANGUAGES_KEPT = 3
 
 
 def _get_tts_state_path() -> str:
@@ -550,21 +555,30 @@ def _capable_backends_for(lang: str | None) -> frozenset[str]:
                                      _LANG_CAPABLE_BACKENDS['en'])
 
 
-def _publish_lang_unsupported(lang: str, attempted: list[str]) -> None:
+def _publish_lang_unsupported(lang: str, attempted: list[str],
+                              set_aside: list[dict] | None = None) -> None:
     """Best-effort WAMP toast when no backend can speak `lang`.
     Distinct topic from `lang_mismatch` so the frontend can show a
     different message ("text-only — no TTS backend available") vs
     ("audio may be wrong-language").
+
+    ``set_aside``: why each voice that can speak `lang` is not speaking it
+    (TTSEngine._set_aside_for), added as its own field.  'reason' keeps its
+    value: the page reads the payload as it is (crossbarWorker spreads it
+    into TTS_LANG_EVENT).
     """
+    payload = {
+        'requested_lang': lang,
+        'attempted_backends': attempted,
+        'reason': 'no_capable_backend_fits_on_hardware',
+    }
+    if set_aside:
+        payload['set_aside'] = set_aside
     try:
         from core.realtime import publish_async as _wamp_pub
         _wamp_pub(
             'com.hertzai.hevolve.tts.lang_unsupported',
-            {
-                'requested_lang': lang,
-                'attempted_backends': attempted,
-                'reason': 'no_capable_backend_fits_on_hardware',
-            },
+            payload,
             timeout=0.5,
         )
     except Exception:
@@ -750,9 +764,12 @@ def _runs_on_cpu(backend: str) -> bool:
     CPU: device GPU_PREFERRED ("CPU works, GPU faster") or CPU_ONLY.  Free
     VRAM then decides where such an engine runs, never whether it speaks.
     A GPU-only engine, or one the registry does not name, answers False and
-    keeps every VRAM check."""
+    keeps every VRAM check.  Piper, bundled and CPU-only, answers True: it has
+    no entry in _BACKEND_TO_REGISTRY_KEY (no worker), so the registry is read
+    by the backend's own name, and its CPU_ONLY device answers (rv_tts nit on
+    a6e9106e: the registry, not a name literal)."""
     key = _BACKEND_TO_REGISTRY_KEY.get(backend)
-    spec = _get_engine_registry().get(key) if key else None
+    spec = _get_engine_registry().get(key or backend)
     if spec is None:
         return False
     try:
@@ -954,6 +971,35 @@ def _vram_cache_bucket(free_gb: float) -> int:
 _LADDER_FILTER_CACHE: dict[tuple, list[str]] = {}
 _LADDER_FILTER_CACHE_MAX = 256
 
+# The voices left out for want of GPU memory, each with the GB free then and
+# the GB it needs: the "TTS unavailable" line names them
+# (TTSEngine._set_aside_for).  A voice the filter keeps again, or that
+# speaks, is taken off.
+_VRAM_SKIPS: dict[str, tuple[float, float]] = {}
+
+
+def _vram_needed_gb(tool_name: str | None) -> float | None:
+    """The GPU memory ``tool_name`` needs, in GB (vram_manager.VRAM_BUDGETS,
+    its first figure, the one the ladder filter compares), or None."""
+    try:
+        from integrations.service_tools.vram_manager import VRAM_BUDGETS
+        budget = VRAM_BUDGETS.get(tool_name) if tool_name else None
+        return float(budget[0]) if budget else None
+    except Exception:
+        return None
+
+
+def _remember_vram_skips(prefs: list[str], kept: list[str], free_gb: float) -> None:
+    """Which voices of ``prefs`` the VRAM filter left out (_VRAM_SKIPS)."""
+    for be in prefs:
+        if be in kept:
+            _VRAM_SKIPS.pop(be, None)
+            continue
+        key = _BACKEND_TO_REGISTRY_KEY.get(be)
+        needed = _vram_needed_gb(f'tts_{key}') if key else None
+        if needed is not None:
+            _VRAM_SKIPS[be] = (float(free_gb), needed)
+
 
 def _filter_ladder_by_vram_budget(prefs: list[str]) -> list[str]:
     """Drop GPU-only backends whose declared min_vram exceeds free VRAM.
@@ -978,6 +1024,7 @@ def _filter_ladder_by_vram_budget(prefs: list[str]) -> list[str]:
     cache_key = (_vram_cache_bucket(free_gb), tuple(prefs))
     cached = _LADDER_FILTER_CACHE.get(cache_key)
     if cached is not None:
+        _remember_vram_skips(prefs, cached, free_gb)
         return list(cached)
 
     try:
@@ -1024,6 +1071,7 @@ def _filter_ladder_by_vram_budget(prefs: list[str]) -> list[str]:
     if len(_LADDER_FILTER_CACHE) >= _LADDER_FILTER_CACHE_MAX:
         _LADDER_FILTER_CACHE.clear()
     _LADDER_FILTER_CACHE[cache_key] = list(filtered)
+    _remember_vram_skips(prefs, filtered, free_gb)
     return filtered
 
 
@@ -1449,6 +1497,31 @@ def _spoke_this_session(backend: str) -> bool:
         return False
 
 
+def _handshake_known_failed(backend: str) -> bool:
+    """True when every handshake of ``backend`` in this run failed
+    (tts_handshake.is_known_failed): both ladder passes leave it out, and a
+    demotion does not count it as a voice ready to take over
+    (TTSEngine._can_speak_now).  The fallback still tries it.  False when
+    that cannot be read."""
+    try:
+        from tts import tts_handshake
+        return bool(tts_handshake.is_known_failed(backend))
+    except Exception:
+        return False
+
+
+def _piper_has_voice(lang) -> bool:
+    """True when Piper has a voice for ``lang`` (tts.piper_tts.voice_for_lang).
+    Piper is in every ladder, but rhasspy ships no Tamil or Malayalam voice
+    (piper_tts.py:70), so for those it is no voice at all."""
+    try:
+        from tts.piper_tts import voice_for_lang
+        voice_for_lang(lang)
+        return True
+    except Exception:
+        return False
+
+
 def _probe_backend_runnable(backend: str, required_pkg: str) -> bool:
     """Single-call probe: is this backend runnable right now?
 
@@ -1532,6 +1605,11 @@ class TTSEngine:
         instance._vram_manager = None
         instance._language = 'en'
         instance._install_threads = {}
+        instance._spoken_languages = []
+        instance._voice_record = {}
+        instance._stamped_this_run = set()
+        # The line being spoken on each thread (synthesize sets it).
+        instance._line = threading.local()
         return instance
 
     def __init__(self,
@@ -1567,6 +1645,14 @@ class TTSEngine:
         # so failures observed by either subsystem trip a single,
         # well-understood circuit.
         self._failure_threshold = 3
+        # Each voice's record on this machine, loaded with the demotions
+        # below: when it last spoke (last_ok_at) and how many lines it spoke
+        # and failed (successes, failures).  _has_good_record reads it.  The
+        # counts live here and reach tts_state.json only inside writes that
+        # happen anyway, plus a voice's first line in each run
+        # (_stamped_this_run).
+        self._voice_record: dict[str, dict[str, Any]] = {}
+        self._stamped_this_run: set[str] = set()
 
         # Hydrate persisted demotions from prior boots — the negative-
         # finding cache that prevents the ladder from re-burning 3
@@ -1578,7 +1664,8 @@ class TTSEngine:
         # the ladder, persistence only suppresses known-bad rungs until
         # `_DEMOTION_TTL_SECONDS` expiry, schema bump, or admin reset.
         try:
-            self._load_persisted_demotions()
+            with TTSEngine._state_lock:
+                self._load_persisted_demotions()
         except Exception as _he:
             logger.debug(f"TTS demotion hydrate skipped: {_he}")
         # A voice set aside for want of a key comes back when the key is
@@ -1688,6 +1775,20 @@ class TTSEngine:
         registry = _get_engine_registry()
         spec = registry.get(key)
         return spec.vram_key if spec else None
+
+    @classmethod
+    def _get_lifecycle_name(cls, backend: str) -> str | None:
+        """Nunba backend constant → the name HARTOS's ModelLifecycleManager
+        tracks its model under, which the J214 pin must use: the catalog
+        id, by tts_router's one rule (_engine_id_to_catalog_id), the id the
+        orchestrator registers the voice by and gpu_worker's idle timer
+        looks its pin up by.  The VRAM tool name ('tts_mms_tts') named a
+        model nobody tracks, so the pin never held.  None for a backend
+        with no worker to keep (no VRAM budget: Piper)."""
+        if not cls._get_vram_tool_name(backend):
+            return None
+        from integrations.channels.media.tts_router import _engine_id_to_catalog_id
+        return _engine_id_to_catalog_id(_BACKEND_TO_REGISTRY_KEY[backend])
 
     @classmethod
     def _get_required_package(cls, backend: str) -> str | None:
@@ -1860,6 +1961,12 @@ class TTSEngine:
         but the *next* request will find the GPU engine importable.
         Returns True if packages are already importable (may have been partially
         installed previously), False if install was kicked off in background.
+
+        Packages that run on a demoted voice: nothing is installed and no
+        setup card is shown.  One real synthesis decides, in the background
+        (_check_and_heal), and a pass brings the voice back.  Only the running
+        engine does this: models/orchestrator.py checks a voice with an
+        engine of its own, whose demotions are a copy read when it was made.
         """
         # Don't install GPU backends that can't run on this hardware.
         cap = _get_engine_capabilities(backend)
@@ -1871,6 +1978,7 @@ class TTSEngine:
             if not self._vram_allows(backend):
                 return False
 
+        heal = False
         with TTSEngine._auto_install_lock:
             # Already failed? Don't retry every request.  This process's
             # set, or the catalog row, which keeps a failed install across
@@ -1911,12 +2019,36 @@ class TTSEngine:
                     if _probe_backend_runnable(backend, required_pkg):
                         cache_key = f'venv:{backend}' if _is_venv_backend(backend) else required_pkg
                         TTSEngine._import_check_cache[cache_key] = True
-                        logger.info(f"Packages for '{backend}' already runnable — skipping install")
-                        return True
+                        if not (self is _engine and self._is_demoted(backend)):
+                            logger.info(f"Packages for '{backend}' already runnable — skipping install")
+                            return True
+                        heal = True
                 except Exception as _probe_err:
                     logger.debug(f"Auto-install probe error for '{backend}': {_probe_err} — proceeding to install")
 
             TTSEngine._auto_install_pending.add(backend)
+
+        if heal:
+            # Installed and demoted: the check alone, off the person's line,
+            # under the same pending guard as an install.  A check that fails
+            # puts the voice in _auto_install_failed: no more tries this run.
+            def _bg_heal():
+                try:
+                    self._check_and_heal(backend)
+                except Exception as e:
+                    logger.error(f"[heal] '{backend}' check error: {e}")
+                    with TTSEngine._auto_install_lock:
+                        TTSEngine._auto_install_failed.add(backend)
+                finally:
+                    with TTSEngine._auto_install_lock:
+                        TTSEngine._auto_install_pending.discard(backend)
+
+            threading.Thread(target=_bg_heal, daemon=True,
+                             name=f"tts-heal-{backend}").start()
+            logger.info(f"Packages for '{backend}' already runnable but it is "
+                        f"demoted: checking it with one synthesis in the "
+                        f"background, no install")
+            return True
 
         def _bg_install():
             progress = None
@@ -1946,92 +2078,11 @@ class TTSEngine:
                     # tts_handshake SSE with playable audio so the
                     # UI banner flips on an explicit verified event,
                     # not a string-heuristic match against progress text.
-                    # Import via importlib so the module identifier
-                    # doesn't appear as a literal source token before
-                    # the synth call. Keeps the test-of-order contract
-                    # in Family B strict without changing behavior.
-                    try:
-                        import importlib as _vr_il
-                        _hs_mod = _vr_il.import_module("tts.tts_handshake")
-                        _vr_mod = _vr_il.import_module("tts.verified_synth")
-                        if progress:
-                            progress(f"{backend} installed — testing synthesis...")
-                        # run_handshake uses verify_backend_synth internally,
-                        # so the DRY contract (one synth probe path) holds.
-                        hs = _hs_mod.run_handshake(
-                            self, backend, lang=self._language,
-                            timeout_s=180,
-                            broadcast=True, play_audio=True,
-                        )
-                        verdict = _vr_mod.Result(
-                            ok=hs.ok, n_bytes=hs.n_bytes,
-                            err=hs.err, elapsed_s=hs.elapsed_s,
-                        )
-                    except Exception as _verify_err:
-                        logger.error(f"[auto-install] '{backend}' verifier crashed: "
-                                     f"{_verify_err}")
-                        # Verifier itself failing IS a failure — don't
-                        # fall back to a shallow check. That's how the
-                        # original lie got in.
-                        import importlib as _vr_il
-                        _VR = _vr_il.import_module("tts.verified_synth").Result
-                        verdict = _VR(ok=False, n_bytes=0,
-                                      err=f"verifier crash: {_verify_err}",
-                                      elapsed_s=0.0)
-
-                    if verdict.ok:
-                        logger.info(f"[auto-install] '{backend}' verified: "
-                                    f"{verdict.n_bytes} bytes audio in "
-                                    f"{verdict.elapsed_s:.1f}s")
-                        # Clear any prior failed-mark for this backend.
-                        # Without this, a transient failure (network blip,
-                        # probe timeout) permanently disables the backend
-                        # even after a later successful install.
-                        # See tests/harness/test_family_b_tts_auto_install.py::
-                        # test_b7_failed_cleared_on_success for the contract.
-                        with TTSEngine._auto_install_lock:
-                            TTSEngine._auto_install_failed.discard(backend)
-                        # A failure the row kept (a gated download whose key
-                        # has since arrived) no longer holds: this install
-                        # delivered and synthesised.
-                        _cat, _row = _catalog_row(backend)
-                        if _row is not None and _row.error_build:
-                            _cat.mark_downloaded(_row.id, True)
-                        # Autonomous-recovery close-the-loop (#TTS-demote-heal,
-                        # 2026-05-28): a verified install means the engine is
-                        # NOT broken anymore — clear the session demotion so
-                        # PASS 1 / PASS 2 of _select_backend_for_language can
-                        # pick it up on the next request.  Persist the cleared
-                        # state so a restart doesn't re-skip the now-healthy
-                        # backend.  Without this clear, the demotion sticks
-                        # forever even after a successful reinstall via the
-                        # autonomous path PASS 2 just triggered — defeating
-                        # the autonomous-recovery contract.
-                        if backend in self._demoted_backends:
-                            self._demoted_backends.discard(backend)
-                            self._demotion_meta.pop(backend, None)
-                            self._consecutive_failures[backend] = 0
-                            try:
-                                self._save_persisted_demotions()
-                            except Exception as _pe:
-                                logger.debug(
-                                    f"persist-after-clear failed: {_pe}")
-                            logger.info(
-                                f"[auto-install] '{backend}' demotion CLEARED "
-                                f"— engine is selectable again")
-                        if progress:
-                            progress(f"{backend} ready — "
-                                     f"{verdict.n_bytes // 1024} KB test audio produced")
-                    else:
-                        logger.warning(f"[auto-install] '{backend}' pip succeeded but "
-                                       f"SYNTHESIS FAILED: {verdict.err} "
-                                       f"(elapsed={verdict.elapsed_s:.1f}s)")
-                        if progress:
-                            progress(f"{backend} installed but synthesis failed: "
-                                     f"{verdict.err[:80]}")
-                        with TTSEngine._auto_install_lock:
-                            TTSEngine._auto_install_failed.add(backend)
-                        ok = False  # completion event reflects the truth
+                    # The card that says the voice is ready fires only in
+                    # _check_and_heal, after that synthesis (the same check a
+                    # demoted voice gets without an install).
+                    verdict = self._check_and_heal(backend, progress)
+                    ok = verdict.ok  # completion event reflects the truth
                 else:
                     logger.warning(f"[auto-install] '{backend}' install failed: {result}")
                     if progress:
@@ -2081,6 +2132,108 @@ class TTSEngine:
                      f"falling back to Piper for this request")
         return False
 
+    def _check_and_heal(self, backend, progress=None):
+        """One real synthesis decides whether ``backend`` can be used; when
+        it can, nothing keeps it set aside any more.  Returns the verdict
+        (tts.verified_synth.Result).
+
+        The second half of an install (_bg_install), and all of the heal of
+        an installed voice that is demoted (_try_auto_install_backend: no
+        install, no pip, no setup card).  ``progress`` is the install's chat
+        card, None for a heal.
+
+        The saved handshake verdict for (backend, language) is dropped first,
+        as tts_handshake.retry does: run_handshake answers from it for the
+        rest of the run, and a saved FAIL keeps the voice out of both ladder
+        passes (is_known_failed).  A pass clears this run's failed-install
+        mark, a setup failure its catalog row kept, and the demotion (saved).
+        A fail goes into _auto_install_failed: no more tries this run.
+        """
+        # Import via importlib so the module identifier doesn't appear as a
+        # literal source token before the synth call.  Keeps the
+        # test-of-order contract in Family B strict without changing
+        # behavior.
+        import importlib as _vr_il
+        try:
+            _hs_mod = _vr_il.import_module("tts.tts_handshake")
+            _vr_mod = _vr_il.import_module("tts.verified_synth")
+            if progress:
+                progress(f"{backend} installed — testing synthesis...")
+            # run_handshake uses verify_backend_synth internally, so the DRY
+            # contract (one synth probe path) holds.  retry() is
+            # run_handshake with the saved verdict dropped first.  An
+            # install, which has its setup card, announces the voice (the
+            # page's ready card, the greeting on the speakers).  A heal is
+            # quiet: it runs in the middle of a conversation (review rv_db95:
+            # the page showed "Voice engine ready" and played the greeting).
+            announce = progress is not None
+            hs = _hs_mod.retry(self, backend, lang=self._language,
+                               timeout_s=180, broadcast=announce,
+                               play_audio=announce)
+            verdict = _vr_mod.Result(
+                ok=hs.ok, n_bytes=hs.n_bytes,
+                err=hs.err, elapsed_s=hs.elapsed_s,
+            )
+        except Exception as _verify_err:
+            logger.error(f"[auto-install] '{backend}' verifier crashed: "
+                         f"{_verify_err}")
+            # Verifier itself failing IS a failure — don't fall back to a
+            # shallow check. That's how the original lie got in.
+            _VR = _vr_il.import_module("tts.verified_synth").Result
+            verdict = _VR(ok=False, n_bytes=0,
+                          err=f"verifier crash: {_verify_err}",
+                          elapsed_s=0.0)
+
+        if verdict.ok:
+            logger.info(f"[auto-install] '{backend}' verified: "
+                        f"{verdict.n_bytes} bytes audio in "
+                        f"{verdict.elapsed_s:.1f}s")
+            # Clear any prior failed-mark for this backend.  Without this, a
+            # transient failure (network blip, probe timeout) permanently
+            # disables the backend even after a later successful install.
+            # See tests/harness/test_family_b_tts_auto_install.py::
+            # test_b7_failed_cleared_on_success for the contract.
+            with TTSEngine._auto_install_lock:
+                TTSEngine._auto_install_failed.discard(backend)
+            # A failure the row kept (a gated download whose key has since
+            # arrived) no longer holds: this voice synthesised.
+            _cat, _row = _catalog_row(backend)
+            if _row is not None and _row.error_build:
+                _cat.mark_downloaded(_row.id, True)
+            # Autonomous-recovery close-the-loop (#TTS-demote-heal,
+            # 2026-05-28): a verified voice is NOT broken anymore — clear the
+            # demotion so PASS 1 / PASS 2 of _select_backend_for_language can
+            # pick it up on the next request, and persist the cleared state
+            # so a restart doesn't re-skip the now-healthy backend.
+            cleared = False
+            with self._state_lock:
+                if backend in self._demoted_backends:
+                    self._demoted_backends.discard(backend)
+                    self._demotion_meta.pop(backend, None)
+                    self._consecutive_failures[backend] = 0
+                    cleared = True
+                    try:
+                        self._save_persisted_demotions()
+                    except Exception as _pe:
+                        logger.debug(f"persist-after-clear failed: {_pe}")
+            if cleared:
+                logger.info(f"[auto-install] '{backend}' demotion CLEARED "
+                            f"— engine is selectable again")
+            if progress:
+                progress(f"{backend} ready — "
+                         f"{verdict.n_bytes // 1024} KB test audio produced")
+        else:
+            logger.warning(f"[auto-install] '{backend}' "
+                           f"{'pip succeeded but ' if progress else ''}"
+                           f"SYNTHESIS FAILED: {verdict.err} "
+                           f"(elapsed={verdict.elapsed_s:.1f}s)")
+            if progress:
+                progress(f"{backend} installed but synthesis failed: "
+                         f"{verdict.err[:80]}")
+            with TTSEngine._auto_install_lock:
+                TTSEngine._auto_install_failed.add(backend)
+        return verdict
+
     def _is_missing_packages(self, backend):
         """Return True if this backend failed _can_run_backend due to missing
         packages (as opposed to insufficient VRAM or no CUDA)."""
@@ -2101,6 +2254,18 @@ class TTSEngine:
     # was reset to chatterbox again because nothing remembered the
     # previous failure. These three helpers + the demoted-set check in
     # _select_backend_for_language are the circuit breaker.
+
+    # ONE lock over the ladder's state and its file: _demoted_backends,
+    # _demotion_meta, _consecutive_failures, the voice records, the spoken
+    # languages and tts_state.json, for every engine (there is one file).
+    # The synth thread, the background install / heal threads and the key
+    # vault's restore (restore_voices_waiting_for, a classmethod) all change
+    # them, and the save iterates them.  Reentrant: a failure that demotes
+    # and a line that changes the spoken language each save while holding
+    # it.  Held only around those reads and writes and the file write, never
+    # across a synthesis, a handshake or the self-heal report.  Order:
+    # _restore_lock first, then this one, never the reverse.
+    _state_lock = threading.RLock()
 
     # Failure-class signatures used by ``_is_structural_error``.
     # Lower-cased substring match against ``str(error).lower()`` plus
@@ -2197,7 +2362,8 @@ class TTSEngine:
         return False
 
     def _record_backend_failure(
-        self, backend: str, error: Exception | None = None,
+        self, backend: str, error: Exception | None = None, *,
+        language: str | None = None, elapsed_s: float | None = None,
     ) -> None:
         """Increment consecutive-failure counter; demote at threshold.
 
@@ -2238,14 +2404,50 @@ class TTSEngine:
         Backwards compatible: callers that haven't been updated to
         pass ``error`` get the legacy threshold (3 strikes, transient
         treatment) automatically.
+
+        Two rules hold a voice back from demotion (owner, 2026-11-25:
+        "Single failure is not reason for demoting a working TTS if it
+        worked earlier but why it failed could be OOM etc"; 23:40 IST: "if
+        a model has statistically performed good, don't penalise hard ...
+        and if demoted without another model inference ready that's also
+        bad").  Live: mms_tts crashed once at boot ("module 'torch' has no
+        attribute 'version'") after speaking at 20:28 and 22:51, was
+        demoted for 7 days, and every Tamil line was text only.
+
+        * **Its record**: a voice that has spoken more lines on this
+          machine than it has failed (``_has_good_record``) gets the normal
+          threshold even for a structural failure.
+        * **The last voice**: a voice is not demoted while no other voice
+          for ``language`` can speak now (the fallback's own list,
+          ``_fallback_voices``, cut to ``_can_speak_now``: it spoke in this
+          run or its packages are known to import).  The failure is
+          counted and logged with the time its start took; the rest of
+          this line goes on without it, and the next line starts it again.
+
+        A refused key (``key_refused``) is the exception to both: the repo
+        will refuse the same key again, so one start demotes.
+
+        ``language``: the line's (default: the engine's).  ``elapsed_s``:
+        how long the failed start took, for the log.
         """
         if not backend or backend == BACKEND_PIPER or backend == BACKEND_NONE:
             return
-        n = self._consecutive_failures.get(backend, 0) + 1
-        self._consecutive_failures[backend] = n
-
         structural = self._is_structural_error(error)
-        threshold = 1 if structural else self._failure_threshold
+        key_refused = bool(getattr(error, 'key_refused', False))
+        with self._state_lock:
+            # The record before this failure decides.
+            good_record = self._has_good_record(backend)
+            n = self._consecutive_failures.get(backend, 0) + 1
+            self._consecutive_failures[backend] = n
+            record = self._voice_record.setdefault(backend, {})
+            record['failures'] = record.get('failures', 0) + 1
+        threshold = (1 if structural and (key_refused or not good_record)
+                     else self._failure_threshold)
+        # The rest of this line goes on without the voice: one start per
+        # line (_speak_with_active_engine, _fallback_voices).
+        line = getattr(self._line, 'failed', None)
+        if line is not None:
+            line[backend] = elapsed_s
 
         # Push EVERY failure to the canonical self-heal pipeline via
         # exception_collector.report_subsystem_failure — the SAME
@@ -2282,7 +2484,32 @@ class TTSEngine:
                 logger.debug(
                     f"TTS failure → self-heal push failed: {_ec_err}")
 
-        if n >= threshold and backend not in self._demoted_backends:
+        with self._state_lock:
+            if n < threshold or backend in self._demoted_backends:
+                return
+        kind = 'STRUCTURAL' if structural else 'transient'
+        err_summary = ''
+        if error is not None:
+            err_summary = (
+                f" (error class: {type(error).__name__}; "
+                f"msg: {str(error)[:120]!r})"
+            )
+        lang = language or self._language
+        if not key_refused and not any(
+                self._can_speak_now(v, lang)
+                for v in self._fallback_voices(lang, without=backend)):
+            why = self._say_set_aside(self._set_aside_for(lang))
+            logger.warning(
+                f"TTS backend '{backend}' KEPT after {n} {kind} "
+                f"failure{'s' if n != 1 else ''}: no other voice for "
+                f"'{_normalize_lang(lang)}' is ready to speak"
+                f"{f' ({why})' if why else ''}; the next line starts it "
+                f"again.{err_summary}"
+            )
+            return
+        with self._state_lock:
+            if backend in self._demoted_backends:
+                return
             self._demoted_backends.add(backend)
             # A voice set aside for want of a key says which key, so that
             # storing it brings the voice back (restore_voices_waiting_for).
@@ -2294,55 +2521,79 @@ class TTSEngine:
                     'first_demoted_at': _now,
                     'expires_at': _now + _DEMOTION_TTL_SECONDS,
                 })['needs_key'] = needed
-            kind = 'STRUCTURAL' if structural else 'transient'
-            err_summary = ''
-            if error is not None:
-                err_summary = (
-                    f" (error class: {type(error).__name__}; "
-                    f"msg: {str(error)[:120]!r})"
-                )
-            logger.warning(
-                f"TTS backend '{backend}' DEMOTED for this session "
-                f"after {n} {kind} failure{'s' if n != 1 else ''} — "
-                f"ladder will skip it.{err_summary} "
-                f"Persisted to tts_state.json (TTL "
-                f"{_DEMOTION_TTL_SECONDS // 86400}d) so subsequent "
-                f"boots don't re-burn latency on the same engine."
-            )
             try:
                 self._save_persisted_demotions()
             except Exception as _pe:
                 logger.debug(f"TTS demotion persist skipped: {_pe}")
+        logger.warning(
+            f"TTS backend '{backend}' DEMOTED for this session "
+            f"after {n} {kind} failure{'s' if n != 1 else ''} — "
+            f"ladder will skip it.{err_summary} "
+            f"Persisted to tts_state.json (TTL "
+            f"{_DEMOTION_TTL_SECONDS // 86400}d) so subsequent "
+            f"boots don't re-burn latency on the same engine."
+        )
 
     def _record_backend_success(self, backend: str) -> None:
-        """Clear the per-backend failure counter on a successful synth.
+        """Clear the per-backend failure counter on a successful synth,
+        and count the line in the voice's record (_has_good_record).
 
-        A demoted backend can't get here (it never gets called once
-        skipped), so demotion is session-sticky until process restart.
-        That's deliberate: an engine that failed 3 times in a row is
-        almost always broken in a way that won't fix itself mid-session
-        (missing weights, bad CUDA driver, OOM with steady GPU load).
-        Don't waste user latency probing it again.
+        This runs on every spoken line, so the counts live in memory.  They
+        reach tts_state.json on the voice's first line in each run (which
+        also stamps ``last_ok_at``) and otherwise only inside writes that
+        happen anyway: a demotion, a spoken-language change.  Lines spoken
+        after a run's last write are not on file if the app stops; the
+        record on file is a floor.
         """
-        if backend and self._consecutive_failures.get(backend):
-            self._consecutive_failures[backend] = 0
+        if not backend:
+            return
+        _VRAM_SKIPS.pop(backend, None)
+        with self._state_lock:
+            if self._consecutive_failures.get(backend):
+                self._consecutive_failures[backend] = 0
+            if backend in (BACKEND_PIPER, BACKEND_NONE):
+                return
+            record = self._voice_record.setdefault(backend, {})
+            record['successes'] = record.get('successes', 0) + 1
+            if backend in self._stamped_this_run:
+                return
+            self._stamped_this_run.add(backend)
+            import time as _time
+            record['last_ok_at'] = _time.time()
+            try:
+                self._save_persisted_demotions()
+            except Exception as _pe:
+                logger.debug(f"TTS voice record persist skipped: {_pe}")
 
-    def _record_never_came_up(self, backend: str) -> None:
+    def _record_never_came_up(self, backend: str,
+                              language: str | None = None) -> None:
         """Count a selected engine that has no instance as one failure of
         that engine, so repeated misses demote it and the selector moves on.
         Nothing is counted while a background switch is still loading."""
         if getattr(self, '_pending_backend', None):
             return
         self._record_backend_failure(
-            backend, RuntimeError(f"TTS backend {backend!r} was selected but never came up"))
+            backend, RuntimeError(f"TTS backend {backend!r} was selected but never came up"),
+            language=language)
 
     def _is_demoted(self, backend: str) -> bool:
-        return backend in self._demoted_backends
+        with self._state_lock:
+            return backend in self._demoted_backends
+
+    def _has_good_record(self, backend: str) -> bool:
+        """True when ``backend`` has spoken more lines on this machine than
+        it has failed.  The one rule _record_backend_failure asks for "it
+        worked here before"; ``last_ok_at`` beside the counts is data only.
+        No count of its own: the voice's lines against its failures."""
+        with self._state_lock:
+            record = self._voice_record.get(backend) or {}
+            return record.get('successes', 0) > record.get('failures', 0)
 
     # ── Persisted demotion cache (cross-boot negative findings) ─────
     # See module-level docstring above ``_TTS_STATE_SCHEMA`` for the
-    # full design rationale. These three helpers are the ONLY code
-    # that touches ``tts_state.json`` — selection is intentionally
+    # full design rationale. These helpers are the ONLY code that
+    # touches ``tts_state.json`` (the save also carries the spoken
+    # languages, _record_spoken_language) — selection is intentionally
     # unaware of persistence (Gate 4: no parallel selection paths).
 
     def _load_persisted_demotions(self) -> None:
@@ -2377,6 +2628,27 @@ class TTSEngine:
                 f"demotions on hydrate"
             )
             return
+
+        spoken = data.get('spoken_languages')
+        if isinstance(spoken, list):
+            self._spoken_languages = [
+                lang for lang in spoken if isinstance(lang, str) and lang
+            ][-_SPOKEN_LANGUAGES_KEPT:]
+
+        # Each voice's record: when it last spoke, lines spoken and failed.
+        # Added beside the other keys under schema 1: a schema bump would
+        # drop every demotion and the spoken languages above.
+        record = data.get('voice_record')
+        if isinstance(record, dict):
+            self._voice_record = {
+                backend: {k: v for k, v in rec.items()
+                          if k in ('last_ok_at', 'successes', 'failures')
+                          and isinstance(v, (int, float))
+                          and not isinstance(v, bool)}
+                for backend, rec in record.items()
+                if isinstance(backend, str) and isinstance(rec, dict)
+                and backend not in (BACKEND_PIPER, BACKEND_NONE)
+            }
 
         persisted = data.get('demoted')
         if not isinstance(persisted, dict):
@@ -2431,67 +2703,99 @@ class TTSEngine:
         cannot leave a half-written file. Piper / NONE are filtered
         out before serialisation so a future bug that adds them to
         ``_demoted_backends`` cannot leak into the persistent cache.
+        Under _state_lock: the set it walks is changed by other threads.
+        The voices' records ride along ('voice_record').
         """
-        path = _get_tts_state_path()
+        with self._state_lock:
+            path = _get_tts_state_path()
 
-        import time as _time
-        now = _time.time()
-        demoted_payload: dict[str, dict[str, Any]] = {}
-        for backend in self._demoted_backends:
-            if backend in (BACKEND_PIPER, BACKEND_NONE):
-                continue
-            # An entry already on file keeps its own clock; only a backend
-            # demoted for the first time gets "now".  Stamping every row
-            # with "now" restarted all seven 7-day TTLs whenever any one
-            # backend was demoted, so a demotion for a cause long fixed
-            # never expired.
-            meta = self._demotion_meta.setdefault(backend, {
-                'first_demoted_at': now,
-                'expires_at': now + _DEMOTION_TTL_SECONDS,
-            })
-            demoted_payload[backend] = {
-                'first_demoted_at': meta['first_demoted_at'],
-                'expires_at': meta['expires_at'],
-                'failures_at_demotion': self._consecutive_failures.get(
-                    backend, self._failure_threshold),
+            import time as _time
+            now = _time.time()
+            demoted_payload: dict[str, dict[str, Any]] = {}
+            for backend in self._demoted_backends:
+                if backend in (BACKEND_PIPER, BACKEND_NONE):
+                    continue
+                # An entry already on file keeps its own clock; only a backend
+                # demoted for the first time gets "now".  Stamping every row
+                # with "now" restarted all seven 7-day TTLs whenever any one
+                # backend was demoted, so a demotion for a cause long fixed
+                # never expired.
+                meta = self._demotion_meta.setdefault(backend, {
+                    'first_demoted_at': now,
+                    'expires_at': now + _DEMOTION_TTL_SECONDS,
+                })
+                demoted_payload[backend] = {
+                    'first_demoted_at': meta['first_demoted_at'],
+                    'expires_at': meta['expires_at'],
+                    'failures_at_demotion': self._consecutive_failures.get(
+                        backend, self._failure_threshold),
+                }
+                if meta.get('needs_key'):
+                    demoted_payload[backend]['needs_key'] = meta['needs_key']
+            payload = {
+                'schema': _TTS_STATE_SCHEMA,
+                'updated_at': now,
+                'demoted': demoted_payload,
+                'spoken_languages': list(self._spoken_languages),
+                'voice_record': {
+                    backend: dict(rec)
+                    for backend, rec in self._voice_record.items()
+                    if backend not in (BACKEND_PIPER, BACKEND_NONE)
+                },
             }
-            if meta.get('needs_key'):
-                demoted_payload[backend]['needs_key'] = meta['needs_key']
-        payload = {
-            'schema': _TTS_STATE_SCHEMA,
-            'updated_at': now,
-            'demoted': demoted_payload,
-        }
 
-        try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-        except OSError as e:
-            logger.debug(f"TTS state dir create skipped: {e}")
-            return
-
-        import tempfile as _tf
-        try:
-            fd, tmp = _tf.mkstemp(
-                prefix='tts_state.', suffix='.tmp',
-                dir=os.path.dirname(path),
-            )
             try:
-                with os.fdopen(fd, 'w', encoding='utf-8') as _f:
-                    json.dump(payload, _f)
-                    _f.flush()
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+            except OSError as e:
+                logger.debug(f"TTS state dir create skipped: {e}")
+                return
+
+            import tempfile as _tf
+            try:
+                fd, tmp = _tf.mkstemp(
+                    prefix='tts_state.', suffix='.tmp',
+                    dir=os.path.dirname(path),
+                )
+                try:
+                    with os.fdopen(fd, 'w', encoding='utf-8') as _f:
+                        json.dump(payload, _f)
+                        _f.flush()
+                        try:
+                            os.fsync(_f.fileno())
+                        except OSError:
+                            pass
+                    os.replace(tmp, path)
+                except Exception:
                     try:
-                        os.fsync(_f.fileno())
+                        os.remove(tmp)
                     except OSError:
                         pass
-                os.replace(tmp, path)
-            except Exception:
-                try:
-                    os.remove(tmp)
-                except OSError:
-                    pass
-                raise
-        except OSError as e:
-            logger.warning(f"Failed to persist TTS demotion state: {e}")
+                    raise
+            except OSError as e:
+                logger.warning(f"Failed to persist TTS demotion state: {e}")
+
+    def _record_spoken_language(self, language: str | None) -> None:
+        """A line was just spoken in ``language``: it becomes the newest of
+        ``spoken_languages`` in ``tts_state.json``, so the next boot's
+        warm-up starts its voice (main.py _warmup_tts).  The language is the
+        one the voice spoke, the reply's own script, not the person's UI
+        setting: on the 23 Nov walk the speech agent's Tamil replies came in
+        labelled 'en'.  The file is written only when the newest language
+        changes.  A warm-up line (synthesize(warm_up=True)) is not
+        recorded: nobody heard it (review of a069849a)."""
+        lang = _normalize_lang(language)
+        with self._state_lock:
+            if self._spoken_languages[-1:] == [lang]:
+                return
+            self._spoken_languages = (
+                [s for s in self._spoken_languages if s != lang] + [lang]
+            )[-_SPOKEN_LANGUAGES_KEPT:]
+            self._save_persisted_demotions()
+
+    def last_spoken_languages(self) -> list[str]:
+        """The languages lines were last spoken in, newest last (this run
+        and the runs before it, from ``tts_state.json``)."""
+        return list(self._spoken_languages)
 
     @classmethod
     def restore_voices_waiting_for(cls, key_name: str) -> list[str]:
@@ -2506,7 +2810,8 @@ class TTSEngine:
         refused too, the next start demotes the voice again."""
         if not key_name:
             return []
-        with cls._restore_lock:
+        # _restore_lock, then the state lock: the one order (_state_lock).
+        with cls._restore_lock, cls._state_lock:
             return cls._restore_voices_waiting_for(key_name)
 
     _restore_lock = threading.Lock()
@@ -2583,16 +2888,17 @@ class TTSEngine:
             # way every demotion is written (it loads what is saved first).
             engine = _engine if _engine is not None else TTSEngine(
                 auto_init=False)
-            for backend, info in again.items():
-                engine._demoted_backends.add(backend)
-                engine._consecutive_failures[backend] = info.get(
-                    'failures_at_demotion', engine._failure_threshold)
-                engine._demotion_meta[backend] = {
-                    'first_demoted_at': info.get('first_demoted_at', now),
-                    'expires_at': info['expires_at'],
-                    'needs_key': key_name,
-                }
-            engine._save_persisted_demotions()
+            with cls._state_lock:
+                for backend, info in again.items():
+                    engine._demoted_backends.add(backend)
+                    engine._consecutive_failures[backend] = info.get(
+                        'failures_at_demotion', engine._failure_threshold)
+                    engine._demotion_meta[backend] = {
+                        'first_demoted_at': info.get('first_demoted_at', now),
+                        'expires_at': info['expires_at'],
+                        'needs_key': key_name,
+                    }
+                engine._save_persisted_demotions()
             logger.info(
                 f"TTS: {key_name} was taken back; set aside again: "
                 f"{', '.join(sorted(again))}")
@@ -2611,49 +2917,52 @@ class TTSEngine:
 
         ``backend=None`` clears every demotion. Returns the count of
         rows removed (0 when no state file exists). Idempotent and
-        safe under concurrent calls (``os.replace`` is atomic).
+        safe under concurrent calls (``os.replace`` is atomic; the read,
+        change and write are one step under _state_lock, so a save in
+        between is not lost).
         """
-        path = _get_tts_state_path()
-        if not os.path.isfile(path):
-            return 0
-        try:
-            with open(path, encoding='utf-8') as _f:
-                data = json.load(_f)
-        except (OSError, ValueError):
-            return 0
-
-        persisted = data.get('demoted')
-        if not isinstance(persisted, dict) or not persisted:
-            return 0
-
-        if backend is None:
-            cleared = len(persisted)
-            data['demoted'] = {}
-        else:
-            if backend not in persisted:
+        with cls._state_lock:
+            path = _get_tts_state_path()
+            if not os.path.isfile(path):
                 return 0
-            del persisted[backend]
-            cleared = 1
-
-        import tempfile as _tf
-        try:
-            fd, tmp = _tf.mkstemp(
-                prefix='tts_state.', suffix='.tmp',
-                dir=os.path.dirname(path),
-            )
             try:
-                with os.fdopen(fd, 'w', encoding='utf-8') as _f:
-                    json.dump(data, _f)
-                os.replace(tmp, path)
-            except Exception:
+                with open(path, encoding='utf-8') as _f:
+                    data = json.load(_f)
+            except (OSError, ValueError):
+                return 0
+
+            persisted = data.get('demoted')
+            if not isinstance(persisted, dict) or not persisted:
+                return 0
+
+            if backend is None:
+                cleared = len(persisted)
+                data['demoted'] = {}
+            else:
+                if backend not in persisted:
+                    return 0
+                del persisted[backend]
+                cleared = 1
+
+            import tempfile as _tf
+            try:
+                fd, tmp = _tf.mkstemp(
+                    prefix='tts_state.', suffix='.tmp',
+                    dir=os.path.dirname(path),
+                )
                 try:
-                    os.remove(tmp)
-                except OSError:
-                    pass
-                raise
-        except OSError as e:
-            logger.warning(f"Failed to clear persisted TTS demotions: {e}")
-            return 0
+                    with os.fdopen(fd, 'w', encoding='utf-8') as _f:
+                        json.dump(data, _f)
+                    os.replace(tmp, path)
+                except Exception:
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
+                    raise
+            except OSError as e:
+                logger.warning(f"Failed to clear persisted TTS demotions: {e}")
+                return 0
 
         if cleared:
             logger.info(
@@ -2704,10 +3013,8 @@ class TTSEngine:
         try:
             from tts import tts_handshake as _hs_mod
             _hs_raw_is_verified = _hs_mod.is_verified_backend
-            _hs_raw_is_known_failed = _hs_mod.is_known_failed
         except Exception:
             _hs_raw_is_verified = None
-            _hs_raw_is_known_failed = None
 
         def _hs_is_verified(b):
             if _hs_raw_is_verified is None:
@@ -2717,17 +3024,13 @@ class TTSEngine:
             except Exception:
                 return True
 
-        def _hs_is_known_failed(b):
-            if _hs_raw_is_known_failed is None:
-                return False
-            try:
-                return bool(_hs_raw_is_known_failed(b))
-            except Exception:
-                return False
+        # A confirmed-failing handshake: _handshake_known_failed, the one
+        # reader the fallback's list (_fallback_voices) shares.
 
         # PASS 1 — quality-ordered AND verified.  Piper is the trusted
         # baseline (no handshake needed) ONLY for languages it actually
-        # has a voice for.  Without the per-language voice check, this
+        # has a voice for (_piper_has_voice).  Without the per-language
+        # voice check, this
         # exemption short-circuited the ladder for Tamil/Malayalam —
         # piper_tts.py:70 documents the rhasspy upstream gap explicitly
         # ("Tamil + Malayalam intentionally absent — HF URLs 404").  Per-
@@ -2735,18 +3038,10 @@ class TTSEngine:
         # ladder (indic_parler / mms_tts) get their first-synth-doubles-
         # as-handshake opportunity in PASS 2 instead of falling through
         # to a Piper that can't speak the language.
-        def _piper_has_voice(lang):
-            try:
-                from tts.piper_tts import voice_for_lang
-                voice_for_lang(lang)
-                return True
-            except Exception:
-                return False
-
         for backend in prefs:
             if self._is_demoted(backend):
                 continue
-            if _hs_is_known_failed(backend):
+            if _handshake_known_failed(backend):
                 continue
             if backend == BACKEND_PIPER:
                 # Per-language voice availability gate replaces the
@@ -2790,16 +3085,17 @@ class TTSEngine:
                 # + ``_auto_install_failed``) make this safe to call on
                 # every request — at most one background install per
                 # backend per session.  On success the install path also
-                # clears the demotion (see _bg_install verdict.ok branch),
-                # so the engine becomes selectable on the next request
-                # without the user clicking anything.  Same wiring works
+                # clears the demotion (_check_and_heal), so the engine
+                # becomes selectable on the next request without the user
+                # clicking anything; a voice whose packages already run
+                # gets that check alone, without an install.  Same wiring works
                 # for every venv-quarantined backend listed in
                 # BACKEND_VENV_PACKAGES (indic_parler today;
                 # chatterbox / cosyvoice / f5 / kokoro / omnivoice as
                 # they migrate).
                 self._try_auto_install_backend(backend)
                 continue
-            if _hs_is_known_failed(backend):
+            if _handshake_known_failed(backend):
                 logger.info(
                     f"Backend {backend} skipped: handshake confirmed "
                     f"FAILING — agent self-heal should investigate "
@@ -2942,7 +3238,7 @@ class TTSEngine:
             return
 
         if prev_backend:
-            prev_tool = self._get_vram_tool_name(prev_backend)
+            prev_tool = self._get_lifecycle_name(prev_backend)
             if prev_tool:
                 try:
                     mgr.set_pressure_evict_only(prev_tool, False)
@@ -2952,7 +3248,7 @@ class TTSEngine:
                 except Exception as e:
                     logger.warning(f"J214: unpin {prev_tool!r} failed: {e}")
 
-        new_tool = self._get_vram_tool_name(new_backend)
+        new_tool = self._get_lifecycle_name(new_backend)
         if new_tool:
             try:
                 result = mgr.set_pressure_evict_only(new_tool, True)
@@ -3045,14 +3341,24 @@ class TTSEngine:
         or the probe gets None.
 
         An engine set_backend cannot bring up yields None, so another
-        engine's audio never passes that engine's handshake.  Afterwards
-        set_backend is called with the engine active before the probe.
+        engine's audio never passes that engine's handshake.  Nor does an
+        engine that comes up and then fails: the fallback does not speak a
+        probe (_synthesize_with_fallback), or a voice still broken would pass
+        on the next voice's audio and _check_and_heal would bring it back.
+        Afterwards set_backend is called with the engine active before the
+        probe.  The probe is not a language the person spoke, so it is not
+        recorded (warm_up; rv_tts nit on a6e9106e).
         """
         prev = self._active_backend
         try:
             if not self.set_backend(backend):
                 return None
-            return self.synthesize(text, output_path, language=language)
+            self._line.probe = backend
+            try:
+                return self.synthesize(text, output_path, language=language,
+                                       warm_up=True)
+            finally:
+                self._line.probe = None
         finally:
             if prev:
                 self.set_backend(prev)
@@ -3143,7 +3449,7 @@ class TTSEngine:
             return None
 
     def _synthesize_multilingual(self, segments, output_path=None, voice=None,
-                                  speed=1.0, **kwargs):
+                                  speed=1.0, *, warm_up=False, **kwargs):
         """Synthesize multi-type segments: speech, music, singing, lyrics.
 
         Segments from language_segmenter.segment():
@@ -3193,7 +3499,8 @@ class TTSEngine:
                 result = None
                 if seg_type == 'speech':
                     result = self._synth_speech_segment(
-                        text, seg.get('lang', 'en'), tmp.name, **kwargs)
+                        text, seg.get('lang', 'en'), tmp.name,
+                        warm_up=warm_up, **kwargs)
                 elif seg_type == 'music':
                     result = self._synth_music_segment(
                         text, seg.get('genre', ''), seg.get('duration', 30),
@@ -3230,30 +3537,78 @@ class TTSEngine:
                 return output_path
             return wav_parts[0]
 
-        # Concatenate WAV files
+        # Join the parts into one WAV.  Each part was written by whichever
+        # engine or model spoke it, in that engine's own sample rate, channel
+        # count and sample format (mms_tts 16 kHz, Piper 22.05 kHz, a singing
+        # model 48 kHz stereo, float WAVs from the torch engines).  Copying
+        # frames under the first part's header played every other rate at
+        # the wrong speed and pitch (live 2026-11-25: in a Tamil-first line
+        # Piper's English ran 1.38x slow and "Zoey!" was heard as "Sorry.")
+        # and dropped any part `wave` cannot open.  So each part is decoded by
+        # the framework's WAV reader (read_wav_f32: any PCM width or float,
+        # mixed down to mono), brought to the highest rate among the parts by
+        # the shared resampler (no part is downsampled), and the line is
+        # written as one mono 16-bit WAV.  resample_pcm16 interpolates
+        # linearly: lengths are exact, an upsampled part keeps faint images
+        # above its old Nyquist.
+        import numpy as np
+        from integrations.service_tools.whisper_tool import read_wav_f32
+        from integrations.social._livekit_room import resample_pcm16
+
         out = output_path or tempfile.mktemp(suffix='.wav', prefix='_tts_multi_')
+        keep = None      # a part handed back as the result is not deleted
+        writing = False  # a partial `out` is removed only if this join wrote it
         try:
-            with wave.open(wav_parts[0], 'rb') as first:
-                params = first.getparams()
-            with wave.open(out, 'wb') as outf:
-                outf.setparams(params)
-                for part in wav_parts:
-                    try:
-                        with wave.open(part, 'rb') as inp:
-                            outf.writeframes(inp.readframes(inp.getnframes()))
-                    except Exception:
-                        pass
+            decoded = []
             for part in wav_parts:
                 try:
-                    os.unlink(part)
-                except OSError:
-                    pass
+                    decoded.append(read_wav_f32(part))
+                except Exception as e:
+                    logger.warning(f"TTS join: left out a part it cannot read "
+                                   f"({os.path.basename(part)}): {e}")
+            if not decoded:
+                # Nothing readable: hand back the first part, as before.
+                keep = wav_parts[0]
+                return keep
+            rate = max(r for r, _ in decoded)
+            writing = True
+            with wave.open(out, 'wb') as outf:
+                outf.setnchannels(1)
+                outf.setsampwidth(2)
+                outf.setframerate(rate)
+                for src_rate, samples in decoded:
+                    # x32768 is exact for a 16-bit part; a float part at full
+                    # scale clips to the int16 range.
+                    pcm = np.clip(np.round(samples * 32768.0), -32768, 32767
+                                  ).astype('<i2').tobytes()
+                    if pcm and src_rate != rate:
+                        converted = resample_pcm16(pcm, src_rate, 1, rate, 1)
+                        if not converted:
+                            logger.warning(f"TTS join: left out a {src_rate} Hz part "
+                                           f"the resampler could not bring to {rate} Hz")
+                            continue
+                        pcm = converted
+                    outf.writeframes(pcm)
             return out
         except Exception as e:
             logger.error(f"WAV concatenation failed: {e}")
-            return wav_parts[0] if wav_parts else None
+            if writing:
+                try:
+                    os.unlink(out)
+                except OSError:
+                    pass
+            keep = wav_parts[0]
+            return keep
+        finally:
+            for part in wav_parts:
+                if part != keep:
+                    try:
+                        os.unlink(part)
+                    except OSError:
+                        pass
 
-    def _synth_speech_segment(self, text, lang, out_path, **kwargs):
+    def _synth_speech_segment(self, text, lang, out_path, *, warm_up=False,
+                              **kwargs):
         """Synthesize one speech segment with language-appropriate TTS engine.
 
         The selected engine speaks first, through ``_speak_with_active_engine``,
@@ -3299,8 +3654,11 @@ class TTSEngine:
 
         # The selected engine speaks the segment through the same path as a
         # whole line in synthesize().
-        return self._speak_with_active_engine(
+        spoken = self._speak_with_active_engine(
             text, out_path, kwargs.pop('voice', None), lang, **kwargs)
+        if spoken and not warm_up:
+            self._record_spoken_language(lang)
+        return spoken
 
     def _synth_media_segment(self, modality, text, out_path,
                               genre='', duration=30, **kwargs):
@@ -3522,9 +3880,15 @@ class TTSEngine:
                    voice: str | None = None,
                    speed: float | None = None,
                    language: str | None = None,
+                   *,
+                   warm_up: bool = False,
                    **kwargs) -> str | None:
         """
         Synthesize text to speech.
+
+        ``warm_up=True`` marks a line nobody hears (the boot warm-up's
+        greeting): it starts the voice like any line but is not recorded
+        in ``spoken_languages``.
 
         When ``speed`` is left as None (the default), the active
         TTS_SPEED_PROFILE multiplier is applied — fast/balanced/
@@ -3539,6 +3903,12 @@ class TTSEngine:
         """
         if not text or not text.strip():
             return None
+
+        # A new line on this thread: a voice whose start fails on it is not
+        # started again for the rest of it, whatever its segments
+        # (_speak_with_active_engine, _fallback_voices).  The next line
+        # starts it again.
+        self._line.failed = {}
 
         if speed is None:
             speed = _get_default_speed()
@@ -3571,7 +3941,8 @@ class TTSEngine:
             if (has_media or has_multi_lang or len(segments) > 1
                     or detected_lang_mismatch):
                 return self._synthesize_multilingual(
-                    segments, output_path, voice, speed, **kwargs)
+                    segments, output_path, voice, speed, warm_up=warm_up,
+                    **kwargs)
         except Exception:
             pass  # Fallback to single-language path
 
@@ -3601,8 +3972,12 @@ class TTSEngine:
                     inst = self._backends.get(self._active_backend)
                     if inst:
                         break
-        return self._speak_with_active_engine(
-            text, output_path, voice, self._language, speed=speed, **kwargs)
+        language = self._language
+        spoken = self._speak_with_active_engine(
+            text, output_path, voice, language, speed=speed, **kwargs)
+        if spoken and not warm_up:
+            self._record_spoken_language(language)
+        return spoken
 
     def _speak_with_active_engine(self, text, output_path, voice, language,
                                   speed=None, **kwargs):
@@ -3617,8 +3992,13 @@ class TTSEngine:
         raises (counted unless transient; a non-transient raise also
         unloads it, its CUDA state may be corrupted), or returns no audio
         (counted).  Audio clears the engine's failure counter.  ``speed``
-        reaches the engine only when given.
+        reaches the engine only when given.  An engine whose start already
+        failed on this line is not started again for another of its
+        segments: the segment goes to the ladder at once.
         """
+        if self._active_backend in (getattr(self._line, 'failed', None) or {}):
+            return self._synthesize_with_fallback(
+                text, output_path, voice, language, **kwargs)
         inst = self._backends.get(self._active_backend)
         if not inst:
             # The selected engine never came up: it counts as a failure of
@@ -3628,7 +4008,7 @@ class TTSEngine:
                            "handing the line to the fallback ladder",
                            self._active_backend, list(self._backends.keys()),
                            getattr(self, '_pending_backend', None))
-            self._record_never_came_up(self._active_backend)
+            self._record_never_came_up(self._active_backend, language)
             return self._synthesize_with_fallback(
                 text, output_path, voice, language, **kwargs)
 
@@ -3661,10 +4041,14 @@ class TTSEngine:
                         f"({vram_manager.get_free_vram():.1f}GB free); it speaks "
                         f"this line, the engine registry says it runs on the CPU")
                 elif not vram_ok:
+                    free_now = vram_manager.get_free_vram()
                     logger.warning(
                         f"VRAM insufficient for {self._active_backend} "
                         f"({'inference' if already_on_cuda else 'load'} "
-                        f"({vram_manager.get_free_vram():.1f}GB free). CPU fallback (transient).")
+                        f"({free_now:.1f}GB free). CPU fallback (transient).")
+                    needed = 0.4 if already_on_cuda else _vram_needed_gb(tool_name)
+                    if needed is not None:
+                        _VRAM_SKIPS[self._active_backend] = (float(free_now), needed)
                     # Transient VRAM pressure — use Piper for THIS request only.
                     # Do NOT permanently switch _active_backend. F5 will be
                     # retried on next request when VRAM may be free again.
@@ -3744,7 +4128,11 @@ class TTSEngine:
         # multiplier (and caller overrides) would be silently dropped.
         # A segment passes none, and the engine is then not given one.
         engine_kwargs = dict(kwargs) if speed is None else dict(kwargs, speed=speed)
+        import time as _time
         with self._synth_lock:
+            # From the engine's start to its answer: a failed start's cost
+            # goes into the log (_record_backend_failure).
+            started = _time.monotonic()
             try:
                 raw = inst.synthesize(text=text, output_path=output_path,
                                       voice=voice,
@@ -3801,7 +4189,9 @@ class TTSEngine:
                 # 3-strike threshold.  See
                 # ``_STRUCTURAL_FAILURE_SIGNATURES``.
                 if not is_transient:
-                    self._record_backend_failure(self._active_backend, e)
+                    self._record_backend_failure(
+                        self._active_backend, e, language=language,
+                        elapsed_s=_time.monotonic() - started)
 
                 if is_transient:
                     # Subprocess already isolated the crash — don't tear
@@ -3823,6 +4213,13 @@ class TTSEngine:
                         pass
                 del failed_inst
                 _clear_cuda_cache()
+                # No instance is left for the selected voice.  The next line
+                # walks the one selection ladder again (_ensure_initialized ->
+                # initialize -> _select_backend) and builds it afresh, unless
+                # it was demoted; with _initialized left True it found no
+                # instance on every line ("never came up") and nothing rebuilt
+                # it (set_language returns early for the same language).
+                self._initialized = False
                 return self._synthesize_with_fallback(
                     text, output_path, voice, language, **kwargs)
 
@@ -3830,7 +4227,8 @@ class TTSEngine:
             # the line with the next engine for the language.
             self._record_backend_failure(
                 self._active_backend,
-                RuntimeError(f"{self._active_backend}: synthesize returned no audio"))
+                RuntimeError(f"{self._active_backend}: synthesize returned no audio"),
+                language=language, elapsed_s=_time.monotonic() - started)
             return self._synthesize_with_fallback(
                 text, output_path, voice, language, **kwargs)
 
@@ -3844,31 +4242,17 @@ class TTSEngine:
 
         _transient=True: VRAM pressure fallback — don't permanently switch
         _active_backend. The GPU engine will be retried on next request.
+
+        A probe of one voice (verify_synth_via_backend) gets no fallback:
+        its audio or none.
         """
         transient = kwargs.pop('_transient', False)
         failed = self._active_backend
+        if getattr(self._line, 'probe', None):
+            return None
         lang_norm = _normalize_lang(language)
         capable = _capable_backends_for(language)
-        if transient and (lang_norm == 'en' or BACKEND_PIPER in capable):
-            # VRAM pressure: skip all GPU-capable engines, go straight to Piper.
-            # Loading torch-based engines on CPU still touches CUDA internals
-            # and crashes when VRAM is exhausted.
-            candidates = [BACKEND_PIPER]
-        elif transient:
-            # This line only, the selected engine stays selected: Piper has
-            # no voice for this language, so the language's own engines in
-            # ladder order (the VRAM filter has already dropped GPU-only
-            # engines without room and put CPU-run ones last; each runs in
-            # its own worker process).  Review of 3ebaee4f: a Tamil line
-            # whose engine raised once (Indic Parler healthy), or whose
-            # GPU-only engine had no room, went to Piper alone: no audio.
-            candidates = [b for b in _get_lang_preference(language or 'en')
-                          if b != failed]
-        else:
-            prefs = _get_lang_preference(language or 'en')
-            candidates = [b for b in prefs if b != failed]
-            if BACKEND_PIPER not in candidates:
-                candidates.append(BACKEND_PIPER)
+        candidates = self._fallback_voices(language, failed, transient)
 
         # WRONG-LANGUAGE SAFETY GATE (data-scientist 2026-04-15):
         # Filter out backends that CANNOT speak `lang`.  Previously we
@@ -3878,40 +4262,15 @@ class TTSEngine:
         # Now: if no capable backend remains, return None and publish
         # a distinct WAMP topic so the chat pipeline can fall back to
         # text-only display instead of mumbling audio.
-        if lang_norm != 'en':
-            filtered = [c for c in candidates if c in capable]
-            if not filtered:
-                logger.error(
-                    f"TTS unavailable for lang={lang_norm}: no capable "
-                    f"backend fits on this hardware. Tried {candidates}, "
-                    f"capable set {sorted(capable)}. Falling back to "
-                    f"text-only (no audio)."
-                )
-                _publish_lang_unsupported(lang_norm, candidates)
-                return None
-            candidates = filtered
+        if lang_norm != 'en' and not candidates:
+            self._log_no_voice(lang_norm, candidates, capable)
+            return None
 
+        import time as _time
         for candidate in candidates:
-            # Skip already-demoted backends so the fallback chain doesn't
-            # waste cycles re-trying engines we've already proved broken
-            # this session.
-            if self._is_demoted(candidate):
-                logger.debug(f"Fallback skipping demoted backend {candidate}")
-                continue
+            started = _time.monotonic()
             try:
                 if candidate not in self._backends:
-                    # A venv-backed engine whose venv is missing or was built by
-                    # another interpreter is not started from a synth call: its
-                    # worker could not import the engine.  CUDA and free VRAM are
-                    # not asked here, so an engine that also runs on CPU still
-                    # speaks on a machine without them.
-                    if _is_venv_backend(candidate):
-                        from tts.backend_venv import is_venv_healthy
-                        from tts.package_installer import registry_engine_id
-                        if not is_venv_healthy(registry_engine_id(candidate)):
-                            logger.info(f"Fallback skipping {candidate}: its venv is "
-                                        f"missing or built by another interpreter")
-                            continue
                     self._backends[candidate] = self._create_backend(candidate)
                 inst = self._backends.get(candidate)
                 if not inst:
@@ -3947,7 +4306,9 @@ class TTSEngine:
                 # 3-strike accumulation that never converges because
                 # the in-memory counter resets each boot.
                 if not bool(getattr(fallback_err, 'transient', False)):
-                    self._record_backend_failure(candidate, fallback_err)
+                    self._record_backend_failure(
+                        candidate, fallback_err, language=language,
+                        elapsed_s=_time.monotonic() - started)
                 continue
 
         # Exhausted the filtered candidate list without producing audio.
@@ -3955,17 +4316,184 @@ class TTSEngine:
         # the chat pipeline can switch to text-only display (vs the
         # generic "All TTS engines failed" catch-all).
         if lang_norm != 'en':
-            logger.error(
-                f"TTS unavailable for lang={lang_norm}: no capable "
-                f"backend fits on this hardware. Tried {candidates}, "
-                f"capable set {sorted(capable)}. Falling back to "
-                f"text-only (no audio)."
-            )
-            _publish_lang_unsupported(lang_norm, candidates)
+            self._log_no_voice(lang_norm, candidates, capable)
             return None
 
         logger.error("All TTS engines failed — no audio produced")
         return None
+
+    def _fallback_voices(self, language, without, transient=False) -> list[str]:
+        """The voices a line in ``language`` goes to when ``without`` (the
+        selected voice) does not speak it, in ladder order: the fallback's
+        own list (_synthesize_with_fallback), as it always was.  A voice is
+        on it when it is in the language's ladder (the VRAM filter has
+        already left out the ones that neither fit nor run on the CPU), can
+        speak the language, is not demoted and has its venv when it needs
+        one; and its start did not fail earlier on this line (one start per
+        line).  A saved handshake verdict takes nobody off it: the verdict
+        can be older than the voice's last line, and Piper is the last
+        resort, never set aside (review rv_db95: with such a verdict mms_tts
+        was never tried and every Tamil line was silent).
+
+        "Is another voice ready" before a demotion (_record_backend_failure)
+        is this list cut to the voices that can speak now (_can_speak_now).
+        Nothing here loads, installs, probes a process or evicts a model.
+
+        ``transient``: a passing failure (no GPU memory for this line);
+        Piper alone when it speaks the language, as before.
+        """
+        lang_norm = _normalize_lang(language)
+        capable = _capable_backends_for(language)
+        if transient and (lang_norm == 'en' or BACKEND_PIPER in capable):
+            # VRAM pressure: skip all GPU-capable engines, go straight to Piper.
+            # Loading torch-based engines on CPU still touches CUDA internals
+            # and crashes when VRAM is exhausted.
+            candidates = [BACKEND_PIPER]
+        else:
+            # Transient: this line only, the selected engine stays selected:
+            # Piper has no voice for this language, so the language's own
+            # engines in ladder order (the VRAM filter has already dropped
+            # GPU-only engines without room and put CPU-run ones last; each
+            # runs in its own worker process).  Review of 3ebaee4f: a Tamil
+            # line whose engine raised once (Indic Parler healthy), or whose
+            # GPU-only engine had no room, went to Piper alone: no audio.
+            candidates = [b for b in _get_lang_preference(language or 'en')
+                          if b != without]
+            if not transient and BACKEND_PIPER not in candidates:
+                candidates.append(BACKEND_PIPER)
+        if lang_norm != 'en':
+            candidates = [c for c in candidates if c in capable]
+        failed_on_line = getattr(self._line, 'failed', None) or {}
+        voices = []
+        for c in candidates:
+            if self._is_demoted(c) or c in failed_on_line:
+                continue
+            if c not in self._backends and _is_venv_backend(c):
+                # A venv-backed engine whose venv is missing or was built by
+                # another interpreter is not started from a synth call: its
+                # worker could not import the engine.  CUDA and free VRAM are
+                # not asked here, so an engine that also runs on CPU still
+                # speaks on a machine without them.
+                try:
+                    from tts.backend_venv import is_venv_healthy
+                    from tts.package_installer import registry_engine_id
+                    healthy = is_venv_healthy(registry_engine_id(c))
+                except Exception:
+                    healthy = False
+                if not healthy:
+                    logger.info(f"Voice {c} left out: its venv is missing or "
+                                f"built by another interpreter")
+                    continue
+            voices.append(c)
+        return voices
+
+    def _can_speak_now(self, backend, language) -> bool:
+        """Whether ``backend`` can take a line in ``language`` now, as far as
+        is known without starting anything: it spoke in this run (a passed
+        handshake, or a line through this engine), or the runnable check's
+        saved answer (_can_run_backend's cache, which the auto-install probe
+        also fills) says its packages import; and no handshake of it failed
+        in this run.  A venv folder whose packages are missing, or a voice
+        never checked, is not ready.  Piper, the last resort that is never
+        set aside, needs only a voice for the language.
+
+        Asked only for "is another voice ready" before a demotion
+        (_record_backend_failure); the fallback still tries every voice on
+        its list (review rv_db95)."""
+        if backend == BACKEND_PIPER:
+            return _piper_has_voice(language)
+        if not _is_engine_backend(backend) or _handshake_known_failed(backend):
+            return False
+        with self._state_lock:
+            spoke = backend in self._stamped_this_run
+        if spoke or _spoke_this_session(backend):
+            return True
+        required_pkg = self._get_required_package(backend)
+        if not required_pkg:
+            return False
+        cache_key = f'venv:{backend}' if _is_venv_backend(backend) else required_pkg
+        return TTSEngine._import_check_cache.get(cache_key) is True
+
+    def _set_aside_for(self, language) -> list[dict[str, Any]]:
+        """Why each voice that can speak ``language`` is not speaking it, as
+        far as the ladder knows: its start failed on this line (how long it
+        took), it is demoted (since when, after how many failures), or it was
+        left out for GPU memory (GB free and needed).  Voices with none of
+        these are not listed."""
+        failed_on_line = dict(getattr(self._line, 'failed', None) or {})
+        said = []
+        for backend in sorted(_capable_backends_for(language)):
+            with self._state_lock:
+                demoted = backend in self._demoted_backends
+                since = (self._demotion_meta.get(backend) or {}).get(
+                    'first_demoted_at')
+                in_a_row = self._consecutive_failures.get(backend, 0)
+            if backend in failed_on_line:
+                entry = {'backend': backend, 'why': 'failed_on_this_line',
+                         'failures_in_a_row': in_a_row, 'demoted': demoted}
+                if failed_on_line[backend] is not None:
+                    entry['after_s'] = round(failed_on_line[backend], 2)
+            elif demoted:
+                entry = {'backend': backend, 'why': 'demoted',
+                         'failures': in_a_row}
+                if isinstance(since, (int, float)):
+                    entry['since'] = since
+            elif backend in _VRAM_SKIPS:
+                free_gb, needed_gb = _VRAM_SKIPS[backend]
+                entry = {'backend': backend, 'why': 'vram',
+                         'free_gb': round(free_gb, 1),
+                         'needed_gb': round(needed_gb, 1)}
+            else:
+                continue
+            said.append(entry)
+        return said
+
+    @staticmethod
+    def _say_set_aside(set_aside) -> str:
+        """_set_aside_for in words, for a log line."""
+        import time as _time
+        words = []
+        for e in set_aside:
+            backend = e['backend']
+            if e['why'] == 'failed_on_this_line':
+                took = f" after {e['after_s']:.2f} s" if 'after_s' in e else ''
+                words.append(
+                    f"{backend} failed on this line{took} "
+                    f"({e['failures_in_a_row']} in a row"
+                    f"{', demoted' if e['demoted'] else ''})")
+            elif e['why'] == 'demoted':
+                when = (_time.strftime('%Y-%m-%d %H:%M:%S',
+                                       _time.localtime(e['since']))
+                        if 'since' in e else 'an earlier run')
+                n = e['failures']
+                words.append(f"{backend} demoted since {when} after {n} "
+                             f"failure{'s' if n != 1 else ''}")
+            else:
+                words.append(f"{backend} skipped for VRAM ({e['free_gb']:.1f} GB "
+                             f"free, {e['needed_gb']:.1f} GB needed)")
+        return '; '.join(words)
+
+    def _log_no_voice(self, lang_norm, tried, capable) -> None:
+        """The one "TTS unavailable" line, for both places the ladder runs
+        out for a language other than English, and the page's event.  It
+        names the voices set aside and why (_set_aside_for).  "No capable
+        backend fits on this hardware" is said only when nothing but GPU
+        memory, or nothing known, kept the voices out: a demoted voice or a
+        failed start is the cause, not the hardware."""
+        set_aside = self._set_aside_for(lang_norm)
+        said = self._say_set_aside(set_aside)
+        if any(e['why'] != 'vram' for e in set_aside):
+            cause = said
+        elif said:
+            cause = f"no capable backend fits on this hardware ({said})"
+        else:
+            cause = "no capable backend fits on this hardware"
+        logger.error(
+            f"TTS unavailable for lang={lang_norm}: {cause}. Tried {tried}, "
+            f"capable set {sorted(capable)}. Falling back to text-only "
+            f"(no audio)."
+        )
+        _publish_lang_unsupported(lang_norm, tried, set_aside)
 
     def synthesize_to_bytes(self, text: str, voice: str | None = None,
                             speed: float = 1.0, language: str | None = None) -> bytes | None:

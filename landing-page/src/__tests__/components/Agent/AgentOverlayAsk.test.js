@@ -417,20 +417,81 @@ describe('an ask dismissed here', () => {
     }
   });
 
-  // Owner, 2026-11-04: "Later" on an ask card dismisses everywhere, as the X does.
-  test("Later on an ask's approval card dismisses it everywhere, as her, and the card goes", async () => {
-    const send = mountOverlay();
-    send({type: 'approval', msg_id: ASK, ask_id: ASK, agent_id: '342',
-          action: 'post_the_reel', title: 'Post today\'s reel?'});
+  // Owner 2026-11-04 had "Later" dismiss an ask everywhere, as the X does
+  // (8d6bc928).  Review 2026-11-23 (a finished agent's card came back over
+  // the screen minutes later): Later puts the card off on THIS surface for
+  // the phone's Later period (Android PersonAskSurface.LATER_MS, 5 min) and
+  // tells HARTOS nothing; only the X dismisses everywhere.
+  const LATER_ASK = {type: 'approval', msg_id: ASK, ask_id: ASK, agent_id: '342',
+                     action: 'post_the_reel', title: 'Post today\'s reel?'};
 
-    fireEvent.click(screen.getByText('Later'));
+  test("Later on an ask's card puts it off here only: nothing is sent, and it is back after 5 minutes", async () => {
+    jest.useFakeTimers();
+    try {
+      const send = mountOverlay();
+      send(LATER_ASK);
 
-    expect(screen.queryByText('Approve')).toBeNull();
-    await waitFor(() => expect(calls('/api/agent/approval')).toHaveLength(1));
-    const [, init] = calls('/api/agent/approval')[0];
-    expect(init.method).toBe('POST');
-    expect(init.headers.Authorization).toBe('Bearer tok-owner');
-    expect(JSON.parse(init.body)).toEqual({ask_id: ASK, dismiss: true});
+      fireEvent.click(screen.getByText('Later'));
+
+      expect(screen.queryByText('Approve')).toBeNull();
+      act(() => { jest.advanceTimersByTime(5 * 60 * 1000 - 1000); });
+      expect(screen.queryByText('Approve')).toBeNull();
+      act(() => { jest.advanceTimersByTime(1000); });
+      expect(screen.getByText('Approve')).toBeTruthy();
+      expect(screen.getByText("Post today's reel?")).toBeTruthy();
+      await act(() => Promise.resolve());
+      expect(calls('/api/agent/approval')).toHaveLength(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('an ask put off here and answered or dismissed anywhere meanwhile does not come back', () => {
+    jest.useFakeTimers();
+    try {
+      const send = mountOverlay();
+      send(LATER_ASK);
+      fireEvent.click(screen.getByText('Later'));
+      act(() => { handlers['ask.answered']({type: 'ask.answered', ask_id: ASK}); });
+      act(() => { jest.advanceTimersByTime(10 * 60 * 1000); });
+      expect(screen.queryByText('Approve')).toBeNull();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('the same ask sent again while it is put off stays off until the period ends, then shows once', () => {
+    jest.useFakeTimers();
+    try {
+      const send = mountOverlay();
+      send(LATER_ASK);
+      fireEvent.click(screen.getByText('Later'));
+      act(() => { jest.advanceTimersByTime(60 * 1000); });
+      send({...LATER_ASK, title: 'Post today\'s reel now?'});
+      expect(screen.queryByText('Approve')).toBeNull();
+      act(() => { jest.advanceTimersByTime(4 * 60 * 1000); });
+      expect(screen.getAllByText('Approve')).toHaveLength(1);
+      expect(screen.getByText("Post today's reel now?")).toBeTruthy();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('the X on a card that came back after Later still dismisses it everywhere', async () => {
+    jest.useFakeTimers();
+    try {
+      const send = mountOverlay();
+      send(LATER_ASK);
+      fireEvent.click(screen.getByText('Later'));
+      act(() => { jest.advanceTimersByTime(5 * 60 * 1000); });
+      fireEvent.click(screen.getByLabelText('Dismiss'));
+      expect(screen.queryByText('Approve')).toBeNull();
+      await act(() => Promise.resolve());
+      expect(calls('/api/agent/approval')).toHaveLength(1);
+      expect(JSON.parse(calls('/api/agent/approval')[0][1].body)).toEqual({ask_id: ASK, dismiss: true});
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test('Later on an approval that is not an ask closes it here and tells HARTOS nothing', async () => {

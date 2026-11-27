@@ -80,13 +80,13 @@ def test_j211_persist_and_reload_roundtrip(isolated_state_file):
 
     with m1._lock:
         m1._models["indic_parler"] = ModelState(
-            name="indic_parler",
+            name="indic_parler", model_type="tts",
             last_access_time=now - 30.0,  # 30s ago
             access_count=11,
             pinned=False,
         )
         m1._models["whisper"] = ModelState(
-            name="whisper",
+            name="whisper", model_type="stt",
             last_access_time=now - 120.0,
             access_count=5,
             pinned=True,
@@ -178,7 +178,8 @@ def test_j211_hint_applied_on_tool_started(isolated_state_file):
     m = _ml.get_model_lifecycle_manager()
 
     # Fire the RTM hook the way runtime_manager would.
-    m._on_tool_started("indic_parler", device="gpu", inprocess=False)
+    m._on_tool_started("indic_parler", device="gpu", inprocess=False,
+                       model_type="tts")
     with m._lock:
         state = m._models["indic_parler"]
 
@@ -205,7 +206,7 @@ def test_j211_atomic_write_no_partial_file(isolated_state_file):
 
     with m._lock:
         m._models["tts_audio_suite"] = ModelState(
-            name="tts_audio_suite",
+            name="tts_audio_suite", model_type="tts",
             last_access_time=now,
             access_count=1,
         )
