@@ -19,6 +19,11 @@ const CreateAgentForm = ({onClose, onSubmit, userId}) => {
   const [isPublic, setIsPublic] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [requestId, setRequestId] = useState('');
+  // Defaults (owner, 2026-11-26): a voice-only agent with a stock voice. A face (a video
+  // agent) and a cloned voice are choices; an unchosen one uploads nothing.  The same rule
+  // as hevolve.ai's create form (Hevolve c6518da).
+  const [withFace, setWithFace] = useState(false);
+  const [cloneVoice, setCloneVoice] = useState(false);
   const imageInputRef = useRef(null);
   const audioInputRef = useRef(null);
 
@@ -26,7 +31,9 @@ const CreateAgentForm = ({onClose, onSubmit, userId}) => {
     setRequestId(uuidv4());
   }, []);
 
-  const handleImageChange = async (e) => {
+  // Picking a file only keeps it: it is uploaded on Create, and only for a chosen face or
+  // cloned voice (so the image goes up with the agent's final name).
+  const handleImageChange = (e) => {
     const file = e.target.files[0];
     if (file) {
       setImageFile(file);
@@ -35,64 +42,55 @@ const CreateAgentForm = ({onClose, onSubmit, userId}) => {
         setImagePreview(reader.result);
       };
       reader.readAsDataURL(file);
-
-      // Upload image to API
-      const formData = new FormData();
-      formData.append('image', file);
-      formData.append('user_id', userId);
-      formData.append('vtoonify', 'true');
-      formData.append('request_id', requestId);
-      formData.append('name', agentName);
-
-      try {
-        const response = await fetch(UPLOAD_IMAGE_URL, {
-          method: 'POST',
-          body: formData,
-        });
-
-        if (!response.ok) {
-          throw new Error('Failed to upload image');
-        }
-
-        const result = await response.json();
-        logger.log('Image uploaded successfully:', result);
-      } catch (error) {
-        console.error('Error uploading image:', error);
-      }
     }
   };
 
-  const handleAudioChange = async (e) => {
+  const handleAudioChange = (e) => {
     const file = e.target.files[0];
     if (file) {
       setAudioFile(file);
-
-      const formData = new FormData();
-      formData.append('audio', file);
-      formData.append('user_id', userId);
-      formData.append('request_id', requestId);
-
-      try {
-        const response = await fetch(UPLOAD_AUDIO_URL, {
-          method: 'POST',
-          body: formData,
-        });
-
-        if (!response.ok) {
-          throw new Error('Failed to upload audio');
-        }
-
-        const result = await response.json();
-        logger.log('Audio uploaded successfully:', result);
-      } catch (error) {
-        console.error('Error uploading audio:', error);
-      }
     }
   };
-  logger.log(imageFile, 'hi');
+
+  const uploadImage = async (file) => {
+    const formData = new FormData();
+    formData.append('image', file);
+    formData.append('user_id', userId);
+    formData.append('vtoonify', 'true');
+    formData.append('request_id', requestId);
+    formData.append('name', agentName);
+    const response = await fetch(UPLOAD_IMAGE_URL, {method: 'POST', body: formData});
+    if (!response.ok) {
+      throw new Error('Failed to upload image');
+    }
+    logger.log('Image uploaded successfully:', await response.json());
+  };
+
+  const uploadAudio = async (file) => {
+    const formData = new FormData();
+    formData.append('audio', file);
+    formData.append('user_id', userId);
+    formData.append('request_id', requestId);
+    const response = await fetch(UPLOAD_AUDIO_URL, {method: 'POST', body: formData});
+    if (!response.ok) {
+      throw new Error('Failed to upload audio');
+    }
+    logger.log('Audio uploaded successfully:', await response.json());
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setIsSubmitting(true);
+
+    // An upload that fails leaves the agent voice-only / in a stock voice: it is still made.
+    const face = withFace && imageFile;
+    const voice = cloneVoice && audioFile;
+    if (face) {
+      try { await uploadImage(imageFile); } catch (error) { console.error('Error uploading image:', error); }
+    }
+    if (voice) {
+      try { await uploadAudio(audioFile); } catch (error) { console.error('Error uploading audio:', error); }
+    }
 
     try {
       const createPromptData = {
@@ -102,6 +100,11 @@ const CreateAgentForm = ({onClose, onSubmit, userId}) => {
         user_id: userId,
         isPublic: isPublic,
         image_url: '',
+        // The agent's media and voice as the creator chose them (owner 2026-11-27: "Face agents
+        // open in video").  NOT STORED YET: the per-agent media field is task 17's; today an
+        // agent's face comes only from its teacher_avatar_id.
+        media: face ? 'video' : 'voice',
+        voice_clone: Boolean(voice),
       };
 
       const response = await fetch(CREATE_PROMPT_URL, {
@@ -158,8 +161,37 @@ const CreateAgentForm = ({onClose, onSubmit, userId}) => {
           />
         </div>
 
+        {/* Voice-only and a stock voice are the defaults; each choice opens its upload. */}
+        <div className="mb-2 flex flex-col space-y-1">
+          <label className="flex items-center text-white">
+            <input
+              type="checkbox"
+              checked={withFace}
+              onChange={(e) => {
+                setWithFace(e.target.checked);
+                if (!e.target.checked) { setImageFile(null); setImagePreview(''); }
+              }}
+              className="w-4 h-4 mr-2 rounded bg-gray-700 border-gray-600"
+            />
+            Give the agent a face (video agent); unticked, it is voice only
+          </label>
+          <label className="flex items-center text-white">
+            <input
+              type="checkbox"
+              checked={cloneVoice}
+              onChange={(e) => {
+                setCloneVoice(e.target.checked);
+                if (!e.target.checked) { setAudioFile(null); }
+              }}
+              className="w-4 h-4 mr-2 rounded bg-gray-700 border-gray-600"
+            />
+            Speak in a recorded voice (voice cloning); unticked, a stock voice
+          </label>
+        </div>
+
         {/* Image and Audio Upload in Same Row */}
         <div className="flex flex-row space-x-2 mb-2">
+          {withFace && (
           <div className="flex-1">
             <label className="block text-white mb-2">Agent Image</label>
             <div
@@ -202,8 +234,10 @@ const CreateAgentForm = ({onClose, onSubmit, userId}) => {
               />
             </div>
           </div>
+          )}
 
           {/* Audio Upload */}
+          {cloneVoice && (
           <div className="flex-1">
             <label className="block text-white mb-2">Agent Voice (Audio)</label>
             <div
@@ -243,6 +277,7 @@ const CreateAgentForm = ({onClose, onSubmit, userId}) => {
               />
             </div>
           </div>
+          )}
         </div>
 
         {/* Prompt Input */}
