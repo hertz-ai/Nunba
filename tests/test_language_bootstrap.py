@@ -188,6 +188,26 @@ class TestPlanCreation:
             if mt in plan:
                 assert plan[mt].status == 'skipped'
 
+    def test_the_talking_face_never_loads_at_boot(self):
+        """Build #6, 2026-11-27 02:33: with 6 GB+ VRAM free at boot the plan loaded VIDEO_GEN's best row,
+        the talking face (~4.8 GB commit, 1 GB VRAM), beside everything else on every start.  It loads on
+        the first video turn (avatarforcing_tool); the boot skips the type without even selecting a row,
+        and AUDIO_GEN keeps its rule."""
+        from models.language_bootstrap import ModelType, _create_plan
+        mock_entry = MagicMock()
+        mock_entry.id, mock_entry.name, mock_entry.vram_gb, mock_entry.loaded = 'x-model', 'X', 1.0, False
+        mock_orch = MagicMock()
+        mock_orch.select_best.return_value = mock_entry
+        mock_mod = MagicMock()
+        mock_mod.get_orchestrator.return_value = mock_orch
+        with patch.dict('sys.modules', {'models.orchestrator': mock_mod}):
+            plan = _create_plan('en', {'free_gb': 7.5, 'total_gb': 8.0})
+        assert plan[ModelType.VIDEO_GEN].status == 'skipped'
+        assert plan[ModelType.VIDEO_GEN].detail == 'Loads on first use'
+        asked = [c.args[0] for c in mock_orch.select_best.call_args_list]
+        assert ModelType.VIDEO_GEN not in asked
+        assert plan[ModelType.AUDIO_GEN].status == 'selecting'
+
     def test_returns_empty_when_orchestrator_unavailable(self):
         """If HARTOS isn't pip-installed, plan creation returns empty — no crash."""
         from models.language_bootstrap import _create_plan

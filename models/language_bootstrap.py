@@ -28,6 +28,12 @@ BOOTSTRAP_ORDER = [ModelType.STT, ModelType.TTS, ModelType.LLM, ModelType.AUDIO_
 
 ESSENTIAL_TYPES = {ModelType.LLM, ModelType.TTS, ModelType.STT}
 OPTIONAL_TYPES = {ModelType.AUDIO_GEN, ModelType.VIDEO_GEN}
+#: Types the boot never loads: each loads on its first use.  VIDEO_GEN's best row on a 6 GB+ card is
+#: the talking face (avatarforcing_tool sets it up on the first video turn); loading it at boot cost
+#: ~4.8 GB commit + 1 GB VRAM on every start, beside the LLM, STT, TTS and the learner, and pushed free
+#: commit to 0.4 GB on build #6 (2026-11-27 02:33).  The other VIDEO_GEN rows (ltx2, wan2gp) are reel
+#: models their own tools set up on demand.
+ON_FIRST_USE_TYPES = {ModelType.VIDEO_GEN}
 
 
 @dataclass
@@ -192,6 +198,13 @@ def _create_plan(language: str, gpu_info: dict) -> dict:
     plan = {}
     for model_type in BOOTSTRAP_ORDER:
         step = BootstrapStep(model_type=model_type)
+
+        # Loaded on first use, never at boot
+        if model_type in ON_FIRST_USE_TYPES:
+            step.status = 'skipped'
+            step.detail = 'Loads on first use'
+            plan[model_type] = step
+            continue
 
         # Skip optional types with low VRAM
         if model_type in OPTIONAL_TYPES and gpu_info.get('free_gb', 0) < 6.0:
