@@ -872,12 +872,18 @@ export function subscribeChatNew(callback) {
  * channel_type, e.g. 'livekit:<call>', and is not a chat bubble), and not
  * sent from `localDeviceId` -- this device's own turns are already on
  * screen from its /chat reply.
+ *
+ * Not an agent's question: HARTOS saves each one as the asking agent's chat
+ * message (design_1125 A, an 'agent_ask' attachment), and the page draws a
+ * question from its card (AgentOverlay), never also as a plain bubble.
  */
 export function isRemoteChatTurn(row, localDeviceId) {
   if (!row || typeof row !== 'object' || !row.msg_id) return false;
   if (row.role !== 'user' && row.role !== 'assistant') return false;
   if (typeof row.content !== 'string' || !row.content) return false;
   if (row.channel_type && row.channel_type !== 'chat') return false;
+  if (Array.isArray(row.attachments)
+      && row.attachments.some((a) => a && a.kind === 'agent_ask')) return false;
   // No local id yet: cannot tell our own turns apart, so show nothing
   // rather than echo them.
   return Boolean(localDeviceId) && row.device_id !== localDeviceId;

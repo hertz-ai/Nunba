@@ -57,6 +57,21 @@ describe('consentApi.grant', () => {
       metadata: {origin: 'settings_page'},
     });
   });
+
+  // HARTOS consent_api grant_consent ``values``: a channel's one card for
+  // several values is answered with all of them and the ask's request_id.
+  it("forwards a channel card's values with its request_id", async () => {
+    await consentApi.grant({
+      consent_type: 'credential',
+      request_id: 'row-31',
+      values: {server_url: 'https://mm.example', access_token: 'pat-fake'},
+    });
+    expect(mockAxiosInstance.post.mock.calls[0][1]).toEqual(expect.objectContaining({
+      consent_type: 'credential',
+      request_id: 'row-31',
+      values: {server_url: 'https://mm.example', access_token: 'pat-fake'},
+    }));
+  });
 });
 
 // ── revoke — POST /api/social/consent/revoke ─────────────────────────────

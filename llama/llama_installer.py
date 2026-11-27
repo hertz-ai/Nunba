@@ -19,6 +19,8 @@ import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 
+from llama.home_pair import stand_in
+
 logger = logging.getLogger('NunbaLlamaInstaller')
 
 # Minimum llama.cpp build for the Qwen3.5 presets.
@@ -419,11 +421,8 @@ def home_dir() -> Path:
     tests/test_a_test_run_starts_no_model_server.py pins this.
     """
     home = Path.home()
-    person, _, private = os.environ.get('NUNBA_TEST_HOME', '').partition(os.pathsep)
-    if person and private and (os.path.normcase(os.path.abspath(person))
-                               == os.path.normcase(os.path.abspath(str(home)))):
-        return Path(private)
-    return home
+    private = stand_in(os.environ.get('NUNBA_TEST_HOME', ''), home)
+    return Path(private) if private else home
 
 
 # Sibling project model directories to search before re-downloading.
@@ -463,12 +462,33 @@ class LlamaInstaller:
         self.install_dir = Path(install_dir) if install_dir else home / ".nunba" / "llama.cpp"
         self.default_models_dir = home / ".nunba" / "models"
         self.models_dir = self.resolve_models_dir(models_dir, config_dir=config_dir)
-        self.models_dir.mkdir(parents=True, exist_ok=True)
-        self.install_dir.parent.mkdir(parents=True, exist_ok=True)
+        # Nothing is created here: an installer is also built just to ask
+        # whether a model is on disk (the catalog's downloaded flag, one per
+        # row), and a read must not change the disk.  The code that writes
+        # makes its folder: download_file_with_progress and the llama.cpp
+        # install steps.
 
         self.os_name = platform.system().lower()
-        self.gpu_available = self._detect_gpu()
+        self._gpu = None  # detected on first read of gpu_available
         self.binary_supports_gpu = False  # Will be set during installation
+
+    @property
+    def gpu_available(self) -> str:
+        """'cuda', 'metal', 'zinc' or 'none', detected on first read.
+
+        Detection used to run in the constructor, so a catalog scan that only
+        asks "is this model on disk" spent ~1.3 s per row on it (rv_dlf,
+        11-24: 26 rows).
+        """
+        if self._gpu is None:
+            self._gpu = self._detect_gpu()
+        return self._gpu
+
+    @gpu_available.setter
+    def gpu_available(self, value: str) -> None:
+        """Set what the GPU is, for a caller that already knows (the picker
+        tests pin it per platform); no probe runs."""
+        self._gpu = value
 
     @staticmethod
     def resolve_models_dir(models_dir=None, *, config_dir=None):
@@ -603,8 +623,9 @@ class LlamaInstaller:
         return "none"
 
     def _detect_gpu(self) -> str:
-        """Instance shim → detect_backend(self.os_name) (back-compat for the
-        __init__ caller; the real logic lives in the static detect_backend)."""
+        """Instance shim → detect_backend(self.os_name), called on the first
+        read of gpu_available; the real logic lives in the static
+        detect_backend."""
         return self.detect_backend(self.os_name)
 
     def find_llama_server(self, check_system_first: bool = True,
@@ -996,6 +1017,8 @@ class LlamaInstaller:
             downloaded = 0
             block_size = 1024 * 1024  # 1MB blocks
 
+            # The writer makes its folder; the constructor no longer does.
+            Path(dest_path).parent.mkdir(parents=True, exist_ok=True)
             with open(dest_path, 'wb') as f:
                 while True:
                     buffer = response.read(block_size)

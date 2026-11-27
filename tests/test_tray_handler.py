@@ -188,3 +188,201 @@ class TestConvenienceFunctions:
         from desktop.tray_handler import notify_minimized_to_tray
         notify_minimized_to_tray(None, "Test")  # Must not raise
         th._tray_icon = old_icon
+
+
+class _Proc:
+    """One process in a fake psutil table: its program and its children.
+    Every terminate and kill lands in the shared log, in order."""
+
+    def __init__(self, name, kids=(), log=None):
+        self._name = name
+        self._kids = list(kids)
+        self.log = log if log is not None else []
+
+    def name(self):
+        return self._name
+
+    def children(self, recursive=False):
+        if not recursive:
+            return list(self._kids)
+        out = []
+        for kid in self._kids:
+            out.append(kid)
+            out.extend(kid.children(recursive=True))
+        return out
+
+    def terminate(self):
+        self.log.append(('terminate', self._name))
+
+    def kill(self):
+        self.log.append(('kill', self._name))
+
+
+def _psutil_with(nunba):
+    """A psutil whose current process is ``nunba``; every child ends at once."""
+    import types
+    ps = types.ModuleType('psutil')
+    ps.Error = Exception
+    ps.Process = lambda *a: nunba
+    ps.wait_procs = lambda procs, timeout=None: (list(procs), [])
+    return ps
+
+
+def _supervisor_modules(log, hang=None):
+    """The three supervisor modules, each with its stop_supervisor hook
+    logged; ``hang`` (an Event) makes the livekit hook block until set."""
+    import types
+    mods = {}
+    for name in ('integrations.agent_engine.hevolveai_supervisor',
+                 'integrations.social.livekit_supervisor',
+                 'integrations.social.whatsapp_supervisor'):
+        mod = types.ModuleType(name)
+
+        def stop(name=name):
+            log.append(('stop_supervisor', name))
+            if hang is not None and 'livekit' in name:
+                hang.wait(10)
+        mod.stop_supervisor = stop
+        mods[name] = mod
+    return mods
+
+
+class TestQuitEndsWindowsAndChildren:
+    """Quit releases the camera (2026-11-25): os._exit alone left Nunba's
+    children running on Windows, and the WebView2 tree that opened the
+    camera kept the device after Quit.  quit_app closes the windows, stops
+    the supervisors, ends Nunba's own child processes, then exits; each step
+    is bounded and the exit happens even when a step raises or hangs."""
+
+    def _run_quit(self, psutil_mod, windows, wait_s=0.2):
+        import desktop.tray_handler as th
+        order = []
+        webview_mod = MagicMock()
+        webview_mod.windows = windows
+        with patch.dict(sys.modules, {'psutil': psutil_mod, 'webview': webview_mod}), \
+                patch.object(th, 'QUIT_WAIT_S', wait_s), \
+                patch.object(th.os, '_exit', side_effect=lambda code: order.append(('exit', code))) as ex:
+            th.QUITTING = False
+            try:
+                th.quit_app()
+            finally:
+                quitting = th.QUITTING
+                th.QUITTING = False
+        return order, ex, quitting
+
+    def test_quit_closes_windows_and_ends_children_before_exit(self):
+        order = []
+        win = MagicMock()
+        win.destroy.side_effect = lambda: order.append('destroy')
+        kid_done, kid_stuck = MagicMock(), MagicMock()
+        kid_done.name.return_value = 'llama-server.exe'
+        kid_stuck.name.return_value = 'python.exe'
+        for kid in (kid_done, kid_stuck):
+            kid.children.return_value = []
+        kid_done.terminate.side_effect = lambda: order.append('terminate')
+        kid_stuck.terminate.side_effect = lambda: order.append('terminate')
+        kid_stuck.kill.side_effect = lambda: order.append('kill')
+        ps = MagicMock()
+        ps.Error = Exception
+        ps.Process.return_value.children.return_value = [kid_done, kid_stuck]
+        ps.wait_procs.return_value = ([kid_done], [kid_stuck])
+        exits, ex, quitting = self._run_quit(ps, [win])
+        ex.assert_called_once_with(0)
+        assert quitting is True
+        assert ps.wait_procs.call_args.kwargs.get('timeout') == 0.2
+        assert order == ['destroy', 'terminate', 'terminate', 'kill']
+        kid_done.kill.assert_not_called()
+
+    def test_quit_leaves_an_app_opened_for_the_person_running(self):
+        """hartos-17 on ee8e3282: computer use opens a file with os.startfile,
+        which on Windows makes the app Nunba's child, and Quit ended every
+        descendant, so a document the person was editing died unsaved.  Quit
+        ends Nunba's own programs and what runs under them, nothing else."""
+        log = []
+        webview = _Proc('msedgewebview2.exe',
+                        [_Proc('msedgewebview2.exe', log=log)], log=log)
+        worker = _Proc('python.exe', [_Proc('ffmpeg.exe', log=log)], log=log)
+        llama = _Proc('llama-server.exe', log=log)
+        word = _Proc('WINWORD.EXE', [_Proc('splwow64.exe', log=log)], log=log)
+        nunba = _Proc('Nunba.exe', [webview, worker, llama, word], log=log)
+
+        _, ex, _ = self._run_quit(_psutil_with(nunba), [])
+
+        ended = [name for act, name in log if act in ('terminate', 'kill')]
+        assert 'WINWORD.EXE' not in ended
+        assert 'splwow64.exe' not in ended
+        assert sorted(set(ended)) == ['ffmpeg.exe', 'llama-server.exe',
+                                      'msedgewebview2.exe', 'python.exe']
+        assert ended.count('msedgewebview2.exe') == 2   # the window's whole tree
+        ex.assert_called_once_with(0)
+
+    def test_quit_stops_the_supervisors_before_ending_any_child(self):
+        """hartos-17 on ee8e3282: a supervisor respawns its child 1 s after it
+        exits (core/process_supervisor.py), so a child ended while its
+        supervisor still runs comes back during the wait and, on Linux,
+        outlives os._exit.  Each supervisor's own shutdown hook runs first."""
+        log = []
+        nunba = _Proc('Nunba.exe', [_Proc('python.exe', log=log),
+                                    _Proc('llama-server.exe', log=log)], log=log)
+        with patch.dict(sys.modules, _supervisor_modules(log)):
+            _, ex, _ = self._run_quit(_psutil_with(nunba), [])
+
+        acts = [act for act, _ in log]
+        stopped = sorted(name for act, name in log if act == 'stop_supervisor')
+        assert stopped == ['integrations.agent_engine.hevolveai_supervisor',
+                           'integrations.social.livekit_supervisor',
+                           'integrations.social.whatsapp_supervisor']
+        assert 'terminate' in acts
+        last_stop = max(i for i, a in enumerate(acts) if a == 'stop_supervisor')
+        assert last_stop < acts.index('terminate')
+        ex.assert_called_once_with(0)
+
+    def test_a_supervisor_that_hangs_neither_holds_quit_nor_the_others(self):
+        import threading
+        import time
+        log = []
+        release = threading.Event()
+        nunba = _Proc('Nunba.exe', [_Proc('python.exe', log=log)], log=log)
+        t0 = time.monotonic()
+        try:
+            with patch.dict(sys.modules, _supervisor_modules(log, hang=release)):
+                _, ex, _ = self._run_quit(_psutil_with(nunba), [], wait_s=0.2)
+        finally:
+            release.set()
+        assert time.monotonic() - t0 < 3
+        assert len([a for a, _ in log if a == 'stop_supervisor']) == 3
+        assert ('terminate', 'python.exe') in log
+        ex.assert_called_once_with(0)
+
+    def test_quit_still_exits_when_ending_children_raises(self):
+        ps = MagicMock()
+        ps.Error = Exception
+        ps.Process.side_effect = RuntimeError('no process table')
+        _, ex, _ = self._run_quit(ps, [])
+        ex.assert_called_once_with(0)
+
+    def test_quit_still_exits_when_closing_a_window_hangs(self):
+        import threading
+        import time
+        release = threading.Event()
+        win = MagicMock()
+        win.destroy.side_effect = lambda: release.wait(10)
+        ps = MagicMock()
+        ps.Error = Exception
+        ps.Process.return_value.children.return_value = []
+        ps.wait_procs.return_value = ([], [])
+        t0 = time.monotonic()
+        try:
+            _, ex, _ = self._run_quit(ps, [win], wait_s=0.2)
+        finally:
+            release.set()
+        assert time.monotonic() - t0 < 3
+        ex.assert_called_once_with(0)
+
+    def test_tray_menu_quit_runs_quit_app(self):
+        import desktop.tray_handler as th
+        handler = th.TrayHandler(MagicMock())
+        with patch.object(th, 'quit_app') as q, patch.object(th.os, '_exit') as ex:
+            handler._on_quit()
+        q.assert_called_once_with()
+        ex.assert_not_called()

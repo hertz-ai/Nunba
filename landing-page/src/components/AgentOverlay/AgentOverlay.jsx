@@ -9,6 +9,8 @@ import { formatMoney } from '../../constants/liquidFragments';
 import realtimeService from '../../services/realtimeService';
 import { agentFormApi, chatApi, consentApi, notificationsApi } from '../../services/socialApi';
 import { HART_GLASS_SURFACE } from '../../theme/hartGlass';
+import { withPersona } from '../../utils/agentPersona';
+import { rememberOwnTurn } from '../../utils/chatRetry';
 
 
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
@@ -40,6 +42,9 @@ const AUTO_DISMISS_MS = 15000;
 // file_request: an agent waits on her files (HARTOS person_ask), so the card
 // stays until it is answered here or anywhere else (ask.answered).
 const PERSIST_TYPES = new Set(['checkout', 'approval', 'form', 'meet_copilot', 'consent.request', 'qr_pair', 'file_request']);
+// "Later" on an agent's ask puts its card off on this surface for this long,
+// the period the phone's Later uses (Android PersonAskSurface.LATER_MS).
+export const ASK_LATER_MS = 5 * 60 * 1000;
 
 // The card's frosted surface is the ONE HART glass (src/theme/hartGlass,
 // mirroring HARTOS theme_service.py's emitted shell values), so an overlay
@@ -428,16 +433,216 @@ function postApproval(body) {
   });
 }
 
-async function answerAsk(askId, answer) {
-  const res = await postApproval({ ask_id: askId, answer });
-  if (!res.ok) throw await refusedReply(res, 'The answer was refused');
+// Asks this window answered or dismissed (from its card or from the chat):
+// their ask.answered drop is this window's own, so an in-chat ask's bubble
+// says "Answered here." (or "Dismissed here." for a dismissal,
+// dismissedHere), and every mounted overlay lets the ask go the moment
+// HARTOS takes the answer.  Marked before the POST (the drop can arrive
+// first) and unmarked if an answer is refused.
+const answeredHere = new Set();
+// Of those, the ones dismissed (the X), not answered: their bubble says so.
+const dismissedHere = new Set();
+const settledListeners = new Set();
+
+function settledHere(askId) {
+  settledListeners.forEach((fn) => {
+    try { fn(askId); } catch (e) { console.warn('ask settle listener failed', e); }
+  });
 }
 
-// The person closed the ask's card here (its X, or "Later" on an approval
-// ask: owner, 2026-11-04): every surface drops it.  The card goes from this
-// screen whatever HARTOS answers (an ask already answered or gone elsewhere
-// is closed there too), so a refusal is only logged.
+/** Whether ask `askId` was answered or dismissed from this window. */
+export function askAnsweredHere(askId) {
+  return answeredHere.has(askId);
+}
+
+async function answerAsk(askId, answer) {
+  // Answered in this window: what HARTOS voices for it is this device's
+  // (utils/ttsGuards.shouldPlayPushedClip: only the device used speaks).
+  rememberOwnTurn(askId, { last: false });
+  answeredHere.add(askId);
+  let res;
+  try {
+    res = await postApproval({ ask_id: askId, answer });
+  } catch (err) {
+    answeredHere.delete(askId);
+    throw err;
+  }
+  if (!res.ok) {
+    answeredHere.delete(askId);
+    throw await refusedReply(res, 'The answer was refused');
+  }
+  settledHere(askId);
+}
+
+// The read of one ask by its id (GET /api/agent/approval?ask_id=, HARTOS
+// person_ask.read_ask): its card while it is open, else 404 'gone'
+// (answered, dismissed, expired, or not this person's).  'open' with the
+// card, 'gone', or 'unknown' when HARTOS could not be asked.
+async function readAsk(askId) {
+  try {
+    const res = await fetch(
+      `${API_BASE_URL}/api/agent/approval?ask_id=${encodeURIComponent(askId)}`,
+      { headers: { ...bearer() } });
+    if (res.ok) {
+      const card = await res.json();
+      if (card && typeof card === 'object' && card.type) {
+        return { state: 'open', card: { ...card, ask_id: card.ask_id || askId } };
+      }
+      return { state: 'unknown' };
+    }
+    return { state: res.status === 404 || res.status === 410 ? 'gone' : 'unknown' };
+  } catch (err) {
+    return { state: 'unknown' };
+  }
+}
+
+// ─── An agent's ask in its own chat (owner 2026-11-23: "ideally when the
+// agent is running the question shd be part of chat in all clients") ───
+//
+// While the asking agent's chat is the one in front (the page's current
+// agent is the card's prompt_id, and the card's person is the one signed
+// in), its question is a message of that chat, answered there through the
+// same door, and this overlay shows no card for it.  When the chat leaves
+// the front the open ask comes back here as a card, and goes back into the
+// chat when it returns: never both at once.  Only an agent's own question
+// goes into the chat: consent and credential asks keep their card, and so
+// does any ask with a field that looks like a secret.
+
+const ASK_CHAT_TYPES = new Set(['approval', 'form', 'file_request']);
+const SECRET_FIELD = /pass(word|code|phrase)?|secret|token|api[\s_-]?key|otp|\bpin\b|cvv|cvc|card[\s_-]?number|credential/i;
+
+/** Whether an ask's card asks for something that looks like a secret. */
+export function askHasSecret(card) {
+  const fields = Array.isArray(card && card.fields) ? card.fields : [];
+  return fields.some((f) => f && typeof f === 'object' && (
+    /^(password|secret)$/i.test(String(f.type || f.input_type || f.inputType || ''))
+    || f.secret === true || f.sensitive === true
+    || [f.name, f.key, f.field, f.label].some((v) => typeof v === 'string' && SECRET_FIELD.test(v))));
+}
+
+/**
+ * Whether `card` is an agent's question a person answers (HARTOS person_ask):
+ * it carries its ask id, is one of the kinds a chat answers, and asks for
+ * no secret.  The one rule for the chat (askBelongsInChat) and the floating
+ * window (VoiceOrbPage, design_1125 A).
+ */
+export function isAgentQuestion(card) {
+  return Boolean(card && card.ask_id
+    && ASK_CHAT_TYPES.has(card.type || card.component_type) && !askHasSecret(card));
+}
+
+/** How an in-chat ask's bubble ends: these states are final. */
+export const ASK_CLOSED_STATES = new Set(['here', 'dismissed', 'elsewhere', 'gone']);
+
+/**
+ * The chat message of an ask: its question (the card as the agent sent it,
+ * without this overlay's own keys) and, once known, how it closed.  Never an
+ * answer: what she types or picks stays in the card's own form and goes to
+ * the approval door only.
+ */
+export function askChatMessage(card) {
+  const { _id, _type, ...question } = card || {};
+  return {
+    type: 'agent_ask',
+    askId: question.ask_id,
+    component: question,
+    content: question.title || '',
+    timestamp: new Date(),
+  };
+}
+
+/**
+ * The chat's messages after one onChatAsk event (Demopage's handleChatAsk
+ * applies it with setMessages): an ask now 'open' in the chat gets its
+ * message once; a closed one (ASK_CLOSED_STATES) records how it closed, and
+ * its reason when the drop gave one, once (the list is unchanged when it
+ * already says so); any other state leaves the messages as they are.
+ */
+export function chatMessagesAfterAsk(prev, { askId, state, card, reason } = {}) {
+  const list = Array.isArray(prev) ? prev : [];
+  if (!askId) return list;
+  const isIt = (m) => m && m.type === 'agent_ask' && m.askId === askId;
+  if (state === 'open') {
+    return list.some(isIt) ? list : [...list, askChatMessage(card)];
+  }
+  if (ASK_CLOSED_STATES.has(state)) {
+    if (!list.some((m) => isIt(m) && m.closed !== state)) return list;
+    return list.map((m) => (isIt(m) ? { ...m, closed: state, ...(reason ? { closedReason: reason } : {}) } : m));
+  }
+  return list;
+}
+
+/**
+ * `messages` with a message put back for every ask open in the chat
+ * (`askStates` entries in state 'open', from onChatAsk) that it lacks, in
+ * the order of askStates; `messages` itself when none is missing.  What
+ * Demopage's agent switch loads its stored history through: the history
+ * replaced the chat 100 ms after the overlay had moved the ask into it, and
+ * HARTOS does not send an ask again (review of a038f23a).
+ */
+export function withOpenChatAsks(messages, askStates) {
+  const list = Array.isArray(messages) ? messages : [];
+  const have = new Set(list.filter((m) => m && m.type === 'agent_ask').map((m) => m.askId));
+  const missing = Object.entries(askStates || {})
+    .filter(([askId, s]) => s && s.state === 'open' && s.card && !have.has(askId))
+    .map(([, s]) => askChatMessage(s.card));
+  return missing.length ? [...list, ...missing] : list;
+}
+
+/** Dismiss ask `askId` everywhere, as her: the card's X, also in the chat. */
+export function dismissAskEverywhere(askId) {
+  return dismissAsk(askId);
+}
+
+/**
+ * What a closed ask's bubble says, by how it closed.  `reason`: the drop's
+ * own word on why, when it says one.  A drop this window did not make is
+ * neutral: the same drop comes for an answer on another device, an expiry
+ * and a finished CREATE run (review of a038f23a).
+ */
+export function askClosedText(state, reason) {
+  if (reason && typeof reason === 'string' && state !== 'here' && state !== 'dismissed') return reason;
+  switch (state) {
+    case 'here': return 'Answered here.';
+    case 'dismissed': return 'Dismissed here.';
+    case 'elsewhere': return 'This question is closed.';
+    case 'gone': return 'No longer open: it was answered, dismissed or has expired.';
+    case 'unknown': return 'Could not check whether this question is still open.';
+    case 'moved': return 'Waiting for your answer on its card.';
+    // Put off with the card's Later: no card shows until the period ends.
+    case 'later': return `Put off for now: it comes back in ${minutesText(ASK_LATER_MS)}.`;
+    default: return 'Checking whether this question is still open...';
+  }
+}
+
+/** A period in whole minutes, said right: "1 minute", "5 minutes". */
+export function minutesText(ms) {
+  const minutes = Math.round(ms / 60000);
+  return `${minutes} minute${minutes === 1 ? '' : 's'}`;
+}
+
+/**
+ * Whether `card` is shown in the chat in front (`chat`: {promptId, userId},
+ * or null when no agent chat is in front).
+ */
+export function askBelongsInChat(card, chat) {
+  if (!isAgentQuestion(card) || !chat || !chat.promptId) return false;
+  if (card.prompt_id == null || String(card.prompt_id) !== String(chat.promptId)) return false;
+  // On a surface more than one person signs in to, only her own asks.
+  if (card.user_id != null && card.user_id !== ''
+      && String(card.user_id) !== String(chat.userId || '')) return false;
+  return true;
+}
+
+// The person closed the ask's card here with its X (Dismiss): every surface
+// drops it.  The card goes from this screen whatever HARTOS answers (an ask
+// already answered or gone elsewhere is closed there too), so a refusal is
+// only logged.  "Later" is not this: it puts the card off on this surface
+// only (ASK_LATER_MS).
 function dismissAsk(askId) {
+  answeredHere.add(askId);
+  dismissedHere.add(askId);
+  settledHere(askId);
   return postApproval({ ask_id: askId, dismiss: true }).then((res) => {
     if (!res.ok) console.warn(`ask ${askId}: the dismissal was refused (HTTP ${res.status})`);
   }).catch((err) => console.warn(`ask ${askId}: the dismissal did not reach HARTOS`, err));
@@ -535,7 +740,7 @@ function FileRequestOverlay({ data, onDismiss, onAction }) {
   );
 }
 
-function ApprovalOverlay({ data, onDismiss, onAction }) {
+function ApprovalOverlay({ data, onDismiss, onAction, onLater, inChat }) {
   const [act, run] = useActionRunner(onAction);
   // Which decision is on its way, and why the last one did not go through.
   // The card closes only once HARTOS has the answer: its .catch(() => {})
@@ -601,12 +806,15 @@ function ApprovalOverlay({ data, onDismiss, onAction }) {
   // Only approve | deny are answers /api/agent/approval records; HARTOS
   // refuses 'later' with 400, so on a plain approval the defer button closes
   // the card and sends nothing, like "Not now" on the consent card (the
-  // producer asks again).  On an agent's ask it dismisses the ask, so every
-  // surface drops it and the agent is told (owner, 2026-11-04: "Later
-  // dismisses everywhere", as the X does).
+  // producer asks again).  On an agent's ask it puts the card off on this
+  // surface only, for ASK_LATER_MS, as the phone's Later does: the ask stays
+  // open on her other surfaces and comes back here unless she answers or
+  // dismisses it meanwhile.  Only the X dismisses an ask everywhere.  (Owner
+  // 2026-11-04 had Later dismiss everywhere, 8d6bc928; the 11-23 review made
+  // it this surface's, as Android's.)
   const later = () => {
-    if (data.ask_id) dismissAsk(data.ask_id);
-    onDismiss();
+    if (data.ask_id && onLater) onLater();
+    else if (onDismiss) onDismiss();
   };
   const label = (i, dflt) => {
     const o = Array.isArray(data.options) ? data.options[i] : null;
@@ -621,7 +829,10 @@ function ApprovalOverlay({ data, onDismiss, onAction }) {
       <Box sx={{ display: 'flex', gap: 1, flexWrap: onAction ? 'wrap' : undefined }}>
         <Button variant="contained" size="small" disabled={Boolean(busy) || act.phase === 'busy'} aria-busy={busy === 'approve'} sx={{ background: SUCCESS, flex: 1, minHeight: onAction ? 44 : undefined, '&:hover': { background: '#27AE60' } }} onClick={() => postDecision('approve')}>{act.phase === 'busy' ? 'Working…' : label(0, 'Approve')}</Button>
         <Button variant="outlined" size="small" disabled={Boolean(busy) || act.phase === 'busy'} aria-busy={busy === 'deny'} sx={{ color: ERROR_RED, borderColor: ERROR_RED, flex: 1, minHeight: onAction ? 44 : undefined }} onClick={() => postDecision('deny')}>{label(1, 'Deny')}</Button>
-        <Button variant="outlined" size="small" disabled={Boolean(busy) || act.phase === 'busy'} sx={{ color: onAction ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.5)', borderColor: 'rgba(255,255,255,0.2)', minHeight: onAction ? 44 : undefined }} onClick={onAction ? () => postDecision('later') : later}>{label(2, 'Later')}</Button>
+        {/* In the chat the question is part of the chat: no Later there. */}
+        {!inChat && (
+          <Button variant="outlined" size="small" disabled={Boolean(busy) || act.phase === 'busy'} sx={{ color: onAction ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.5)', borderColor: 'rgba(255,255,255,0.2)', minHeight: onAction ? 44 : undefined }} onClick={onAction ? () => postDecision('later') : later}>{label(2, 'Later')}</Button>
+        )}
       </Box>
       <ActionError state={act} />
     </Box>
@@ -833,11 +1044,11 @@ function ListOverlay({ data }) {
   );
 }
 
-function LayoutOverlay({ data, navigate, onDismiss, onAction }) {
+function LayoutOverlay({ data, navigate, onDismiss, onAction, onLater }) {
   return (
     <Box sx={{ display: 'flex', flexDirection: data.direction || 'column', gap: data.gap || 1 }}>
       {(data.children || []).map((child, i) => (
-        <Box key={i}><OverlayContent data={child} navigate={navigate} onDismiss={onDismiss} onAction={onAction} /></Box>
+        <Box key={i}><OverlayContent data={child} navigate={navigate} onDismiss={onDismiss} onAction={onAction} onLater={onLater} /></Box>
       ))}
     </Box>
   );
@@ -1195,7 +1406,7 @@ function ChannelConnectedOverlay({ data, onDismiss }) {
 // always has in the app.  The <hart-agent> embed passes it so card buttons
 // go through the host bridge (cart.add, checkout.start, payment.authorize…)
 // instead of opening or POSTing agent-supplied URLs.
-export function OverlayContent({ data, onDismiss, navigate, onAction }) {
+export function OverlayContent({ data, onDismiss, navigate, onAction, onLater, inChat }) {
   const type = data.type || data.component_type || 'notification';
   switch (type) {
     case 'notification': return <NotificationCard data={data} navigate={navigate} onDismiss={onDismiss} />;
@@ -1234,7 +1445,7 @@ export function OverlayContent({ data, onDismiss, navigate, onAction }) {
     case 'comparison': return <ComparisonOverlay data={data} />;
     case 'progress': return <ProgressOverlay data={data} />;
     case 'agent_action': return <AgentActionOverlay data={data} />;
-    case 'approval': return <ApprovalOverlay data={data} onDismiss={onDismiss} onAction={onAction} />;
+    case 'approval': return <ApprovalOverlay data={data} onDismiss={onDismiss} onAction={onAction} onLater={onLater} inChat={inChat} />;
     case 'file_request': return <FileRequestOverlay data={data} onDismiss={onDismiss} onAction={onAction} />;
     case 'chart': return <ChartOverlay data={data} />;
     case 'code': return <CodeOverlay data={data} />;
@@ -1246,7 +1457,7 @@ export function OverlayContent({ data, onDismiss, navigate, onAction }) {
     case 'pair_code': return <PairCodeOverlay data={data} onDismiss={onDismiss} />;
     case 'channel_connected': return <ChannelConnectedOverlay data={data} onDismiss={onDismiss} />;
     case 'list': return <ListOverlay data={data} />;
-    case 'layout': return <LayoutOverlay data={data} navigate={navigate} onDismiss={onDismiss} onAction={onAction} />;
+    case 'layout': return <LayoutOverlay data={data} navigate={navigate} onDismiss={onDismiss} onAction={onAction} onLater={onLater} />;
     case 'meet_copilot': return <MeetCopilotOverlay data={data} onDismiss={onDismiss} />;
     case 'consent_prompt': return <ConsentPromptOverlay data={data} onDismiss={onDismiss} />;
     case 'consent.request': return <ConsentPromptOverlay data={data} onDismiss={onDismiss} />;
@@ -1273,34 +1484,51 @@ function consentCardFor(data) {
   if (data.type === 'consent.request') {
     const type = data.consent_type;
     // An agent's ask names the agent; a phone's ask names the phone, and
-    // that name is self-asserted: it goes in the title as a claim, the
-    // body says what is asked without it, and the server's reason (which
-    // states the name as fact) is not repeated.  The fingerprint of the
-    // phone's key is what the owner matches against the phone.
+    // that name is self-asserted: it goes in the title as a claim.  The
+    // server's reason is the body: it says the name as the phone's claim
+    // and which account the phone says it is signed in as, the account a
+    // yes admits it as (HARTOS #306), or that a phone already allowed is
+    // switching accounts (requester_switch_from) or is to be confirmed
+    // (requester_reconfirm).  The fingerprint of the phone's key, shown
+    // once in its own block, is what the owner matches against the phone.  The answer
+    // names the ask (request_id), so it binds the account this card showed.
     if (isPerRequester(type)) {
       return {
         consentType: type,
         scope: data.scope || '*',
         agentId: data.agent_id || null,
-        title: askTitle(type, data.requester_name),
-        text: `This phone asks to ${consentAskText(type)}.`,
+        requestId: data.request_id || null,
+        title: askTitle(type, data.requester_name,
+          data.requester_switch_from ? 'switch'
+            : data.requester_reconfirm ? 'reconfirm' : null),
+        text: String(data.reason || '').trim()
+          || `This phone asks to ${consentAskText(type)}.`,
         fingerprint: data.requester_fingerprint || deviceFingerprint(data.scope),
         caption: FINGERPRINT_CAPTION,
         grantLabel: grantLabel(type),
         declineLabel: canDecline(type) ? declineLabel(type, data.agent_id) : null,
       };
     }
+    // A channel's one ask for all the values it needs (HARTOS
+    // post_to_channel, scope 'secret:<CHANNEL>_SETUP'): its note names them
+    // (fields), each is typed here, and the answer is every value with the
+    // ask's request_id, which starts the channel there and then.  Nothing
+    // goes into this computer's vault (the channel's binding keeps them),
+    // so such a card has no single secret input.
+    const fields = askFields(data.fields);
     return {
       consentType: type,
       scope: data.scope || '*',
       agentId: data.agent_id || null,
+      fields,
+      requestId: fields ? data.request_id || null : null,
       // A credential ask: the value is typed here and stored in this
       // computer's vault under this name before the grant.
-      secretKey: asksForSecret(type) ? secretName(data.scope) : null,
+      secretKey: asksForSecret(type) && !fields ? secretName(data.scope) : null,
       title: askTitle(type),
       text: data.reason ||
         `${askerOf(data)} asks to ${consentAskText(type)}.`,
-      grantLabel: grantLabel(type),
+      grantLabel: fields ? SEVERAL_VALUES_GRANT : grantLabel(type),
       // A type with a card on the privacy page (the way back after a no),
       // or a credential ask, whose no ends that one ask (declineNote).
       declineLabel: canDecline(type)
@@ -1322,12 +1550,47 @@ function consentCardFor(data) {
   };
 }
 
+// The values a channel's one ask names (HARTOS consent_service._emit puts
+// them on the note as the phone's push carries them: a JSON string,
+// [{name, label, secret}]; a list is read the same), in its order, or null
+// when it names none and the card asks for one value as before.  An entry
+// without a name, or a name already seen, is left out; a value is secret
+// unless the ask says it is not, as the phone's card reads them
+// (Hevolve_React_Native ConsentAnswer.fields).
+function askFields(raw) {
+  let list = raw;
+  if (typeof raw === 'string') {
+    try {
+      list = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!Array.isArray(list)) return null;
+  const fields = [];
+  for (const f of list) {
+    const name = String((f && f.name) || '').trim();
+    if (!name || fields.some((g) => g.name === name)) continue;
+    fields.push({name, label: String(f.label || '').trim() || name, secret: f.secret !== false});
+  }
+  return fields.length ? fields : null;
+}
+
+// What Accept says on a channel's card for several values: what was typed
+// sets the channel up, it is not kept for agents to use.
+const SEVERAL_VALUES_GRANT = 'Save and connect';
+
 // Exported: the desktop companion window (VoiceOrb/VoiceOrbPage) shows the
 // same card for a HARTOS consent.request, so an ask reaches the owner while
 // the main window is behind other windows.  One card, one consent API.
 export function ConsentPromptOverlay({ data, onDismiss }) {
   const card = consentCardFor(data || {});
   const [secret, setSecret] = useState('');
+  // A channel's card for several values: what is typed in each, by name.
+  const [typed, setTyped] = useState({});
+  // Every field holds something (spaces alone are nothing).
+  const filled = !card.fields
+    || card.fields.every((f) => String(typed[f.name] || '').trim());
   // Why the last answer did not go through.  The card stays up with it: an
   // answer that silently closed the card looked written when it was not.
   const [error, setError] = useState(null);
@@ -1351,6 +1614,23 @@ export function ConsentPromptOverlay({ data, onDismiss }) {
   const grant = async () => {
     if (busy) return;
     setBusy('grant');
+    if (card.fields) {
+      // Every value at once, with the ask it answers (HARTOS consent_api
+      // grant_consent ``values``, in the shape of Android's 3-field body):
+      // the channel is started from them before the grant and keeps them on
+      // its binding.  A secret goes as typed, any other value trimmed, as
+      // the phone's card sends them (ConsentAnswer.bodyForFields).  The
+      // fields keep what was typed until the card closes, so a refused
+      // answer can be corrected and sent again.
+      const values = {};
+      for (const f of card.fields) {
+        const v = String(typed[f.name] || '');
+        values[f.name] = f.secret ? v : v.trim();
+      }
+      await answer('grant', () => consentApi.grant(
+        {consent_type: card.consentType, request_id: card.requestId, values}), true);
+      return;
+    }
     // A credential goes into the vault first; if it cannot be stored the ask
     // stays open, since a grant with nothing stored gives the agent nothing.
     if (card.secretKey) {
@@ -1370,7 +1650,7 @@ export function ConsentPromptOverlay({ data, onDismiss }) {
       // does not go through can be sent again without typing it twice.
     }
     await answer('grant', () => consentApi.grant(
-      {consent_type: card.consentType, scope: card.scope}), true);
+      {consent_type: card.consentType, scope: card.scope, ...askId()}), true);
   };
   // The ask's own agent: a no to one agent's ask leaves the others open.
   const decline = async () => {
@@ -1378,8 +1658,13 @@ export function ConsentPromptOverlay({ data, onDismiss }) {
     setBusy('decline');
     await answer('decline', () => consentApi.decline({
       consent_type: card.consentType, scope: card.scope, agent_id: card.agentId,
+      ...askId(),
     }), false);
   };
+  // Which ask the answer is for, when the card knows it (a phone's ask).
+  function askId() {
+    return card.requestId ? {request_id: card.requestId} : {};
+  }
   // Send one answer.  Written: the card closes.  Not written: the card stays
   // with the reason and the buttons back, so the owner can answer again.
   const answer = async (what, send, approved) => {
@@ -1425,6 +1710,26 @@ export function ConsentPromptOverlay({ data, onDismiss }) {
             sx={{'& .MuiInputBase-root': {color: '#fff', background: 'rgba(255,255,255,0.05)'}}} />
         </Box>
       )}
+      {card.fields && (
+        // One input per value the ask names, labelled as it says, masked
+        // only when it is secret: the whole setup is answered here.
+        <Box sx={{mb: 1.5, display: 'flex', flexDirection: 'column', gap: 1.25}}>
+          {card.fields.map((f) => (
+            <TextField key={f.name} id={`consent-${card.requestId || 'ask'}-${f.name}`}
+              label={f.label} type={f.secret ? 'password' : 'text'}
+              size="small" fullWidth autoComplete="off"
+              value={typed[f.name] || ''}
+              onChange={(e) => {
+                const v = e.target.value;
+                setTyped((t) => ({...t, [f.name]: v}));
+                setError(null);
+              }}
+              inputProps={{'data-testid': `liquid-consent-field-${f.name}`}}
+              InputLabelProps={{sx: {color: 'rgba(255,255,255,0.7)'}}}
+              sx={{'& .MuiInputBase-root': {color: '#fff', background: 'rgba(255,255,255,0.05)'}}} />
+          ))}
+        </Box>
+      )}
       {error && <AnswerError text={error} />}
       {card.declineLabel && (
         <Typography variant="caption" sx={{display: 'block', opacity: 0.6, mb: 1}}>
@@ -1444,7 +1749,7 @@ export function ConsentPromptOverlay({ data, onDismiss }) {
           </button>
         )}
         <button className="btn-feedback" data-testid="liquid-consent-grant" onClick={grant}
-          disabled={Boolean(busy) || (Boolean(card.secretKey) && !secret)}
+          disabled={Boolean(busy) || (Boolean(card.secretKey) && !secret) || !filled}
           aria-busy={busy === 'grant'}
           style={{padding: '6px 14px', borderRadius: 8, border: 'none', background: '#10b981', color: '#fff', fontWeight: 600, cursor: 'pointer'}}>
           {card.grantLabel}
@@ -1523,9 +1828,48 @@ function PostPreviewOverlay({ data, onDismiss }) {
 //                                       (default MUI Grow); the embed passes
 //                                       its own so every surface shares one
 //                                       spring
-export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, onAction, containerSx, cardSx, cardTransition: CardTransition = Grow }) {
+//   chatAsks {promptId, userId}         the agent chat in front (Demopage):
+//                                       its asks are shown in the chat, not
+//                                       here (askBelongsInChat)
+//   onChatAsk({askId, state, card,      an ask of that chat: 'open' (show it
+//              reason})                 in the chat, with its card), 'moved'
+//                                       (back to a card here), 'later' (put
+//                                       off with the card's Later: no card
+//                                       shows until ASK_LATER_MS ends),
+//                                       'here' (answered on this window),
+//                                       'dismissed' (dismissed on this
+//                                       window), 'elsewhere' (closed by a
+//                                       drop this window did not make; with
+//                                       the drop's reason when it gives
+//                                       one), 'gone' (no longer open, by
+//                                       HARTOS's read), 'unknown' (could not
+//                                       be read).  'moved' and 'later' only
+//                                       for an ask that has a bubble.
+//   askIdsToCheck [ask_id]              asks the chat's own history shows
+//                                       whose state this window does not
+//                                       know (after a reload): read from
+//                                       HARTOS, never taken from history
+export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, onAction, containerSx, cardSx, cardTransition: CardTransition = Grow,
+  chatAsks = null, onChatAsk, askIdsToCheck }) {
   const [overlays, setOverlays] = useState([]);
   const timersRef = useRef({});
+  // The open asks shown in the chat in front: ask_id -> card.  Never also a
+  // card here.
+  const inChatRef = useRef(new Map());
+  // Asks that have a bubble in a chat, whatever put it there: moved into it
+  // here, or in the chat's history (stored, or written by another tab),
+  // which the chat asks this window to check (askIdsToCheck).  Only they
+  // are told about 'moved' and 'later'.
+  const bubbledRef = useRef(new Set());
+  const chatRef = useRef(chatAsks);
+  chatRef.current = chatAsks;
+  const onChatAskRef = useRef(onChatAsk);
+  onChatAskRef.current = onChatAsk;
+  const tellChat = useCallback((event) => {
+    if (onChatAskRef.current) onChatAskRef.current(event);
+  }, []);
+  const overlaysRef = useRef(overlays);
+  overlaysRef.current = overlays;
   // msg_id -> overlay id, for the cards on screen now.  A producer that
   // sends the same message again while it waits for an answer (HARTOS
   // request_consent re-sends its ask on every look, same msg_id) shows one
@@ -1544,6 +1888,12 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
   // when a slot frees (review of 26d32915, probe R3).  Only changed in ways
   // that are safe to repeat: React may run a state updater twice.
   const parkedRef = useRef([]);
+
+  // Asks the person put off here with "Later": ask_id -> {card, timer}.  The
+  // card comes back after ASK_LATER_MS unless the ask is answered or
+  // dismissed anywhere meanwhile (ask.answered), and the same ask sent again
+  // meanwhile stays put off.
+  const laterRef = useRef(new Map());
 
   const dismiss = useCallback((id) => {
     clearTimeout(timersRef.current[id]);
@@ -1604,6 +1954,17 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
     const askId = answered && answered.ask_id;
     if (!askId) return;
     parkedRef.current = parkedRef.current.filter((o) => o.ask_id !== askId);
+    const putOff = laterRef.current.get(askId);
+    if (putOff) {
+      clearTimeout(putOff.timer);
+      laterRef.current.delete(askId);
+    }
+    // The chat's bubble of the ask (if any) says how it closed: here, or
+    // closed (with the drop's own reason when it gives one).
+    inChatRef.current.delete(askId);
+    const reason = typeof answered.reason === 'string' ? answered.reason : undefined;
+    const how = dismissedHere.has(askId) ? 'dismissed' : answeredHere.has(askId) ? 'here' : 'elsewhere';
+    tellChat({ askId, state: how, ...(reason ? { reason } : {}) });
     setOverlays((prev) => {
       const gone = prev.filter((o) => o.ask_id === askId);
       if (gone.length === 0) return prev;
@@ -1614,7 +1975,26 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
       });
       return prev.filter((o) => !gone.includes(o));
     });
-  }, [forgetShowing]);
+  }, [forgetShowing, tellChat]);
+
+  // The ask goes into the chat in front: off this overlay (and its parked
+  // list), and the chat is told with its card.
+  const toChat = useCallback((card) => {
+    const askId = card.ask_id;
+    inChatRef.current.set(askId, card);
+    bubbledRef.current.add(askId);
+    parkedRef.current = parkedRef.current.filter((o) => o.ask_id !== askId);
+    const shown = overlaysRef.current.filter((o) => o.ask_id === askId);
+    if (shown.length) {
+      shown.forEach((o) => {
+        clearTimeout(timersRef.current[o._id]);
+        delete timersRef.current[o._id];
+        forgetShowing(o._id);
+      });
+      setOverlays((prev) => prev.filter((o) => o.ask_id !== askId));
+    }
+    tellChat({ askId, state: 'open', card });
+  }, [forgetShowing, tellChat]);
 
   const handleEvent = useCallback((payload) => {
     if (!payload) return;
@@ -1642,6 +2022,21 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
     // This message is already on screen.
     const msgId = payload.msg_id;
     if (msgId && showingRef.current.has(msgId)) return;
+    // The same ask sent again while it is put off here stays put off: the
+    // newer copy is the one that comes back.
+    const putOff = payload.ask_id && laterRef.current.get(payload.ask_id);
+    if (putOff) {
+      putOff.card = payload;
+      // Its bubble (if it has one) says it is put off, also when HARTOS's
+      // read of a history bubble finds it here, never "Checking...".
+      if (bubbledRef.current.has(payload.ask_id)) tellChat({ askId: payload.ask_id, state: 'later' });
+      return;
+    }
+    // The asking agent's chat is in front: the ask is that chat's message.
+    if (askBelongsInChat({ ...payload, type }, chatRef.current)) {
+      toChat({ ...payload, type });
+      return;
+    }
     // The same ask sent again shows now, so its parked copy does not come back.
     if (payload.ask_id) {
       parkedRef.current = parkedRef.current.filter((o) => o.ask_id !== payload.ask_id);
@@ -1689,7 +2084,32 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
     });
 
     arm(entry);
-  }, [navigate, onInlineChatCard, arm, evictOver, forgetShowing]);
+  }, [navigate, onInlineChatCard, arm, evictOver, forgetShowing, toChat, tellChat]);
+
+  // "Later" on an ask's card: off this screen now, back after ASK_LATER_MS
+  // as if the ask had just arrived.  Nothing is sent: the ask stays open on
+  // her other surfaces.
+  const putOff = useCallback((overlay) => {
+    dismiss(overlay._id);
+    const askId = overlay.ask_id;
+    if (!askId) return;
+    const prior = laterRef.current.get(askId);
+    if (prior) clearTimeout(prior.timer);
+    const held = { card: overlay, timer: null };
+    held.timer = setTimeout(() => {
+      if (laterRef.current.get(askId) !== held) return;
+      laterRef.current.delete(askId);
+      handleEvent(held.card);
+      // Back as a card (its chat is not in front): its bubble says so again.
+      if (!inChatRef.current.has(askId) && bubbledRef.current.has(askId)) {
+        tellChat({ askId, state: 'moved' });
+      }
+    }, ASK_LATER_MS);
+    laterRef.current.set(askId, held);
+    // Its chat's bubble (if it has one) says it is put off: no card shows
+    // meanwhile.
+    if (bubbledRef.current.has(askId)) tellChat({ askId, state: 'later' });
+  }, [dismiss, handleEvent, tellChat]);
 
   // A slot freed (a card answered, closed, timed out or replaced): the oldest
   // parked asks come back into it.
@@ -1724,6 +2144,66 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
     };
   }, [handleEvent, settleAsks, dropAnswered, subscribe]);
 
+  // Put-off asks do not come back to a page that is gone.
+  useEffect(() => () => {
+    laterRef.current.forEach((held) => clearTimeout(held.timer));
+    laterRef.current.clear();
+  }, []);
+
+  // An ask answered or dismissed from this window (its card, or its bubble
+  // in the chat) leaves here at once, without waiting for HARTOS's drop.
+  useEffect(() => {
+    const onSettled = (askId) => dropAnswered({ ask_id: askId });
+    settledListeners.add(onSettled);
+    return () => { settledListeners.delete(onSettled); };
+  }, [dropAnswered]);
+
+  // The chat in front changed (another agent opened, or none): an open ask
+  // follows its chat.  One that no longer belongs comes back as a card here;
+  // one that now belongs leaves its card (or its parked slot) for the chat.
+  // Never shown both ways at once.
+  const chatKey = chatAsks ? `${chatAsks.promptId}|${chatAsks.userId || ''}` : '';
+  useEffect(() => {
+    const chat = chatRef.current;
+    for (const [askId, card] of Array.from(inChatRef.current)) {
+      if (!askBelongsInChat(card, chat)) {
+        inChatRef.current.delete(askId);
+        tellChat({ askId, state: 'moved' });
+        handleEvent(card);
+      }
+    }
+    const waiting = [...overlaysRef.current, ...parkedRef.current]
+      .filter((o) => askBelongsInChat(o, chat));
+    waiting.forEach((o) => toChat(o));
+  }, [chatKey, handleEvent, toChat, tellChat]);
+
+  // What the chat's history shows of an ask whose state this window does not
+  // know comes from HARTOS (its read), never from the history: an open one
+  // is placed as if it had just arrived, any other is said to be gone.
+  const checkedRef = useRef(new Set());
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+  const checkKey = Array.isArray(askIdsToCheck) ? askIdsToCheck.join(',') : '';
+  useEffect(() => {
+    if (!checkKey) return;
+    checkKey.split(',').filter(Boolean).forEach((askId) => {
+      // The chat shows its bubble: it hears 'later' and 'moved' as a bubble
+      // moved in here does.
+      bubbledRef.current.add(askId);
+      if (checkedRef.current.has(askId) || inChatRef.current.has(askId)
+          || overlaysRef.current.some((o) => o.ask_id === askId)) return;
+      checkedRef.current.add(askId);
+      readAsk(askId).then(({ state, card }) => {
+        if (!mountedRef.current) return;
+        if (state === 'open') handleEvent(card);
+        else tellChat({ askId, state });
+      });
+    });
+  }, [checkKey, handleEvent, tellChat]);
+
   if (overlays.length === 0) return null;
 
   return (
@@ -1746,20 +2226,24 @@ export default function AgentOverlay({ navigate, onInlineChatCard, subscribe, on
                 as a person asking (owner 2026-11-11), and a camera ask's body
                 is HARTOS's reason, which names no one.  A bare id (a prompt
                 id) means nothing to a person, so an overlay with only an id
-                gets no badge. */}
+                gets no badge.  An agent's question also says the persona it
+                is for: "<agent> · <persona>" (HARTOS person_ask, design_1125
+                B); none placed, the agent alone. */}
             {overlay.agent_name && (
-              <Chip label={askerOf(overlay)} size="small"
+              <Chip label={withPersona(askerOf(overlay), overlay.persona)} size="small"
                 sx={{ position: 'absolute', top: 8, left: 12, fontSize: '0.65rem', height: 20,
                   background: 'rgba(108,99,255,0.2)', color: ACCENT, border: '1px solid rgba(108,99,255,0.3)' }} />
             )}
-            {/* Close button: on an ask's card it dismisses the ask everywhere */}
+            {/* Close button (Dismiss): on an ask's card it dismisses the ask
+                everywhere; its Later puts it off on this surface only */}
             <IconButton size="small" aria-label="Dismiss"
               onClick={() => { if (overlay.ask_id) dismissAsk(overlay.ask_id); dismiss(overlay._id); }}
               sx={{ position: 'absolute', top: 4, right: 4, color: 'rgba(255,255,255,0.4)', '&:hover': { color: '#fff' } }}>
               <CloseIcon sx={{ fontSize: 16 }} />
             </IconButton>
             <Box sx={{ mt: overlay.agent_name ? 2.5 : 0 }}>
-              <OverlayContent data={overlay} onDismiss={() => dismiss(overlay._id)} navigate={navigate} onAction={onAction} />
+              <OverlayContent data={overlay} onDismiss={() => dismiss(overlay._id)} navigate={navigate} onAction={onAction}
+                onLater={() => putOff(overlay)} />
             </Box>
           </Box>
         </CardTransition>

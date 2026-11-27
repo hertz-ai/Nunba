@@ -101,6 +101,7 @@ def node(monkeypatch, tmp_path):
     monkeypatch.setattr(lc, 'check_llama_health', lambda: False)
 
     clips = []
+    faces = {}  # request id -> the face arguments the route gave _fire_nunba_tts
     state = {'sends': [], 'reply': PRAISE_TA}
     hartos = Flask('hartos_stand_in')
 
@@ -123,15 +124,16 @@ def node(monkeypatch, tmp_path):
     monkeypatch.setattr(cr, 'HEVOLVE_CHAT_AVAILABLE', True)
     monkeypatch.setattr(
         cr, '_fire_nunba_tts',
-        lambda text, user_id, request_id, language='en':
-        clips.append(('nunba', request_id, text)))
+        # media_mode / avatar_id: a video turn's face (avatarforcing_tool)
+        lambda text, user_id, request_id, language='en', **face:
+        (faces.__setitem__(request_id, face), clips.append(('nunba', request_id, text))))
     monkeypatch.setitem(sys.modules, 'models.orchestrator', None)
 
     def no_network(*args, **kwargs):
         raise requests.exceptions.ConnectionError('no network in tests')
 
     monkeypatch.setattr(cr.requests, 'post', no_network)
-    return SimpleNamespace(clips=clips, state=state, hartos=hartos)
+    return SimpleNamespace(clips=clips, state=state, hartos=hartos, faces=faces)
 
 
 def _over_http(monkeypatch, node, reply):
@@ -155,11 +157,11 @@ def _over_http(monkeypatch, node, reply):
     monkeypatch.setattr(hba, '_session', Session())
 
 
-def _turn(client, request_id, lang, mode='audio'):
+def _turn(client, request_id, lang, mode='audio', **extra):
     resp = client.post('/chat', json={
         'text': 'sing with me', 'user_id': 'd68c', 'media_mode': mode,
         'conversation_id': 'conv1', 'preferred_lang': lang,
-        'request_id': request_id})
+        'request_id': request_id, **extra})
     assert resp.status_code == 200, resp.get_data(as_text=True)
     return resp.get_json()
 
@@ -254,3 +256,37 @@ def test_an_english_reply_from_hartos_over_http_is_not_spoken_here(
     _over_http(monkeypatch, node, PRAISE_EN)
     _turn(client, 'turn-en-http-01', 'en')
     assert _of(node.clips, 'turn-en-http-01') == []
+
+
+def _local_llama(monkeypatch):
+    import llama.llama_config as lc
+    monkeypatch.setattr(cr, 'HEVOLVE_CHAT_AVAILABLE', False)
+    monkeypatch.setattr(lc, 'check_llama_health', lambda: True)
+    monkeypatch.setattr(lc, 'get_llama_endpoint', lambda: 'http://127.0.0.1:1')
+
+    class Completion:
+        status_code = 200
+
+        def json(self):
+            return {'choices': [{'message': {'content': PRAISE_TA}}]}
+
+    def post(url, *args, **kwargs):
+        if ':8081/' in url:
+            raise requests.exceptions.ConnectionError('no draft model')
+        return Completion()
+    monkeypatch.setattr(cr.requests, 'post', post)
+
+
+def test_a_video_turn_gives_the_reply_its_avatar(client, node, monkeypatch):
+    """The page names the agent's avatar on a video turn; the route hands the
+    turn's mode and that avatar to the one publisher, which gives the reply
+    its live face (HARTOS avatarforcing_tool.add_live_avatar)."""
+    _local_llama(monkeypatch)
+    _turn(client, 'turn-video-01', 'ta', mode='video', teacher_avatar_id='1000007')
+    assert node.faces['turn-video-01'] == {'media_mode': 'video', 'avatar_id': 1000007}
+
+
+def test_an_audio_turn_names_no_face(client, node, monkeypatch):
+    _local_llama(monkeypatch)
+    _turn(client, 'turn-audio-01', 'ta', mode='audio')
+    assert node.faces['turn-audio-01'] == {'media_mode': 'audio', 'avatar_id': None}

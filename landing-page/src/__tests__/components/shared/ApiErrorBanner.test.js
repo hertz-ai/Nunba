@@ -55,6 +55,16 @@ describe('ApiErrorBanner', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(/Session expired/i);
   });
 
+  // A 403 is "not allowed", not an expired session: telling a signed-in
+  // person to sign in again sends them after the wrong fix.
+  test('a 403 says the action is not allowed, not that the session expired', () => {
+    renderBanner();
+    emit({status: 403, path: '/api/social/posts', method: 'GET'});
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent(/permission/i);
+    expect(alert).not.toHaveTextContent(/Session expired/i);
+  });
+
   test('renders a 404-specific message on a 404 event', () => {
     renderBanner();
     emit({status: 404, path: '/api/social/communities/missing', method: 'GET'});

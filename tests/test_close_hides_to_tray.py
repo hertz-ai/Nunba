@@ -54,6 +54,28 @@ class ClosingHidesToTrayTests(unittest.TestCase):
         ns = _load("on_closing", "\n# on_minimized", _window=types.SimpleNamespace(hide=boom))
         self.assertIs(ns["on_closing"](), False)
 
+    def test_on_closing_lets_the_close_through_while_quitting(self):
+        # Quit (desktop/tray_handler.quit_app) closes the windows so the
+        # WebView2 tree, which holds the camera, ends.  A close turned into
+        # a hide would keep it running.
+        from desktop import tray_handler
+        hidden = []
+        window = types.SimpleNamespace(hide=lambda: hidden.append(True))
+        ns = _load("on_closing", "\n# on_minimized", _window=window)
+        tray_handler.QUITTING = True
+        try:
+            self.assertIs(ns["on_closing"](), True)
+        finally:
+            tray_handler.QUITTING = False
+        self.assertEqual(hidden, [])
+
+    def test_fallback_tray_quit_runs_quit_app(self):
+        src = APP_PY.read_text(encoding="utf-8")
+        start = src.index("        def on_quit_clicked(icon, item):")
+        body = src[start:src.index("        def on_restore_clicked(", start)]
+        self.assertIn("quit_app()", body)
+        self.assertNotIn("os._exit", body)
+
     def test_every_registration_uses_the_closing_event(self):
         src = APP_PY.read_text(encoding="utf-8")
         self.assertGreaterEqual(len(re.findall(r"events\.closing \+= on_closing", src)), 2)

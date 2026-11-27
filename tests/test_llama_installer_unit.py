@@ -104,12 +104,16 @@ class TestModelPreset:
 class TestLlamaInstallerInit:
     """LlamaInstaller sets up directories for binary and models."""
 
-    def test_creates_directories(self):
+    def test_creates_no_directories(self):
+        """Building an installer writes nothing: it is also built just to
+        ask whether a model is on disk.  The code that writes makes its
+        folder (owner 2026-11-24: "create if not present shd be
+        automatic")."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            installer = LlamaInstaller(
+            LlamaInstaller(
                 install_dir=os.path.join(tmpdir, 'llama'),
                 models_dir=os.path.join(tmpdir, 'models'))
-            assert os.path.isdir(os.path.join(tmpdir, 'models'))
+            assert os.listdir(tmpdir) == []
 
     def test_detects_gpu_type(self):
         """GPU detection determines which binary variant to download."""

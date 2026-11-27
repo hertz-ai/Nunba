@@ -469,16 +469,30 @@ class TestSTTLoader:
         result = loader.load(entry, 'gpu')
         assert result is True
 
+    # The package alone no longer makes a row downloaded: its own weights
+    # must be on disk too (owner 2026-11-24, one source of truth; file checks
+    # pinned in tests/test_stt_loader_answers_from_the_model_files.py).
+    _CACHED = 'integrations.service_tools.whisper_tool._faster_whisper_model_cached'
+
     def test_is_downloaded_true_when_importable(self):
         loader = STTLoader()
-        entry = _make_entry(id='stt-whisper')
-        with patch('importlib.util.find_spec', return_value=MagicMock()):
+        entry = _make_entry(id='stt-faster-whisper-base')
+        with patch('importlib.util.find_spec', return_value=MagicMock()), \
+             patch(self._CACHED, return_value=True):
             assert loader.is_downloaded(entry) is True
 
     def test_is_downloaded_false_when_not_importable(self):
         loader = STTLoader()
-        entry = _make_entry(id='stt-whisper')
-        with patch('importlib.util.find_spec', return_value=None):
+        entry = _make_entry(id='stt-faster-whisper-base')
+        with patch('importlib.util.find_spec', return_value=None), \
+             patch(self._CACHED, return_value=True):
+            assert loader.is_downloaded(entry) is False
+
+    def test_is_downloaded_false_when_the_weights_are_not_on_disk(self):
+        loader = STTLoader()
+        entry = _make_entry(id='stt-faster-whisper-base')
+        with patch('importlib.util.find_spec', return_value=MagicMock()), \
+             patch(self._CACHED, return_value=False):
             assert loader.is_downloaded(entry) is False
 
     def test_download_installs_faster_whisper(self):

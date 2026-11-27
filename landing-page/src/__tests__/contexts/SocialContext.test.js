@@ -32,6 +32,19 @@ jest.mock('../../services/axiosFactory', () => ({
   createApiClient: jest.fn(() => mockAxiosInstance),
 }));
 
+// A signed-in account's keys are stored encrypted; "ENC:<value>" decrypts to
+// <value> here so a test can seed them.  The device id is fixed.
+jest.mock('../../utils/encryption', () => ({
+  __esModule: true,
+  encrypt: (v) => (v == null ? null : `ENC:${String(v)}`),
+  decrypt: (v) =>
+    typeof v === 'string' && v.startsWith('ENC:') ? v.slice(4) : null,
+}));
+jest.mock('../../utils/deviceId', () => ({
+  __esModule: true,
+  getStableDeviceId: () => Promise.resolve('dev-1'),
+}));
+
 // The realtimeService.on() must always return a callable unsubscribe function.
 // We define these outside the factory so they survive jest.clearAllMocks().
 const mockUnsubNotification = jest.fn();
@@ -462,5 +475,193 @@ describe('SocialContext - what /auth/me answered', () => {
     });
     expect(screen.getByTestId('username').textContent).toBe('jwtuser');
     expect(screen.getByTestId('accessTier').textContent).toBe('flat');
+  });
+});
+
+// 2026-11-24 (hartos-17 M3): a 401 left a signed-in account's user_id beside
+// guest_mode and the desktop's injected hardware guest id.  The page slid into
+// the guest: readAuthSession said 'guest', this provider showed the guest
+// user, a guest was minted over the account, and Demopage posted the guest id,
+// which made the guest the desktop's owner.  Now the account signs in again;
+// a guest with no account keys is restored and refreshed as before.
+describe('SocialContext - a cloud account is never shown as the guest', () => {
+  const {
+    readAuthSession,
+    clearAccessTokenForExpiry,
+  } = require('../../hooks/useAuthSession');
+  const axios = require('axios');
+  const MINTED = {
+    data: {user: {id: 'g-minted'}, token: 'guest-jwt-minted', existing: true},
+  };
+  const jwt = (expSecondsFromNow) =>
+    `header.${btoa(
+      JSON.stringify({
+        user_id: 'g-1',
+        username: 'guest_g1',
+        role: 'guest',
+        exp: Math.floor(Date.now() / 1000) + expSecondsFromNow,
+      })
+    )}.sig`;
+
+  function seedGuestKeys() {
+    localStorage.setItem('guest_mode', 'true');
+    // What _restoreGuestIdFromInjection writes from window.__NUNBA_GUEST_ID__.
+    localStorage.setItem('guest_user_id', 'hw-guest-1');
+    localStorage.setItem('guest_name', 'Radiant.Green.buildra');
+  }
+  function seedAccountKeys() {
+    localStorage.setItem('user_id', 'ENC:10202');
+    localStorage.setItem('email_address', 'ENC:sales@hertzai.com');
+    localStorage.setItem('phone_number', 'ENC:+919000000001');
+    localStorage.setItem('refresh_token', 'ENC:refresh-1');
+  }
+  function expectAccountKeysKept() {
+    expect(localStorage.getItem('user_id')).toBe('ENC:10202');
+    expect(localStorage.getItem('email_address')).toBe('ENC:sales@hertzai.com');
+    expect(localStorage.getItem('phone_number')).toBe('ENC:+919000000001');
+    expect(localStorage.getItem('refresh_token')).toBe('ENC:refresh-1');
+  }
+  let plainPosts;
+  const allPosts = () => [
+    ...mockAxiosInstance.post.mock.calls,
+    ...plainPosts.mock.calls,
+  ];
+  const guestRegisterCalls = () =>
+    allPosts().filter(([url]) => url === '/auth/guest-register');
+  // Any post carrying a user_id that is not '' or the 'guest' placeholder.
+  const realUserIdsPosted = () =>
+    allPosts()
+      .map(([, body]) => body && body.user_id)
+      .filter((id) => id !== undefined && id !== '' && id !== 'guest');
+  const username = () => screen.getByTestId('username').textContent;
+
+  beforeEach(() => {
+    mockAxiosInstance.post.mockImplementation((url) =>
+      Promise.resolve(url === '/auth/guest-register' ? MINTED : {data: {}})
+    );
+    plainPosts = jest
+      .spyOn(axios, 'post')
+      .mockImplementation(() => Promise.resolve({data: {}}));
+  });
+
+  afterEach(() => {
+    mockAxiosInstance.post.mockImplementation(() =>
+      Promise.resolve({data: {}})
+    );
+    plainPosts.mockRestore();
+  });
+
+  it('M3: signed in, then a 401: pending, no current user, no mint, nothing posted for the account', async () => {
+    seedAccountKeys();
+    seedGuestKeys();
+    localStorage.setItem('access_token', 'p'.repeat(32)); // opaque Kong token
+    renderProvider();
+    await flushWithTimers();
+    await waitFor(() => expect(username()).toBe('testuser'));
+
+    await act(async () => {
+      clearAccessTokenForExpiry(); // what the 401 handler runs
+    });
+    await flushWithTimers();
+
+    expect(readAuthSession().status).toBe('pending');
+    expect(username()).toBe('none');
+    expect(screen.getByTestId('isAuthenticated').textContent).toBe('false');
+    expect(guestRegisterCalls()).toHaveLength(0);
+    expect(realUserIdsPosted()).toEqual([]);
+    // The desktop's owner record is not touched at all.
+    expect(allPosts().filter(([url]) => url === '/api/storage/set')).toEqual([]);
+    expect(localStorage.getItem('access_token')).toBeNull();
+    expectAccountKeysKept();
+  });
+
+  it('an expired token at mount beside the account keys: no mint, no guest user', async () => {
+    seedAccountKeys();
+    seedGuestKeys();
+    localStorage.setItem('access_token', jwt(-60));
+    renderProvider();
+    await flushWithTimers();
+
+    expect(guestRegisterCalls()).toHaveLength(0);
+    expect(username()).toBe('none');
+    expect(readAuthSession().status).toBe('pending');
+    expect(localStorage.getItem('access_token')).toBeNull();
+    expectAccountKeysKept();
+  });
+
+  it('no token at mount, the account keys beside the guest keys: no guest user, no mint', async () => {
+    seedAccountKeys();
+    seedGuestKeys();
+    renderProvider();
+    await flushWithTimers();
+
+    expect(guestRegisterCalls()).toHaveLength(0);
+    expect(username()).toBe('none');
+    expect(readAuthSession().status).toBe('pending');
+    expectAccountKeysKept();
+  });
+
+  it('a guest with no account keys is still restored and refreshed', async () => {
+    seedGuestKeys();
+    renderProvider();
+    await flushWithTimers();
+
+    expect(username()).toBe('Radiant.Green.buildra');
+    await waitFor(() => expect(guestRegisterCalls()).toHaveLength(1));
+  });
+
+  it('a guest with no account keys keeps the guest user through a 401 and is refreshed', async () => {
+    seedGuestKeys();
+    localStorage.setItem('access_token', jwt(3600));
+    renderProvider();
+    await flushWithTimers();
+
+    await act(async () => {
+      clearAccessTokenForExpiry();
+    });
+    await flushWithTimers();
+
+    expect(username()).toBe('Radiant.Green.buildra');
+    await waitFor(() => expect(guestRegisterCalls()).toHaveLength(1));
+  });
+
+  it('a guest with no account keys and an expired token at mount is refreshed', async () => {
+    seedGuestKeys();
+    localStorage.setItem('access_token', jwt(-60));
+    renderProvider();
+    await flushWithTimers();
+
+    await waitFor(() => expect(guestRegisterCalls()).toHaveLength(1));
+    expect(localStorage.getItem('access_token')).toBe('guest-jwt-minted');
+    expect(username()).not.toBe('none');
+  });
+
+  // hartos-17 follow-ups (2026-11-25): what the page shows follows the
+  // session status; canRegisterGuestForSeal only guards mints.
+  it("'pending' (account keys, no token) is anonymous: isGuest false, accessTier anonymous", async () => {
+    seedAccountKeys();
+    seedGuestKeys();
+    renderProvider();
+    await flushWithTimers();
+
+    expect(readAuthSession().status).toBe('pending');
+    expect(screen.getByTestId('isGuest').textContent).toBe('false');
+    expect(screen.getByTestId('accessTier').textContent).toBe('anonymous');
+  });
+
+  it("useStorageSync's pending state (guest_user_id is the account id) still shows the guest under that id, no mint", async () => {
+    // What useStorageSync writes when user_data.json has a user_id but no
+    // token: the account id as guest_user_id plus the pending sentinel.
+    localStorage.setItem('guest_mode', 'true');
+    localStorage.setItem('guest_user_id', '10202');
+    localStorage.setItem('pending_cloud_user_id', '10202');
+    localStorage.setItem('pending_cloud_email', 'parent@example.com');
+    renderProvider();
+    await flushWithTimers();
+
+    expect(readAuthSession().status).toBe('guest');
+    expect(username()).toBe('User');
+    expect(screen.getByTestId('isGuest').textContent).toBe('true');
+    expect(guestRegisterCalls()).toHaveLength(0);
   });
 });

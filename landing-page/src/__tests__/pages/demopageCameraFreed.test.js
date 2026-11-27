@@ -39,9 +39,12 @@ function cut(start, end) {
   return SRC.slice(a, b + end.length);
 }
 
+// Since c5aeb1ee the block also reads the camera consent
+// (useConsentedCameraStream) and video mode streams only while it is on, so
+// its effect's dependency list ends with cameraOn.
 const VIDEO_MODE = cut(
   '// ── Video mode: stream webcam frames to VisionService at 5 FPS ──',
-  '}, [mediaMode, effectiveUserId]);');
+  '}, [mediaMode, effectiveUserId, cameraOn]);');
 const SNAPSHOT = cut('const handleCameraCapture = async () => {', '\n  };');
 
 const quiet = {log: () => {}, warn: () => {}, error: () => {}};
@@ -153,14 +156,17 @@ function videoModePage({win = {}} = {}) {
     if (c) c();
   };
   const names = ['useRef', 'useEffect', 'mediaMode', 'effectiveUserId', 'navigator',
-    'document', 'WebSocket', 'window', 'localStorage', 'console', 'fetch'];
+    'document', 'WebSocket', 'window', 'localStorage', 'console', 'fetch',
+    'useConsentedCameraStream', 'setCameraConsent', 'pushNotification'];
   const render = (mediaMode) => {
     runCleanup();
     let effect = null;
     // eslint-disable-next-line no-new-func
     new Function(...names, VIDEO_MODE)(
       () => frameStreamRef, (fn) => { effect = fn; }, mediaMode, '10202', cam.navigator,
-      els.document, FakeSocket, win, {getItem: () => null}, quiet, jest.fn());
+      els.document, FakeSocket, win, {getItem: () => null}, quiet, jest.fn(),
+      // The camera consent is on: the state in which video mode streams.
+      () => true, jest.fn(() => Promise.resolve()), jest.fn());
     const c = effect();
     cleanup = typeof c === 'function' ? c : null;
   };

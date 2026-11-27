@@ -14,10 +14,14 @@ import {renderHook, act} from '@testing-library/react';
 
 let lastWS = null;
 let wsShouldFail = false;
+let wsShouldThrow = false;
 let lastRecognition = null;
 
 class MockWebSocket {
   constructor(url) {
+    // WKWebView throws a SecurityError for ws:// from an http page; a
+    // malformed stt-url throws a SyntaxError.  Either way nothing is built.
+    if (wsShouldThrow) throw new Error('The operation is insecure');
     this.url = url;
     this.readyState = 0;
     this.sent = [];
@@ -70,6 +74,7 @@ beforeEach(() => {
   lastWS = null;
   lastRecognition = null;
   wsShouldFail = false;
+  wsShouldThrow = false;
 });
 
 const configSent = (ws) => ws.sent
@@ -109,6 +114,20 @@ test('the browser fallback takes the preferred language when nothing is pinned',
   });
   expect(lastRecognition).toBeTruthy();
   expect(lastRecognition.lang).toBe('hi');
+});
+
+test('a socket that cannot even be built falls back to the browser recognizer', async () => {
+  // Before the shared link the hook caught this throw and fell back; inside
+  // the link's promise it rejected startListening instead (rv_c897).
+  wsShouldThrow = true;
+  const {result} = renderHook(() => useSpeechRecognition());
+  await act(async () => {
+    await result.current.startListening({preferredLanguage: 'hi'});
+  });
+  expect(lastRecognition).toBeTruthy();
+  expect(lastRecognition.lang).toBe('hi');
+  expect(result.current.activeMethod).toBe('browser');
+  expect(result.current.isListening).toBe(true);
 });
 
 test('the browser fallback takes the pinned language over the preference, else the browser language', async () => {
