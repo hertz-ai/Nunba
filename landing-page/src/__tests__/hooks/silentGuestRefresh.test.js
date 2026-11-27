@@ -224,7 +224,9 @@ test('a pending guest refresh cannot overwrite completed email login', async () 
   mockGuestRegister.mockImplementation(() => new Promise(resolve => { complete = resolve; started(); }));
   const refresh = silentGuestRefresh();
   await requestStarted;
-  require('../../hooks/useAuthSession').setAuthFromOtp({access_token: 'email-token', user_id: 'email-user', email_address: 'test@example.invalid'});
+  // setAuthFromOtp binds the sign-in on the desktop before it writes the
+  // token (main 82e62c0e): the login is complete once it resolves.
+  await require('../../hooks/useAuthSession').setAuthFromOtp({access_token: 'email-token', user_id: 'email-user', email_address: 'test@example.invalid'});
   complete({data: {user: {id: 'guest-old'}, token: 'old-guest-token'}});
   expect(await refresh).toBeNull();
   expect(localStorage.getItem('access_token')).toBe('email-token');
