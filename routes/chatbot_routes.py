@@ -2929,32 +2929,59 @@ def _run_chat_turn(data):
             media_mode = 'text'   # Cloud/web default
     audio_mode = media_mode in ('audio', 'video')
 
-    # ── Video mode: synchronous inline camera-frame caption ──
-    # When media_mode='video', poll the per-user frame store for the
-    # latest JPEG and prepend a "live observation" line to the user's
-    # prompt before the LLM call.  Closes the first-turn race window
-    # where VisionService's async `_description_loop` hasn't run yet
-    # and the LLM otherwise responds "I can't see anything."
+    # ── Synchronous inline camera-frame caption ──
+    # When the person's camera is live, read the per-user frame store's latest JPEG and prepend a
+    # "live observation" line to the user's prompt before the LLM call.  Closes the first-turn race
+    # where VisionService's async `_description_loop` hasn't run yet and the LLM otherwise answers
+    # "I can't see anything."  Failure non-fatal: falls through to the plain LLM call.
     #
-    # Polls up to ~1.5s (10 × 150ms) ONLY when frame store is empty;
-    # exits on iter 1 once a frame arrives.  Failure non-fatal — falls
-    # through to vanilla LLM call.
+    # The camera is the person's input in ANY mode (owner 2026-11-27, asked whether voice-mode turns
+    # with the camera on should also auto-describe it: "yes when the camera is on all the existing
+    # vision services and features shd work"; "media mode is primaryly for output and not input").
+    # media_mode chooses only how the agent answers, and the wording of the prepend.
     #
-    # Cross-OS: same flow on Windows / macOS / Linux.  Windows/Linux
-    # feed frames via existing WebSocket; macOS feeds via the new
-    # /api/vision/frame HTTP transport (commit 4f1c56ab).  Both write
-    # to the same `svc.store.put_frame()` consumed here.
-    if media_mode == 'video' and not image_url:
+    # A live camera is one with a frame younger than the store's age limit (FrameStore frame_ttl,
+    # 10 s); the store holds none while the camera is cut or refused (core.ai_sensing, which stores
+    # a No, never a Yes).  Frames reach the store from the page's WebSocket, Nunba's
+    # /api/vision/frame (the macOS page; a phone through the device link) and the ROS bridge.  No
+    # live camera: no caption and no wait.  The one wait (up to 1.5 s, 10 x 150 ms) is a VIDEO turn
+    # with no frame yet from a person who said yes to the camera (the granted consent row) and has
+    # not cut it: a stream starting (a page that opened straight into video; consent just given).
+    if not image_url:
         try:
             _svc = _get_vision_service()
             _store = getattr(_svc, 'store', None) if _svc is not None else None
-            _frame_bytes = None
-            if _store is not None:
-                for _ in range(10):
+            _frame_bytes = _store.get_frame(str(user_id)) if _store is not None else None
+            if not _frame_bytes and _store is not None and media_mode == 'video':
+                # A stream can be starting only for a person who said YES to the camera: the granted
+                # 'camera_capture' row the page's useCameraConsent reads (ConsentService), and not
+                # cut since (core.ai_sensing).  ai_sensing alone is not that: it stores only a No, so
+                # a person who never answered reads allowed and every camera-off video turn waited
+                # 1.5 s (review rv_page).
+                # This turn's agent is passed, so a grant for this agent counts as well as a
+                # blanket one (check_consent: exact, the agent's '*', then the blanket unless the
+                # person said no to this agent since), as the page's own camera state does.  The
+                # grant is filed under the same id the page sends as /chat's user_id (live 27 Nov:
+                # user 10202's blanket 'camera_capture' row).  A pure read: commit=False.
+                try:
+                    from integrations.social.consent_service import ConsentService, known_agent_id
+                    from integrations.social.models import db_session
+                    # The one agent-id normaliser every consent ask files under (rv_page DRY nit).
+                    _consent_agent = known_agent_id(prompt_id) or known_agent_id(
+                        agent_id if agent_id != 'local_assistant' else None)
+                    with db_session(commit=False) as _db:
+                        _starting = bool(ConsentService.check_consent(
+                            _db, str(user_id), 'camera_capture', agent_id=_consent_agent))
+                    if _starting:
+                        from core.ai_sensing import allowed as _sense_allowed
+                        _starting = bool(_sense_allowed('camera'))
+                except Exception:
+                    _starting = False
+                for _ in range(10 if _starting else 0):
+                    time.sleep(0.15)
                     _frame_bytes = _store.get_frame(str(user_id))
                     if _frame_bytes:
                         break
-                    time.sleep(0.15)
             if _frame_bytes:
                 import tempfile
                 with tempfile.NamedTemporaryFile(suffix='.jpg',
@@ -2982,8 +3009,11 @@ def _run_chat_turn(data):
                         # turns.  Imperative instruction + labelled
                         # OBSERVATION / USER QUESTION separator overrides
                         # that baseline.
+                        # A video turn is a video call; a voice or text turn is the same camera
+                        # but no call (review rv_page /chat: the call wording assumed one).
                         text = (
-                            "You are on a live video call with the user. "
+                            ("You are on a live video call with the user. "
+                             if media_mode == 'video' else "The user's camera is on. ") +
                             "You CAN see them through the camera right now. "
                             "Use the visual observation below to answer "
                             "their question. Do not say you cannot see.\n"
@@ -3006,9 +3036,8 @@ def _run_chat_turn(data):
                     except Exception:
                         pass
             else:
-                logger.info(
-                    f"Video mode: no frame in store for user {user_id}"
-                )
+                # Every turn with the camera off lands here: not worth an INFO line each.
+                logger.debug(f"camera caption: no live frame for user {user_id}")
         except Exception as _ve:
             logger.warning(f"Video-mode inline describe skipped: {_ve}")
 
