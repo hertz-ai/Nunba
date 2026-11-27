@@ -340,7 +340,9 @@ def run_handshake(engine, backend: str,
                 prev = None
         else:
             prev = None
-        engine.synthesize(phrase, tmp_path, language=lang_used)
+        # A probe nobody asked for is not a language the person spoke
+        # (rv_tts nit on a6e9106e): warm_up keeps it out of the record.
+        engine.synthesize(phrase, tmp_path, language=lang_used, warm_up=True)
         if prev and hasattr(engine, "set_backend"):
             try:
                 engine.set_backend(prev)
@@ -393,6 +395,8 @@ def run_handshake(engine, backend: str,
 def retry(engine, backend: str, lang: str | None = None,
           timeout_s: int = 60,
           *,
+          broadcast: bool = True,
+          play_audio: bool = True,
           request_id: str | int | None = None,
           user_id: str | int | None = None,
           prompt_id: str | None = None) -> HandshakeResult:
@@ -401,12 +405,17 @@ def retry(engine, backend: str, lang: str | None = None,
     Public helper so the API / UI layer doesn't have to reach into
     ``_cache`` directly.  Correlation ids (task #335 J2) flow
     through to ``run_handshake`` when the caller has them.
+    ``broadcast`` and ``play_audio`` as in run_handshake: a check nobody
+    asked for (the TTS engine's quiet heal of a demoted voice) passes False
+    for both.
     """
     lang_used, _ = _pick_greeting(lang)
     with _cache_lock:
         _cache.pop((backend, lang_used), None)
     return run_handshake(engine, backend, lang=lang_used,
                          timeout_s=timeout_s,
+                         broadcast=broadcast,
+                         play_audio=play_audio,
                          request_id=request_id,
                          user_id=user_id,
                          prompt_id=prompt_id)

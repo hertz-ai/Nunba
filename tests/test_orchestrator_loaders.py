@@ -403,17 +403,29 @@ class TestSTTLoader(unittest.TestCase):
         """STT load is lazy — always returns True."""
         self.assertTrue(self.loader.load(self._stt_entry(), 'gpu'))
 
+    # is_downloaded answers per row from that row's own model files (owner
+    # 2026-11-24, one source of truth); "faster_whisper is importable" alone
+    # no longer makes a row downloaded.  The file checks themselves are
+    # pinned in tests/test_stt_loader_answers_from_the_model_files.py.
+
     def test_is_downloaded_checks_faster_whisper(self):
-        with patch('importlib.util.find_spec', return_value=MagicMock()):
-            self.assertTrue(self.loader.is_downloaded(self._stt_entry()))
+        with patch('importlib.util.find_spec', return_value=MagicMock()), \
+             patch('integrations.service_tools.whisper_tool._faster_whisper_model_cached',
+                   return_value=True):
+            self.assertTrue(self.loader.is_downloaded(
+                self._stt_entry(id='stt-faster-whisper-base')))
 
     def test_is_downloaded_false_when_missing(self):
-        with patch('importlib.util.find_spec', return_value=None):
-            self.assertFalse(self.loader.is_downloaded(self._stt_entry()))
+        with patch('importlib.util.find_spec', return_value=None), \
+             patch('integrations.service_tools.whisper_tool._faster_whisper_model_cached',
+                   return_value=True):
+            self.assertFalse(self.loader.is_downloaded(
+                self._stt_entry(id='stt-faster-whisper-base')))
 
     def test_is_downloaded_exception_returns_false(self):
         with patch('importlib.util.find_spec', side_effect=Exception("fail")):
-            self.assertFalse(self.loader.is_downloaded(self._stt_entry()))
+            self.assertFalse(self.loader.is_downloaded(
+                self._stt_entry(id='stt-faster-whisper-base')))
 
     def test_download_already_installed_no_cuda(self):
         """If faster_whisper already installed and no nvidia GPU, returns True."""

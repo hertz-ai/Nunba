@@ -30,7 +30,8 @@
  * half: whether a clip the server pushed (SSE 'tts' or WAMP) plays at all.
  */
 
-import {isOtherTurnEnvelope} from '../constants/chatBubble';
+import {isBackgroundRequest, isOtherTurnEnvelope, turnIdOf} from '../constants/chatBubble';
+import {lastTurnStartedHere, turnsStartedHere} from './chatRetry';
 
 
 export function isDraftReply(resultData) {
@@ -62,11 +63,79 @@ export function hasServerAudioPayload(resultData) {
  * toggle can silence it (measured 2026-10-21: speaker OFF, "[TTS] Clip
  * played").  A caller that leaves it out plays nothing rather than speaking
  * over the user's choice.
+ *
+ * Only the device used speaks a turn (owner 2026-11-23: "Only the device you
+ * used").  HARTOS publishes a turn's voice to every device of the person,
+ * tagged with the turn's request id, and the desktop page played the
+ * tablet's turns (live, ~18:30 IST: "[TTS] Clip played" for bc4ed03d,
+ * f25d90c5, e90d9af5).  A clip of a person's turn plays only when this page
+ * started that turn (`sentHere`, chatRetry.turnsStartedHere), the same rule
+ * as the Android app's ChatBubble.playsVoiceOf: a clip of no person's turn
+ * (no id, or one naming nothing: '', None, null, undefined) plays as before.
+ * Only the voice: the reply's words show on every device.
+ *
+ * The device is the desktop, not one window of it.  The last turn the
+ * desktop sent (`lastHere`, chatRetry.lastTurnStartedHere, written by
+ * whichever window sent it) is its current turn too: a quick prompt typed in
+ * the floating companion, which plays no audio, is spoken by this window
+ * even while this page is on an earlier turn of its own.  A turn this page
+ * sends after it moves both on, so the companion's late clip is then an
+ * earlier turn's.
  */
-export function shouldPlayPushedClip(data, currentRequestId, ttsEnabled) {
+export function shouldPlayPushedClip(data, currentRequestId, ttsEnabled,
+  sentHere = turnsStartedHere(), lastHere = lastTurnStartedHere()) {
   if (ttsEnabled !== true) return false;
   if (!data || !data.generated_audio_url) return false;
-  return !isOtherTurnEnvelope(data.request_id, currentRequestId);
+  return isTurnVoicedHere(data.request_id, currentRequestId, sentHere, lastHere);
+}
+
+/**
+ * Whether this device gives voice to the turn `requestId` belongs to: the
+ * device used speaks a turn, the others only show its words (owner
+ * 2026-11-23, "Only the device you used").  The rule shouldPlayPushedClip
+ * applies to a clip the server pushed, and the one a message pushed as text
+ * alone, which this page speaks itself, must pass too: an agent's mid-turn
+ * send of a tablet turn ('<turn>-intermediate-<n>') was spoken by the
+ * desktop page, which never started that turn (live 2026-11-24 16:44 IST,
+ * Cafe Flow: the desktop said the question twice before the tablet's clip
+ * of the turn arrived).
+ */
+export function isTurnVoicedHere(requestId, currentRequestId,
+  sentHere = turnsStartedHere(), lastHere = lastTurnStartedHere()) {
+  const turn = clipTurnOf(requestId);
+  if (turn && turn === lastHere && !isBackgroundRequest(turn)) return true;
+  if (isOtherTurnEnvelope(turn, currentRequestId)) return false;
+  if (!turn) return true;
+  return turn === currentRequestId || Boolean(sentHere && sentHere.has(turn));
+}
+
+/**
+ * Whether this page speaks a message pushed as text alone (Demopage's
+ * text-only branch, which synthesises it here).  A person's turn follows
+ * isTurnVoicedHere: only the device used speaks it.  A message of no person's
+ * turn, a background agent's or a scheduled run's ('daemon_<goal>'), is
+ * spoken as before that rule: the owner's 2026-11-23 ruling leaves proactive
+ * speech unchanged until a "surface used last" signal exists, and the page
+ * spoke such text before 5c8ee27d (rv_5c8e, Finding 1: with the device rule
+ * alone no device spoke a reminder at all; the tablet plays clips only).  A
+ * clip of a background turn still never plays (shouldPlayPushedClip), as
+ * before.
+ */
+export function speaksPushedText(requestId, currentRequestId,
+  sentHere = turnsStartedHere(), lastHere = lastTurnStartedHere()) {
+  const turn = clipTurnOf(requestId);
+  if (turn && isBackgroundRequest(turn)) return true;
+  return isTurnVoicedHere(requestId, currentRequestId, sentHere, lastHere);
+}
+
+// What a missing id reads as once a producer wrote it out: Python's
+// str(None), JSON's null, JavaScript's undefined (RN ChatBubble.NO_ID_WORDS).
+const NO_ID_WORDS = new Set(['none', 'null', 'undefined']);
+
+/** The person's turn a clip names (its request id cut at the send mark), or '' for none. */
+function clipTurnOf(requestId) {
+  const turn = turnIdOf(typeof requestId === 'string' ? requestId.trim() : requestId).trim();
+  return !turn || NO_ID_WORDS.has(turn.toLowerCase()) ? '' : turn;
 }
 
 

@@ -743,6 +743,105 @@ def test_the_persons_home_paired_with_no_folder_is_not_a_stand_in(tmp_path, monk
     assert _home_dir() == home
 
 
+@pytest.mark.parametrize('shape', ['its folder alone', 'its folder after no home',
+                                   'the home with no folder', 'its folder after another home',
+                                   'its folder after a Git Bash spelling of the home'])
+def test_a_runner_that_sets_the_variable_itself_keeps_llama_out_of_the_home(
+        shape, tmp_path, monkeypatch, no_gpu_probe):
+    """On 24 Nov 2026 a direct-call driver set NUNBA_TEST_HOME to its own
+    folder alone before it called install().  install() kept the value,
+    home_dir honours only "<home><os.pathsep><folder>", so the run used the
+    real ~/.nunba: the owner's 8082 was busy, llama took 8083 in its place,
+    saved server_port 8083 into his llama_config.json, and his watchdog
+    started the 2B on 8083.  The person's home here is a stand-in; the real
+    one is never read or written."""
+    from llama.llama_config import LlamaConfig
+    home = tmp_path / 'person'
+    (home / '.nunba').mkdir(parents=True)
+    persons = home / '.nunba' / 'llama_config.json'
+    persons.write_text(json.dumps({'server_port': 8082, 'context_size': 8192}))
+    before = (persons.read_bytes(), persons.stat().st_mtime_ns)
+    runners = tmp_path / 'runners_home'
+    git_bash = '/' + str(home)[0].lower() + str(home)[2:].replace('\\', '/')
+    value = {'its folder alone': str(runners),
+             'its folder after no home': os.pathsep + str(runners),
+             'the home with no folder': str(home) + os.pathsep,
+             # A complete pair home_dir still does not honour: its first part
+             # is not this process's home, so home_dir gives the real one.
+             'its folder after another home': os.pathsep.join(
+                 [str(tmp_path / 'not_this_home'), str(runners)]),
+             'its folder after a Git Bash spelling of the home': os.pathsep.join(
+                 [git_bash, str(runners)])}[shape]
+    monkeypatch.setenv('USERPROFILE', str(home))
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.setenv('NUNBA_TEST_HOME', value)
+    monkeypatch.delenv('NUNBA_MODELS_DIR', raising=False)
+
+    _hermetic_run().install()
+    cfg = LlamaConfig()
+    # What _do_start_server does when the saved port is bound by another
+    # socket: "Using alternative port", then the save.
+    cfg.config['server_port'] = 8083
+    cfg._save_config()
+
+    assert (persons.read_bytes(), persons.stat().st_mtime_ns) == before, (
+        "the run wrote the person's llama_config.json")
+    assert cfg.config_dir != home / '.nunba'
+    if shape != 'the home with no folder':
+        assert cfg.config_file == runners / '.nunba' / 'llama_config.json'
+    assert json.loads(cfg.config_file.read_text())['server_port'] == 8083
+
+
+def test_a_second_install_inside_a_test_that_moved_home_keeps_the_runs_pair(
+        tmp_path, monkeypatch):
+    """rv_6d01 (Medium on 6d01bd6b): install() re-paired a pair it had
+    settled on itself whenever HOME had moved since.  A test that moves HOME
+    and calls install() again then got the private folder instead of its
+    moved home, and once the test put HOME back the leftover pair gave the
+    REAL home for the rest of the run.  Homes here are stand-ins."""
+    person, private, moved = (tmp_path / n for n in ('person', 'private', 'moved'))
+    for folder in (person, private, moved):
+        folder.mkdir()
+    monkeypatch.setenv('USERPROFILE', str(person))
+    monkeypatch.setenv('HOME', str(person))
+    monkeypatch.setenv('NUNBA_TEST_HOME', os.pathsep.join([str(person), str(private)]))
+    _hermetic_run().install()
+    pair = os.environ['NUNBA_TEST_HOME']
+    assert Path(_home_dir()) == private
+
+    monkeypatch.setenv('USERPROFILE', str(moved))
+    monkeypatch.setenv('HOME', str(moved))
+    _hermetic_run().install()
+    assert os.environ['NUNBA_TEST_HOME'] == pair
+    assert Path(_home_dir()) == moved, 'the moved home lost to the private folder'
+
+    monkeypatch.setenv('USERPROFILE', str(person))
+    monkeypatch.setenv('HOME', str(person))
+    assert Path(_home_dir()) == private, 'the run went back to the real home'
+
+
+def test_with_no_test_variable_the_config_is_the_homes_own(tmp_path, monkeypatch, no_gpu_probe):
+    """Every run that is not a test: no NUNBA_TEST_HOME, and llama reads and
+    writes ~/.nunba/llama_config.json, as it always has."""
+    from llama.llama_config import LlamaConfig
+    home = tmp_path / 'home'
+    (home / '.nunba').mkdir(parents=True)
+    (home / '.nunba' / 'llama_config.json').write_text(
+        json.dumps({'server_port': 8082, 'context_size': 8192}))
+    monkeypatch.setenv('USERPROFILE', str(home))
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.delenv('NUNBA_TEST_HOME', raising=False)
+    monkeypatch.delenv('NUNBA_MODELS_DIR', raising=False)
+
+    cfg = LlamaConfig()
+    assert cfg.config_file == home / '.nunba' / 'llama_config.json'
+    assert cfg.config['server_port'] == 8082
+    cfg.config['server_port'] = 8083
+    cfg._save_config()
+
+    assert json.loads((home / '.nunba' / 'llama_config.json').read_text())['server_port'] == 8083
+
+
 def test_an_explicit_config_folder_is_used_as_given(person, no_gpu_probe, tmp_path):
     from llama.llama_config import LlamaConfig
     home, private = person
@@ -780,11 +879,13 @@ def test_source_guard_conftest_calls_the_one_helper_and_keeps_no_copy():
         assert own_copy not in source, own_copy
 
 
-def test_source_guard_the_helper_needs_nothing_but_the_standard_library():
+@pytest.mark.parametrize('name', ['tests/hermetic_run.py', 'llama/home_pair.py'])
+def test_source_guard_the_helper_needs_nothing_but_the_standard_library(name):
     """A runner calls install() before it imports anything of Nunba's or
-    HARTOS's.  That only works while the helper itself imports neither."""
-    path = PROJECT_ROOT / 'tests' / 'hermetic_run.py'
-    assert path.is_file(), 'tests/hermetic_run.py is missing'
+    HARTOS's.  That only works while the helper, and the home rule it loads
+    from llama/home_pair.py, import neither."""
+    path = PROJECT_ROOT / name
+    assert path.is_file(), f'{name} is missing'
     imported = set()
     for node in ast.walk(ast.parse(path.read_text(encoding='utf-8'))):
         if isinstance(node, ast.Import):

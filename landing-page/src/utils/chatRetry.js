@@ -59,7 +59,75 @@ export function makeMsgId() {
 export function startTurn(currentTurnRef) {
   const id = makeMsgId();
   currentTurnRef.current = id;
+  rememberOwnTurn(id);
   return id;
+}
+
+// The turns this desktop started, so a turn's voice plays only on the device
+// that started it (owner 2026-11-23: "Only the device you used";
+// utils/ttsGuards.shouldPlayPushedClip).  The turns sent are kept as a list
+// in localStorage, the newest SENT_TURNS_KEPT, oldest dropped: every window
+// of the app reads it (one WebView2 profile, one origin), so the main window
+// speaks the floating companion's quick prompts, and a reload mid-turn still
+// speaks the turns sent before it (as the Android app keeps keyID).  This
+// window's own record (the newest OWN_TURNS_KEPT, and the asks it answered)
+// is kept in memory too, so a blocked store leaves the page speaking its own
+// turns.  One slot (the last turn only) silenced an earlier turn whose
+// reply had not landed yet (review of 79df4713 + ac152433).
+const OWN_TURNS_KEPT = 200;
+const SENT_TURNS_KEPT = 50;
+export const SENT_TURNS_KEY = 'nunba_sent_turns';
+const ownTurns = new Set();
+
+/** The turns this desktop sent, oldest first ([] for none, a blocked store or junk). */
+function sentTurns() {
+  try {
+    const list = JSON.parse(localStorage.getItem(SENT_TURNS_KEY) || '[]');
+    if (!Array.isArray(list)) return [];
+    return list.filter((t) => typeof t === 'string' && t.trim()).map((t) => t.trim());
+  } catch (e) {
+    return []; // storage blocked, or not a list
+  }
+}
+
+/**
+ * Record `turnId` as this page's.  `last` (default true): it is a turn just
+ * sent, added to the desktop's list (every window, across a reload); an ask
+ * answered here is recorded with last: false, in this window only.  Storage
+ * that throws is skipped.
+ */
+export function rememberOwnTurn(turnId, { last = true } = {}) {
+  if (!turnId) return;
+  const id = String(turnId);
+  ownTurns.delete(id);
+  ownTurns.add(id);
+  while (ownTurns.size > OWN_TURNS_KEPT) {
+    ownTurns.delete(ownTurns.values().next().value);
+  }
+  if (last) {
+    const sent = sentTurns().filter((t) => t !== id);
+    sent.push(id);
+    try {
+      localStorage.setItem(SENT_TURNS_KEY, JSON.stringify(sent.slice(-SENT_TURNS_KEPT)));
+    } catch (e) { /* storage blocked */ }
+  }
+}
+
+/**
+ * The last turn sent from this desktop, by whichever of its windows sent it
+ * ('' for none, or storage blocked): a quick prompt sent from the floating
+ * companion (VoiceOrbPage) is read here by the main window.
+ */
+export function lastTurnStartedHere() {
+  const sent = sentTurns();
+  return sent.length ? sent[sent.length - 1] : '';
+}
+
+/** Every turn this desktop started: this page's record and the turns sent. */
+export function turnsStartedHere() {
+  const here = new Set(ownTurns);
+  sentTurns().forEach((t) => here.add(t));
+  return here;
 }
 
 /**

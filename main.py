@@ -816,7 +816,11 @@ threading.Thread(target=_deferred_platform_init, daemon=True,
 # Security: API Token Authentication for sensitive endpoints
 # =============================================================================
 # Auth decorators — single source of truth in routes/auth.py
-from routes.auth import _is_local_request, require_local_or_token  # noqa: E402
+from routes.auth import (  # noqa: E402
+    _is_local_request,
+    require_local_or_token,
+    require_local_token_or_device,
+)
 
 # Register Nunba AI health endpoints
 try:
@@ -2301,6 +2305,70 @@ def harthash():
     return jsonify(build_identity())
 
 
+@app.route('/avatar/live/<sid>.mp4', methods=["GET", "DELETE"])
+@require_local_token_or_device
+def avatar_live_stream(sid):
+    """One spoken reply's live talking-avatar stream.
+
+    HARTOS's add_live_avatar (integrations/service_tools/avatarforcing_tool.py)
+    put this path in the reply's TTS bundle: generated_video_url for the
+    page, video_link.video (on the advertised base) for a phone.  The model
+    (AvatarForcing, a RuntimeToolManager sidecar managed like every other
+    model) listens on loopback only, so this node's own origin serves its
+    stream, as /tts/audio serves the audio of the same reply.  GET: one
+    fragmented MP4 (H.264 + AAC), relayed chunk by chunk while the frames are
+    made.  DELETE: the page left the reply (stopped, barged in, switched):
+    the sidecar stops generating it.  Said explicitly because a viewer
+    leaving a relayed stream is not always seen here (Hypercorn keeps
+    accepting writes after the client is gone).  This machine and the local
+    token watch any stream; an allowed phone acts as its token's user, so it
+    watches or stops only the streams of that user's turns, and another
+    user's stream is answered exactly like one that does not exist.
+    """
+    if not _re.fullmatch(r'[0-9a-f]{12}', sid or ''):  # main's module-level import
+        return jsonify({'error': 'no such stream'}), 404
+    try:
+        from integrations.service_tools.avatarforcing_tool import sidecar_port, stream_owner
+        from routes.auth import admitted_device_user
+        phone_user = admitted_device_user()  # None for this machine and the local token
+        if phone_user is not None and phone_user != stream_owner(sid):
+            return jsonify({'error': 'no such stream'}), 404
+        port = sidecar_port()
+    except Exception as e:
+        logging.warning(f"avatar stream {sid}: model lookup failed: {e}")
+        port = None
+    if not port:
+        return jsonify({'error': 'the talking-avatar model is not running'}), 503
+    sidecar = f'http://127.0.0.1:{port}/live.mp4'
+    if request.method == 'DELETE':
+        try:
+            r = requests.delete(sidecar, params={'sid': sid}, json={}, timeout=5)
+            return jsonify({'stopped': r.status_code == 200}), (200 if r.status_code in (200, 404) else 502)
+        except requests.RequestException as e:
+            logging.warning(f"avatar stream {sid}: stop not delivered: {e}")
+            return jsonify({'error': 'the talking-avatar model did not answer'}), 502
+    try:
+        upstream = requests.get(sidecar, params={'sid': sid}, stream=True, timeout=(5, 60))
+    except requests.RequestException as e:
+        logging.warning(f"avatar stream {sid}: sidecar unreachable: {e}")
+        return jsonify({'error': 'the talking-avatar model did not answer'}), 502
+    if upstream.status_code != 200:
+        upstream.close()
+        return jsonify({'error': 'no such stream'}), upstream.status_code
+
+    def relay():
+        try:
+            for chunk in upstream.iter_content(chunk_size=None):
+                if chunk:
+                    yield chunk
+        finally:
+            upstream.close()
+
+    from flask import Response, stream_with_context
+    return Response(stream_with_context(relay()), mimetype='video/mp4',
+                    headers={'Cache-Control': 'no-cache, no-store', 'X-Accel-Buffering': 'no'})
+
+
 @app.route('/api/admin/models', methods=["GET"])
 def admin_models_list():
     """List all models in the catalog with compute state and runtime status."""
@@ -2975,12 +3043,14 @@ def _gguf_install_files(repo_files, requested_file: str = '',
         projector_bytes = float(file_sizes.get(projector, 0) or 0)
         required_disk = size + projector_bytes
         try:
-            import shutil
             from pathlib import Path
 
+            from core.platform_paths import free_bytes
             from llama.llama_installer import LlamaInstaller
             target_storage = Path(target_dir).expanduser().resolve() if target_dir else LlamaInstaller().models_dir
-            if shutil.disk_usage(target_storage).free < required_disk:
+            # free_bytes measures the folder's nearest existing parent: the
+            # models folder is made by the download, not before it.
+            if free_bytes(target_storage) < required_disk:
                 return False
         except Exception as exc:
             raise ValueError(
@@ -6673,27 +6743,37 @@ def start_background_services():
                     break
                 time.sleep(0.5)
 
-            # Pre-load F5 on GPU AFTER llama-server is ready.
+            # Pre-load the voices AFTER llama-server is ready.
             # Wait for llama-server to finish loading so VRAM settles.
-            # Then force F5 model load via a test synthesis.
+            # Then force each voice's model load via a test synthesis.
             # The _synth_lock serializes with chat threads (no race condition).
-            # The 60s idle timer will unload F5 if no real TTS comes.
-            logging.info("TTS warm-up: waiting for llama-server to settle before F5 pre-load...")
+            # The port is the one this node's llama config names (its
+            # server_port; 8082 on the owner's desktop).  A fixed :8080 found
+            # no llama-server there, so this waited out all 90 s (walk
+            # 2026-11-23).
+            from llama.llama_config import get_llama_endpoint
+            _llm_health = f"{get_llama_endpoint()}/health"
+            logging.info(f"TTS warm-up: waiting for llama-server ({_llm_health}) "
+                         f"to settle before the voice pre-load...")
             for _llm_wait in range(30):  # up to 90s
                 try:
                     import urllib.request as _ur
-                    _h = _ur.urlopen('http://127.0.0.1:8080/health', timeout=2)
+                    _h = _ur.urlopen(_llm_health, timeout=2)
                     _status = _h.read()
                     _h.close()
                     if b'"ok"' in _status:
-                        logging.info("TTS warm-up: llama-server ready, pre-loading F5...")
+                        logging.info("TTS warm-up: llama-server ready, pre-loading voices...")
                         break
                 except Exception:
                     pass
                 time.sleep(3)
 
-            # Pre-load F5 only if enough VRAM (model 1.3GB + buffers = need 2.5GB free).
-            # If VRAM is too tight (llama took most of it), skip — first chat uses Piper.
+            # A voice that needs the GPU is pre-loaded only with enough VRAM
+            # (F5: model 1.3GB + buffers = need 2.5GB free).  A voice the
+            # engine registry says runs on the CPU is pre-loaded either way:
+            # it then runs on the CPU, as a reply would (tts_engine
+            # _runs_on_cpu).  The GPU check alone skipped every pre-load on
+            # the owner's desktop (1.4GB free, walk 2026-11-23).
             #
             # #218 — also defer pre-load when the user is actively
             # chatting.  Live evidence 2026-05-20 18:12-18:13 showed
@@ -6705,50 +6785,77 @@ def start_background_services():
             # timer will unload anything we DO load; the next chat
             # uses Piper CPU (instant fallback) until the next
             # idle-window warmup fires.
-            _can_preload = False
+            _gpu_room = False
             try:
                 from integrations.service_tools.vram_manager import vram_manager
                 _free = vram_manager.get_free_vram()
-                _can_preload = _free >= 3.0  # need headroom above 2.5 for model + inference
-                if not _can_preload:
-                    logging.info(f"TTS warm-up: only {_free:.1f}GB VRAM free — skipping F5 pre-load")
+                _gpu_room = _free >= 3.0  # need headroom above 2.5 for model + inference
+                if not _gpu_room:
+                    logging.info(f"TTS warm-up: only {_free:.1f}GB VRAM free — "
+                                 f"pre-loading only voices that run on the CPU")
             except Exception:
                 pass
             # #218 — user-priority gate (#123).  Skip user-blocking
             # warmup steps when user is actively chatting.
-            if _can_preload:
-                try:
-                    from integrations.agent_engine.dispatch import is_user_recently_active
-                    if is_user_recently_active():
-                        _can_preload = False
-                        logging.info(
-                            "TTS warm-up: user is actively chatting — "
-                            "deferring F5 pre-load (next idle window "
-                            "will retry).  Honors user-priority gate "
-                            "(#123) so the user's chat turn gets the "
-                            "VRAM/CPU.")
-                except Exception:
-                    pass  # gate not importable — fall through
+            _can_preload = True
+            try:
+                from integrations.agent_engine.dispatch import is_user_recently_active
+                if is_user_recently_active():
+                    _can_preload = False
+                    logging.info(
+                        "TTS warm-up: user is actively chatting — "
+                        "deferring voice pre-load (next idle window "
+                        "will retry).  Honors user-priority gate "
+                        "(#123) so the user's chat turn gets the "
+                        "VRAM/CPU.")
+            except Exception:
+                pass  # gate not importable — fall through
 
+            # The voices to warm: the person's language, then the languages
+            # lines were last spoken in (tts_state.json, newest last).  A
+            # language in both keeps its newest place, so the voice spoken
+            # last is warmed last and stays the active voice, the one
+            # set_language pins against the idle sweep (J214).  Only the
+            # person's language was warmed before, so a Tamil-speaking
+            # agent's first reply started its voice cold: 60 s (walk
+            # 2026-11-23).
+            _order = [preferred_lang] + engine.last_spoken_languages()
+            _warm_langs = [_lg for _i, _lg in enumerate(_order)
+                           if _lg not in _order[_i + 1:]]
             if _can_preload:
                 import tempfile as _tf
+                from tts.tts_engine import _runs_on_cpu
+                from tts.verified_synth import _pick_test_phrase
                 _test_path = os.path.join(_tf.gettempdir(), '_nunba_tts_warmup.wav')
-                # Universal warmup: the `language=` parameter drives model
-                # selection (engine picks the right phoneme set per that code).
-                # The TEXT just needs to be tokenizer-safe across all languages.
-                # "." is a single sentence-end token every TTS tokenizer accepts
-                # — primes weights, produces ~200ms silence, works for every
-                # language without a per-language phrase dict.
-                try:
-                    engine.synthesize(".", output_path=_test_path, language=preferred_lang)
-                    if os.path.exists(_test_path):
-                        os.unlink(_test_path)
-                    logging.info(f"TTS warm-up: engine pre-loaded (lang={preferred_lang})")
-                except Exception as _se:
-                    logging.info(f"TTS warm-up: pre-load skipped ({_se}) — first response uses Piper")
+                for _lang in _warm_langs:
+                    engine.set_language(_lang)
+                    for _wait in range(20):
+                        if not getattr(engine, '_pending_backend', None):
+                            break
+                        time.sleep(0.5)
+                    _backend = engine.backend
+                    if not (_gpu_room or _runs_on_cpu(_backend)):
+                        logging.info(f"TTS warm-up: {_backend} ({_lang}) needs "
+                                     f"the GPU — not pre-loaded")
+                        continue
+                    # A line in the language's own script, the greeting the
+                    # verified_synth handshake speaks: the engine picks the
+                    # voice by the text's script, so "." was spoken by the
+                    # English voice whatever language was asked for.
+                    # warm_up=True: nobody hears it, so it never changes
+                    # the languages on file or their order (review of
+                    # a069849a: ['ta'] became ['en', 'ta'] at boot).
+                    try:
+                        engine.synthesize(_pick_test_phrase(_backend, _lang),
+                                          output_path=_test_path, language=_lang,
+                                          warm_up=True)
+                        if os.path.exists(_test_path):
+                            os.unlink(_test_path)
+                        logging.info(f"TTS warm-up: engine pre-loaded (lang={_lang})")
+                    except Exception as _se:
+                        logging.info(f"TTS warm-up: pre-load skipped ({_se}) — first response uses Piper")
 
-            backend = engine.get_info().get('active_backend', 'unknown')
-            logging.info(f"TTS engine warmed up: {backend} (language={preferred_lang})")
+            logging.info(f"TTS engine warmed up: {engine.backend} (languages={_warm_langs})")
         except Exception as e:
             logging.warning(f"TTS warm-up failed (non-blocking): {e}")
     # WARMUP_TIMEOUT (seconds) is declared at the top of this scope,

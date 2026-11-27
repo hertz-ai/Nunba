@@ -18,6 +18,7 @@ import {useState, useCallback, useRef, useEffect} from 'react';
 import {PocketTTSService} from '../services/pocketTTS';
 import {probeTTSCapability} from '../services/ttsCapabilityProbe';
 import {getTtsAudioElement} from '../services/ttsAudioElement';
+import {stopLiveAvatar} from '../utils/liveAvatar';
 import {TTS_API_URL} from '../config/apiBase';
 
 const TTS_API_BASE = TTS_API_URL;
@@ -492,6 +493,9 @@ export function useTTS(options = {}) {
     }
     // Stop browser TTS
     pocketTTSRef.current?.stop();
+    // Stop a live talking-avatar reply (it carries the reply's speech), so a
+    // barge-in or the speaker toggle silences it like any other reply.
+    stopLiveAvatar();
     // No pending race to cancel (choose-one-upfront logic)
     audioQueueRef.current = [];
     isProcessingRef.current = false;

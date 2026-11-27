@@ -11,7 +11,7 @@ import connectedGif from '../assets/images/connected.gif';
 // the companion, the icon was always self-referential noise.
 import Lottie from 'lottie-react';
 import creationModeAnimation from '../assets/images/Animation.json';
-import AgentOverlay from '../components/AgentOverlay/AgentOverlay';
+import AgentOverlay, { chatMessagesAfterAsk, withOpenChatAsks } from '../components/AgentOverlay/AgentOverlay';
 import {Link as RouterLink, useNavigate, useParams, useLocation} from 'react-router-dom';
 import {
   ChevronDown,
@@ -28,12 +28,13 @@ import { WAMP_LOCAL_URL, WAMP_CLOUD_URL, SOCIAL_API_URL } from '../config/apiBas
 import { selectPdf, selectImage } from '../utils/attachmentUpload';
 import { isLocalBackendHost, localWampUrl } from '../utils/backendHost';
 import { rememberServerPromptId } from '../utils/promptId';
-import { CHAT_BUBBLE_PRIORITY, CHAT_ACTION_THINKING, CHAT_ACTION_STATUS, isOtherTurnEnvelope } from '../constants/chatBubble';
+import { CHAT_BUBBLE_PRIORITY, CHAT_ACTION_THINKING, CHAT_ACTION_STATUS, isOtherTurnEnvelope, repeatsShownMessage } from '../constants/chatBubble';
 import {animateScroll as scrollLibrary} from 'react-scroll';
 
 import autobahn from 'autobahn';
 import { classifyError, getBackoff, startTurn, MAX_RETRIES, turnHasReply, EMPTY_REPLY_REASON, PUSHED_REPLY_MISSING_REASON } from '../utils/chatRetry';
-import { shouldSpeakLocalReply, isDraftReply, hasServerAudioPayload, shouldPlayPushedClip, initialTtsEnabled } from '../utils/ttsGuards';
+import { shouldSpeakLocalReply, isDraftReply, hasServerAudioPayload, shouldPlayPushedClip, speaksPushedText, initialTtsEnabled } from '../utils/ttsGuards';
+import { startLiveAvatar, stopLiveAvatar } from '../utils/liveAvatar';
 import { mergeRestoredMessages } from '../utils/mergeRestoredMessages';
 import { normalizeRestoredMessages } from '../utils/normalizeRestoredMessages';
 import { holdsAgentChat, isSetupCard, restoreServerHistory } from '../utils/serverChatHistory';
@@ -42,7 +43,7 @@ import { decrypt, encrypt } from '../utils/encryption';
 import useAuthSession, { setGuestIdentity, clearAuth, silentGuestRefresh } from '../hooks/useAuthSession';
 import { logger } from '../utils/logger';
 import { useShellBridge } from '../utils/shellBridge';
-import { matchAgentBySlug } from '../utils/agentSlug';
+import { matchAgentBySlug, agentPath } from '../utils/agentSlug';
 
 // NewHome is only loaded when user is not logged in (landing page)
 const NewHome = React.lazy(() =>
@@ -66,8 +67,8 @@ import {getStableDeviceIdOnce} from '../utils/deviceId';
 // ── TTS hook for offline text-to-speech ──
 import {useTTS} from '../hooks/useTTS';
 // ── Camera frames, streamed while the owner's camera consent is on file ──
-import {useConsentedCameraStream} from '../hooks/useCameraConsent';
-import {sttConfigMessage, startContinuousRecognition, addressedToNunba, micTurnText, OPEN_MIC_CUE} from '../hooks/useSpeechRecognition';
+import {setCameraConsent, useConsentedCameraStream} from '../hooks/useCameraConsent';
+import {sttConfigMessage, startContinuousRecognition, addressedToNunba, micTurnText, OPEN_MIC_CUE, MIC_STOPPED_CUE, openSttLink, agentVoiceTailMs, hearsAgentVoice} from '../hooks/useSpeechRecognition';
 import {getTtsAudioElement} from '../services/ttsAudioElement';
 import {playTtsClip} from '../services/ttsClipPlayer';
 
@@ -83,6 +84,7 @@ import {useLocalEngineReady} from '../hooks/useLocalEngineReady';
 import {scheduleLoadingRetry} from '../utils/loadingRetry';
 
 // ── Extracted sub-components ──
+import AgentPersonaLabel from '../components/chat/AgentPersonaLabel';
 import GpuTierBadge from '../components/chat/GpuTierBadge';
 import NotificationBell from '../components/Common/NotificationBell';
 import AgentSidebar from './chat/AgentSidebar';
@@ -112,8 +114,9 @@ const PUSHED_REPLY_WAIT_MS = 120000;
 
 // handleStart's argument when the page opens the mic by itself (once speech
 // recognition is ready) rather than the person clicking it.  Such a mic hears
-// the whole room, so it sends only speech that names Nunba
-// (useSpeechRecognition.micTurnText).  A click passes the click event.
+// the whole room, so its turns are sent marked open_mic and HARTOS decides
+// from context whether the agent answers (useSpeechRecognition.micTurnText).
+// A click passes the click event.
 const UNPROMPTED_MIC = 'unprompted';
 
 // Setup/install cards (CUDA torch, GPU-whisper ctranslate2, model downloads,
@@ -325,6 +328,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   // pins them at their start-of-capture values (both false) and the gate never
   // fires. Same reason handleSendRef exists two lines up.
   const ttsActiveRef = useRef(false);
+  // When the agent's voice last stopped on this page (Date.now()), so the
+  // gate stays shut for a tail after it (_useStreamingWhisper, #289).
+  const agentVoiceEndedAtRef = useRef(null);
 
   // ── HART OS shell bridge (utils/shellBridge.useShellBridge) ──
   // Inside HART OS this page is the desktop's one chat surface: the shell frames
@@ -547,9 +553,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         for (const [type, step] of Object.entries(data.steps)) {
           if (step.status === 'ready' && !announcedCapsRef.current.has(type)) {
             announcedCapsRef.current.add(type);
-            // Auto-start mic when STT is ready — voice-first UX.  Nobody
-            // clicked it, so it sends only speech that names Nunba, and the
-            // announcement says so.
+            // Auto-start mic when STT is ready: the mic is on by default.
+            // Nobody clicked it, so its turns go marked open_mic, and the
+            // announcement says the mic is on.
             const opensMic = type === 'stt' && !isRecording && handleStartRef.current;
             const label = opensMic ? OPEN_MIC_CUE : CAPABILITY_LABELS[type];
             if (label) {
@@ -669,6 +675,28 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   // LLM had no visual context.  Defaulting here means every consumer of
   // effectiveUserId sees the same non-empty value.  Cross-platform.
   const effectiveUserId = (isGuestMode ? guestUserId : decryptedUserId) || 'guest';
+  // The open agent's questions shown in this chat (AgentOverlay chatAsks):
+  // ask_id -> {state, card}, the card only while it is open here.  What the
+  // chat's history keeps of an ask is its question and, once known, how it
+  // closed (askChatMessage); never an answer.
+  const [askStates, setAskStates] = useState({});
+  // Read by the agent switch's delayed history load (withOpenChatAsks), which
+  // runs after the overlay has moved the new chat's open asks into it.
+  const askStatesRef = useRef(askStates);
+  askStatesRef.current = askStates;
+  const handleChatAsk = useCallback((event) => {
+    const {askId, state, card} = event || {};
+    if (!askId) return;
+    setAskStates((prev) => ({...prev, [askId]: {state, card: state === 'open' ? card : undefined}}));
+    // The one rule for what the chat keeps (AgentOverlay.chatMessagesAfterAsk).
+    setMessages((prev) => chatMessagesAfterAsk(prev, event));
+    if (state === 'open') setShouldScroll(true);
+  }, []);
+  // Asks the chat's history shows whose state this page does not know (a
+  // reload): AgentOverlay reads them from HARTOS.
+  const askIdsToCheck = messages
+    .filter((m) => m && m.type === 'agent_ask' && !m.closed && !askStates[m.askId])
+    .map((m) => m.askId);
   const [uploadedPdf, setUploadedPdf] = useState(null);
   const [pdfurl, setPdfurl] = useState(null);
   const [worker, setWorker] = useState(null);
@@ -942,9 +970,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           'Processing...';
         setMessages((prev) => [...prev, { type: 'system', content: phaseLabel }]);
 
+        // Each step the page sends on its own is a turn of this page,
+        // started as handleSend starts one (chatRetry.startTurn), so its
+        // reply's voice plays here (ttsGuards.shouldPlayPushedClip).  Sent
+        // with no id, the server minted one this page did not know.
+        const contTurn = startTurn(requestIdRef);
+        setRequestId(contTurn);
         const contResult = await chatApi.chat({
           text: 'Yes, proceed with the next step',
           user_id: effectiveUserId,
+          request_id: contTurn,
           agent_id: currentAgent?.id || 'local_assistant',
           agent_type: 'local',
           conversation_id: conversationId,
@@ -958,13 +993,21 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         const contText = contData.text || contData.response;
 
         if (contText) {
-          setMessages((prev) => [...prev, {
+          const contMessage = {
             type: 'assistant',
             content: contText,
             source: contData.source,
             servedBy: contData.served_by,
             nodeTier: contData.node_tier,
-          }]);
+            persona: contData.persona,
+            // The agent this turn was sent to (the server's id when it
+            // minted one): only the open agent's replies name its persona.
+            promptId: currentAgent?.prompt_id || contData.prompt_id,
+            // The turn it ends: a send of this turn already showing these
+            // words is this reply (constants/chatBubble.repeatsShownMessage).
+            requestId: contTurn,
+          };
+          setMessages((prev) => (repeatsShownMessage(contMessage, prev) ? prev : [...prev, contMessage]));
           setShouldScroll(true);
         }
 
@@ -1005,9 +1048,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               // Trigger one more continuation to run the agent with the original task
               setTimeout(async () => {
                 try {
+                  const execTurn = startTurn(requestIdRef);   // a turn of this page, as above
+                  setRequestId(execTurn);
                   const execResult = await chatApi.chat({
                     text: originalTask,
                     user_id: effectiveUserId,
+                    request_id: execTurn,
                     agent_id: currentAgent?.id || 'local_assistant',
                     agent_type: 'local',
                     conversation_id: conversationId,
@@ -1024,13 +1070,19 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                   const execData = execResult || {};
                   const execText = execData.text || execData.response;
                   if (execText) {
-                    setMessages((prev) => [...prev, {
+                    // A REUSE turn of the new agent: its newest send is
+                    // often this reply (repeatsShownMessage, as in handleSend).
+                    const execMessage = {
                       type: 'assistant',
                       content: execText,
                       source: execData.source,
                       servedBy: execData.served_by,
                       nodeTier: execData.node_tier,
-                    }]);
+                      persona: execData.persona,
+                      promptId: currentAgentRef.current?.prompt_id || contData.prompt_id,
+                      requestId: execTurn,
+                    };
+                    setMessages((prev) => (repeatsShownMessage(execMessage, prev) ? prev : [...prev, execMessage]));
                     setShouldScroll(true);
                   }
                   // Clean up autonomous state
@@ -1079,9 +1131,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       const [next, ...rest] = messageQueue;
       setMessageQueue(rest);
       // Directly set inputMessage and call handleSend via ref on next tick
-      setInputMessage(next.text);
+      // (an open-mic turn keeps its open_mic mark through the queue, and
+      // goes with its own words, never through the input box).
+      if (!next.openMic) setInputMessage(next.text);
       setTimeout(() => {
-        if (handleSendRef.current) handleSendRef.current();
+        if (handleSendRef.current) handleSendRef.current({ openMic: next.openMic === true, text: next.text });
       }, 50);
     }
   }, [loading, engineReady, agentsLoading]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1103,9 +1157,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       setMessageQueue((prev) => {
         if (prev.length === 0) return prev;
         const [next, ...rest] = prev;
-        setInputMessage(next.text);
+        if (!next.openMic) setInputMessage(next.text);
         setTimeout(() => {
-          if (handleSendRef.current) handleSendRef.current();
+          if (handleSendRef.current) handleSendRef.current({ openMic: next.openMic === true, text: next.text });
         }, 50);
         return rest;
       });
@@ -1137,10 +1191,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
   useEffect(() => {
     if (agentName) {
-      let matchedAgent = matchAgentBySlug(allAgents, agentName);
+      // ?id=<prompt_id> from the gallery card tells apart two agents with one name.
+      const agentId = new URLSearchParams(location.search).get('id');
+      let matchedAgent = matchAgentBySlug(allAgents, agentName, agentId);
 
       if (!matchedAgent) {
-        matchedAgent = matchAgentBySlug(items, agentName);
+        matchedAgent = matchAgentBySlug(items, agentName, agentId);
       }
 
       if (matchedAgent) {
@@ -1153,7 +1209,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             logger.log(
               `💾 Saving ${messages.length} messages for agent: ${currentAgent.name}`
             );
-            saveMessagesToStorage(messages, _switchFromId);
+            saveMessagesToStorage(messages, _switchFromId, currentAgent.name);
           }
 
           // Setup/install cards are system-global, not agent-scoped — carry
@@ -1181,8 +1237,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             );
             // Re-merge the carried system setup cards on top of the new
             // agent's history, deduped by jobType: a same-id card collapses
-            // to one (idempotent), distinct cards all stay visible.
-            setMessages(mergeCarriedSetupCards(savedMessages, carriedSetup));
+            // to one (idempotent), distinct cards all stay visible.  The
+            // agent's questions still open in its chat go back in too: the
+            // overlay moved them into the chat before this load replaced it.
+            setMessages(withOpenChatAsks(
+              mergeCarriedSetupCards(savedMessages, carriedSetup), askStatesRef.current));
           }, 100);
 
           if (matchedAgent.fillers) {
@@ -1197,7 +1256,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         }
       }
     }
-  }, [allAgents, agentName]);
+  }, [allAgents, agentName, location.search]);
 
   const handleCreateAgentSubmit = async (agentDatafromApi) => {
     try {
@@ -1207,7 +1266,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         logger.log(
           `💾 Saving ${messages.length} messages before creating new agent`
         );
-        saveMessagesToStorage(messages, currentAgent.prompt_id || currentAgent.id);
+        saveMessagesToStorage(messages, currentAgent.prompt_id || currentAgent.id, currentAgent.name);
       }
 
       logger.log(
@@ -1234,8 +1293,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       }
 
       setShowCreateAgentForm(false);
-      const encodedName = encodeURIComponent(agentDatafromApi.name);
-      navigate(`/agents/${encodedName}`);
+      navigate(agentPath(agentDatafromApi));
 
       logger.log(
         `✨ New agent created with fresh chat: ${agentDatafromApi.name}`
@@ -1268,7 +1326,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         logger.log(
           `💾 Component unmount: Saving ${messagesRef.current.length} messages for ${currentAgentRef.current.name}`
         );
-        saveMessagesToStorage(messagesRef.current, _unmountId);
+        saveMessagesToStorage(messagesRef.current, _unmountId, currentAgentRef.current.name);
       }
     };
   }, []);
@@ -1323,9 +1381,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
         // Local /prompts already merges HARTOS + cloud agents — no separate cloud call needed
 
-        // Multi-device agent sync (authenticated users only)
+        // Multi-device agent sync (authenticated users only).  Gated on the
+        // cloud session, not the user id alone: the id is known from storage
+        // before useStorageSync restores the token, and a sync sent then went
+        // out with no token, got 401 and never ran again (live 2026-11-25).
         const mergeSyncedAgents = async () => {
-          if (decryptedUserId && !isGuestMode) {
+          if (decryptedUserId && !isGuestMode && session.status === 'cloud') {
             try {
               const syncRes = await chatApi.getAgentSync();
               const syncAgents = syncRes?.agents || [];
@@ -1484,7 +1545,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       }
     };
     fetchPrompts();
-  }, [agentData, decryptedUserId, agentRetryTrigger]);
+  }, [agentData, decryptedUserId, agentRetryTrigger, session.status]);
 
   // HART welcome: previously injected a fake assistant message which prevented
   // the empty-state welcome view (agent name + starter chips) from showing.
@@ -1764,7 +1825,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     return `chat_messages_${promptId}`;
   };
 
-  const saveMessagesToStorage = (messages, promptId) => {
+  // `name` is the name of the agent whose id is promptId.  Every caller passes
+  // it: currentAgent in this closure can be another agent (a stale render).
+  const saveMessagesToStorage = (messages, promptId, name) => {
     // Setup cards alone are not this agent's chat.  An agent switch keeps
     // them on screen (isGlobalSetupCard), and a save inside the switch wrote
     // them over the agent's stored conversation: 2026-11-04, agents 54,
@@ -1775,7 +1838,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       const storageKey = getChatStorageKey(promptId);
       const chatData = {
         agentId: promptId,
-        agentName: currentAgent?.name,
+        agentName: name,
         lastUpdated: new Date().toISOString(),
         messageCount: messages.length,
         messages: messages,
@@ -1902,6 +1965,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
   const changeMediaMode = (newMode) => {
     setMediaMode(newMode);
+    // A live avatar reply lives in the video element this change replaces (its onStop
+    // clears the speaking state); the mode's own video choice below then applies.
+    stopLiveAvatar();
 
     if (newMode === 'text') {
       // Text mode: stop all media
@@ -1957,7 +2023,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       };
 
       if (currentAgent?.prompt_id && messages.length > 0) {
-        saveMessagesToStorage(messages, currentAgent.prompt_id || currentAgent.id);
+        saveMessagesToStorage(messages, currentAgent.prompt_id || currentAgent.id, currentAgent.name);
       }
       setMessages([
         {
@@ -1986,7 +2052,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         logger.log(
           `💾 Saving ${messages.length} messages before selecting ${agent.name}`
         );
-        saveMessagesToStorage(messages, currentAgent.prompt_id || currentAgent.id);
+        saveMessagesToStorage(messages, currentAgent.prompt_id || currentAgent.id, currentAgent.name);
       }
 
       logger.log(`🧹 Clearing messages for agent selection: ${agent.name}`);
@@ -2061,6 +2127,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       }
       return;
     }
+    stopLiveAvatar(); // a reply heard as audio takes over from a live avatar reply
     const el = getTtsAudioElement();
     const outcome = playTtsClip(el, data.generated_audio_url, {
       onStart: () => {
@@ -2081,6 +2148,83 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     });
     console.log('[TTS] Clip', outcome + ':', data.generated_audio_url);
   }, []);
+
+  // Talking avatar: on a video turn of an agent with a face, the pushed TTS bundle also
+  // carries generated_video_url, a live stream of the agent's portrait speaking the reply
+  // (HARTOS avatarforcing_tool.add_live_avatar; utils/liveAvatar plays it). The same
+  // bundle arrives on both the WAMP and the SSE path, so it is deduped by URL like the
+  // audio player. A bundle without a stream, a browser that cannot play it, or a stream
+  // that fails to start plays the reply's audio exactly as before (playPushedTts).
+  const mediaModeRef = useRef(mediaMode);
+  useEffect(() => { mediaModeRef.current = mediaMode; }, [mediaMode]);
+  const liveAvatarRef = useRef(null);
+  const lastAvatarClipRef = useRef(null);
+  const idleVideoUrlRef = useRef(null);
+  useEffect(() => { idleVideoUrlRef.current = idleVideoUrl; }, [idleVideoUrl]);
+  const playReply = useCallback((data) => {
+    const stream = data && data.generated_video_url;
+    // Only where the agent's <video> is on the page (video mode); anywhere else the
+    // reply is heard, as before.
+    if (stream && mediaModeRef.current === 'video'
+        && shouldPlayPushedClip(data, requestIdRef.current, ttsEnabledRef.current)) {
+      if (lastAvatarClipRef.current === stream) return;
+      lastAvatarClipRef.current = stream;
+      const live = startLiveAvatar({streamUrl: stream, seconds: data.video_seconds});
+      if (live) {
+        getTtsAudioElement().pause(); // an earlier reply's clip yields to this one
+        live.fallback = () => playPushedTts(data);
+        live.onEarlyStop = () => { // stopped before the element took it
+          if (liveAvatarRef.current === live) liveAvatarRef.current = null;
+          setIsPlayingResponse(false);
+          setVideoUrl(idleVideoUrlRef.current || null);
+        };
+        liveAvatarRef.current = live;
+        setIsPlayingResponse(true);
+        setVideoUrl(live.url);
+        // The element must take the stream soon; if it never does, the reply is heard.
+        setTimeout(() => {
+          if (!live.attached && live.active && liveAvatarRef.current === live) {
+            live.stop();
+            liveAvatarRef.current = null;
+            setVideoUrl(idleVideoUrlRef.current || null);
+            live.fallback();
+          }
+        }, 2500);
+        return;
+      }
+    }
+    playPushedTts(data);
+  }, [playPushedTts]);
+  useEffect(() => {
+    const live = liveAvatarRef.current;
+    if (live && !live.attached && videoUrl === live.url && videoRef.current) {
+      const done = () => {
+        if (liveAvatarRef.current === live) liveAvatarRef.current = null;
+        setIsPlayingResponse(false);
+      };
+      live.attach(videoRef.current, {
+        onEnd: ({natural} = {}) => {
+          done();
+          // Ended early (no 'ended' event): handleMediaEnded will not bring the idle face back.
+          if (!natural) setVideoUrl(idleVideoUrlRef.current || null);
+        },
+        onFail: () => {
+          // Nothing of it could play: back to the idle face, and the reply is heard.
+          done();
+          setVideoUrl(idleVideoUrlRef.current || null);
+          live.fallback();
+        },
+        onStop: () => {
+          // Stopped (barge-in, speaker off, a new reply, a switch): not speaking any more,
+          // and the face goes back to idle instead of freezing mid-word.
+          done();
+          setVideoUrl(idleVideoUrlRef.current || null);
+        },
+      });
+    }
+  }, [videoUrl]);
+  // Leaving the page stops a live reply (and its generation on the server).
+  useEffect(() => () => stopLiveAvatar(), []);
 
   const handleDataReceived = useCallback((data) => {
     logger.log('🚦 handleDataReceived START');
@@ -2214,7 +2358,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       // listener also receives): the same single player, deduped by URL.
       if (parsed.action === 'TTS' && parsed.generated_audio_url) {
         logger.log('TTS AUDIO RECEIVED:', parsed.generated_audio_url);
-        playPushedTts(parsed);
+        playReply(parsed);
         return;
       }
 
@@ -2474,8 +2618,19 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             source: parsed.source || 'cloud',
             servedBy: parsed.served_by,
             nodeTier: parsed.node_tier,
+            // The persona HARTOS named for this person in the agent that
+            // pushed it (design_1125 B): the chat header shows the newest
+            // of the open agent's (AgentPersonaLabel).
+            persona: parsed.persona,
+            promptId: parsed.prompt_id,
+            // Its turn and its own id: the same words of this turn already
+            // on screen (its /chat reply, another leg of this push) are this
+            // message (constants/chatBubble.repeatsShownMessage).
+            requestId: parsed.request_id,
+            msgId: parsed.msg_id,
           };
           setMessages((prev) => {
+            if (repeatsShownMessage(assistantMessage, prev)) return prev;
             const newMessages = [...prev, assistantMessage];
             setAnimatingMessageIndex(null);
             setShouldScroll(true);
@@ -2502,17 +2657,33 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           source: parsed.source || 'cloud',
           servedBy: parsed.served_by,
           nodeTier: parsed.node_tier,
+          persona: parsed.persona,
+          promptId: parsed.prompt_id,
+          requestId: parsed.request_id,
+          msgId: parsed.msg_id,
         };
 
         setMessages((prev) => {
+          if (repeatsShownMessage(assistantMessage, prev)) {
+            // Shown already, so no row of its own types.  The voice below
+            // still says it and starts the typewriter clock: left on another
+            // row (another device's line, drawn whole), that row would retype
+            // from blank under these words.
+            setAnimatingMessageIndex(null);
+            return prev;
+          }
           const newMessages = [...prev, assistantMessage];
           setAnimatingMessageIndex(newMessages.length - 1);
           setShouldScroll(true);
           return newMessages;
         });
 
-        // Speak + typewriter: whichever comes first — audio arrival or 5s timeout
-        if (ttsEnabled && tts.isAvailable && extractedText) {
+        // Speak + typewriter: whichever comes first — audio arrival or 5s timeout.
+        // Only the device that started a person's turn speaks it; the words
+        // show everywhere.  A background agent's message is spoken as before
+        // (ttsGuards.speaksPushedText).
+        if (ttsEnabled && tts.isAvailable && extractedText
+            && speaksPushedText(parsed.request_id, requestIdRef.current)) {
           const wordCount = extractedText.split(/\s+/).length;
           const estimatedSeconds = Math.max(2, wordCount / 2.5);
           let typewriterStarted = false;
@@ -2548,8 +2719,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             source: parsed.source,
             servedBy: parsed.served_by,
             nodeTier: parsed.node_tier,
+            persona: parsed.persona,
+            promptId: parsed.prompt_id,
+            requestId: parsed.request_id,
+            msgId: parsed.msg_id,
           };
           setMessages((prev) => {
+            if (repeatsShownMessage(assistantMessage, prev)) return prev;
             const newMessages = [...prev, assistantMessage];
             setAnimatingMessageIndex(newMessages.length - 1);
             setShouldScroll(true);
@@ -2873,7 +3049,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       console.log('[TTS] Event received:', data.generated_audio_url, 'req:', data.request_id);
       // playPushedTts decides whose turn the clip is; this listener only
       // hands it over, as the WAMP path does.
-      playPushedTts(data);
+      playReply(data);
     });
 
     // Setup progress — TTS engine install, model downloads.
@@ -3001,12 +3177,19 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       if (String(row.prompt_id || '') !== openAgent) return;
       setMessages((prev) => {
         if (prev.some((m) => m.messageId === row.msg_id)) return prev;
-        return [...prev, {
+        const mirrored = {
           type: row.role,
           content: row.content,
           messageId: row.msg_id,
+          // Its turn: an agent's reply mirrored here repeats the send of its
+          // turn this page already shows (constants/chatBubble.
+          // repeatsShownMessage).  No msgId: the server's ids are not a
+          // push's.
+          requestId: row.request_id,
           sourceDevice: row.device_id || 'another device',
-        }];
+        };
+        if (repeatsShownMessage(mirrored, prev)) return prev;
+        return [...prev, mirrored];
       });
       setShouldScroll(true);
     });
@@ -3119,6 +3302,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   };
 
   const handleVideoError = (e) => {
+    // A live avatar reply handles its own errors (utils/liveAvatar falls back to the audio);
+    // hiding the element would hide every later reply and the idle face with it.
+    if (liveAvatarRef.current && e.target.src === liveAvatarRef.current.url) return;
     e.target.style.display = 'none';
   };
 
@@ -3176,6 +3362,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   };
 
   const handleButtonClick = (chat) => {
+    stopLiveAvatar(); // the last agent's live reply ends with its chat
     setVideoUrl(null);
     setCurrentAgent(chat);
     logger.log('hello');
@@ -3185,7 +3372,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         logger.log(
           `💾 Saving ${messages.length} messages before switching to ${chat.name}`
         );
-        saveMessagesToStorage(messages, currentAgent.prompt_id || currentAgent.id);
+        saveMessagesToStorage(messages, currentAgent.prompt_id || currentAgent.id, currentAgent.name);
       }
 
       logger.log(`🧹 Clearing messages for agent switch to: ${chat.name}`);
@@ -3201,11 +3388,14 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         logger.log(
           `📥 Loading ${savedMessages.length} messages for agent: ${chat.name}`
         );
-        setMessages(mergeCarriedSetupCards(savedMessages, carriedSetup));
+        // The agent's questions still open in its chat go back in
+        // (withOpenChatAsks): the overlay moved them in before this load.
+        setMessages(withOpenChatAsks(
+          mergeCarriedSetupCards(savedMessages, carriedSetup), askStatesRef.current));
       }, 100);
 
       setIsOpen(false);
-      navigate(`/agents/${encodeURIComponent(chat.name)}`);
+      navigate(agentPath(chat));
     } else {
       logger.log('Same agent or agent not found');
     }
@@ -3321,18 +3511,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     if (isRecording || micBusyRef.current) return;
     micBusyRef.current = true;
     // True when the page opened this mic by itself; a click passes its event.
+    // Such a mic sends what it hears through the same send as a clicked one,
+    // marked open_mic ({ openMic: true }), and HARTOS decides whether the
+    // agent answers.  It used to drop every final that did not start with
+    // "Nunba" (owner 2026-11-24: the mic is on by default, no keyword).
     const unprompted = how === UNPROMPTED_MIC;
-    // Such a mic drops speech that does not name Nunba.  Both tiers report a
-    // drop here: the length only (it is room speech, not the person's), and
-    // once per mic an on-screen cue so the refusal is not silent.
-    let toldToSayName = false;
-    const notAddressed = (said) => {
-      console.log(`[STT] open mic: ${String(said).trim().length} chars not addressed to Nunba, not sent`);
-      if (!toldToSayName) {
-        toldToSayName = true;
-        pushNotification({ type: 'info', message: OPEN_MIC_CUE });
-      }
-    };
 
     // Barge-in: if TTS is playing, stop it before starting mic
     if (tts.isSpeaking) {
@@ -3395,38 +3578,61 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           },
         });
 
-        // Connect WebSocket
-        const ws = new WebSocket(wsUrl);
-        let wsReady = false;
         let autoSendTimer = null;
         let fullText = '';
-
-        ws.onopen = () => {
-          wsReady = true;
-          // No pinned language: Whisper detects what was spoken, so the
-          // person can talk in any language.  (This used to pin
-          // hart_language "so Whisper doesn't auto-detect"; on an 'en' box
-          // that decoded every other language as English.)  Same message the
-          // canonical hook sends -- useSpeechRecognition.sttConfigMessage.
-          ws.send(JSON.stringify(sttConfigMessage()));
+        // The audio nodes, made below; the link's give-up tears them down.
+        let audioCtx = null;
+        let source = null;
+        let processor = null;
+        const stopAudio = () => {
+          try { if (processor) processor.disconnect(); } catch { /* gone */ }
+          try { if (source) source.disconnect(); } catch { /* gone */ }
+          try { if (audioCtx) audioCtx.close(); } catch { /* gone */ }
+          stream.getTracks().forEach(t => t.stop());
         };
-        ws.onmessage = (evt) => {
+        // A signed-in person's id labels their voice window on the server
+        // (whisper_tool: which voice said each final); it never authorizes
+        // anything.  The same id this page's chat request sends.
+        const sttUrl = effectiveUserId && effectiveUserId !== 'guest'
+          ? `${wsUrl}${wsUrl.includes('?') ? '&' : '?'}user_id=${encodeURIComponent(effectiveUserId)}`
+          : wsUrl;
+
+        // One speech socket kept open for as long as the mic is: it
+        // reconnects, holding what is said meanwhile, and says so when it
+        // cannot (useSpeechRecognition.openSttLink, shared with the hook).
+        // Owner 2026-11-24: this mic's socket died at 14:39, the button kept
+        // showing Stop, and nothing said from 15:00 to 15:06 was heard.
+        // The speech server's plain words for why nothing was heard yet
+        // (whisper_tool: the voice model is still downloading, or this
+        // computer cannot run one for the person's language).  Every pause
+        // repeats it, so it shows once until words are heard again.
+        let lastNotice = '';
+        const onMessage = (evt) => {
           try {
             const data = JSON.parse(evt.data);
+            if (data.notice && !data.text?.trim()) {
+              if (data.notice !== lastNotice) {
+                lastNotice = data.notice;
+                pushNotification({ type: 'info', message: data.notice });
+              }
+              return;
+            }
             if (data.text?.trim()) {
+              lastNotice = '';
               if (data.is_final) {
-                const words = micTurnText(data.text, unprompted);
-                if (!words) {
-                  notAddressed(data.text);
-                  return;
-                }
+                const words = micTurnText(data.text);
+                if (!words) return;
                 fullText += (fullText ? ' ' : '') + words;
-                setInputMessage(fullText);
-                // Auto-send after 1s of silence (fast conversational flow)
+                // A clicked mic fills the input box as before.  The open mic
+                // never writes there (the person may be typing): its words
+                // go as the turn's own text.
+                if (!unprompted) setInputMessage(fullText);
+                // Auto-send after 1s of silence (fast conversational flow),
+                // marked open_mic when the page opened this mic.
                 clearTimeout(autoSendTimer);
                 autoSendTimer = setTimeout(() => {
                   if (fullText.trim() && handleSendRef.current) {
-                    handleSendRef.current();
+                    handleSendRef.current({ openMic: unprompted, text: fullText });
                     fullText = '';
                   }
                 }, 1000);
@@ -3438,21 +3644,56 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             }
           } catch { /* ignore malformed messages */ }
         };
-        ws.onerror = () => { wsReady = false; };
+        const onGiveUp = () => {
+          stopAudio();
+          clearTimeout(autoSendTimer);
+          if (fullText.trim() && handleSendRef.current) {
+            handleSendRef.current({ openMic: unprompted, text: fullText });
+            fullText = '';
+          }
+          recognitionRef.current = null;
+          setIsRecording(false);
+          micBusyRef.current = false;
+          pushNotification({ type: 'warning', message: MIC_STOPPED_CUE });
+        };
+        const link = openSttLink(sttUrl, {
+          // No pinned language: Whisper detects what was spoken, so the
+          // person can talk in any language.  (This used to pin
+          // hart_language "so Whisper doesn't auto-detect"; on an 'en' box
+          // that decoded every other language as English.)  A mic the page
+          // opened by itself stays open, so the server ends each utterance
+          // at a pause (it has no release to wait for).
+          config: sttConfigMessage(undefined, { continuous: unprompted }),
+          onMessage,
+          onGiveUp,
+        });
 
         // Record audio and send chunks over WebSocket
         // Use AudioWorklet or ScriptProcessor to get raw PCM
         // Note: WKWebView on macOS may ignore sampleRate constraint and
         // give hardware rate (48kHz). We resample to 16kHz before sending.
         const TARGET_RATE = 16000;
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: TARGET_RATE });
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: TARGET_RATE });
         const actualRate = audioCtx.sampleRate;
         const needsResample = actualRate !== TARGET_RATE;
-        const source = audioCtx.createMediaStreamSource(stream);
-        const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+        source = audioCtx.createMediaStreamSource(stream);
+        const FRAME_SAMPLES = 4096;
+        processor = audioCtx.createScriptProcessor(FRAME_SAMPLES, 1, 1);
+        // How long the mic stays deaf after the agent's voice stops here:
+        // the frame being captured as it stopped plus the latencies this
+        // graph reports (useSpeechRecognition.agentVoiceTailMs).  Read again
+        // at each stop and logged, so a live run shows what it was.
+        const micTrack = stream.getAudioTracks ? stream.getAudioTracks()[0] : null;
+        const graphLatencies = () => ({
+          outputLatencyS: audioCtx.outputLatency || audioCtx.baseLatency,
+          inputLatencyS: micTrack && micTrack.getSettings ? micTrack.getSettings().latency : undefined,
+        });
+        let tailMs = agentVoiceTailMs({frameSamples: FRAME_SAMPLES, sampleRate: actualRate, ...graphLatencies()});
+        let tailReadFor = null;     // the stop tailMs was read at
+        let deafForVoice = false;   // the gate is shut for the agent's voice
+        let sentSinceEnd = false;   // audio went out since the last end marker
 
         processor.onaudioprocess = (e) => {
-          if (!wsReady) return;
           // Echo cancellation: don't send mic audio while TTS is playing
           // (prevents the agent from hearing its own voice).
           //
@@ -3465,7 +3706,33 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           // transcribing its own TTS (emoji spoken as its unicode name, and a
           // Whisper non-speech tag). With auto-send at :3122 firing 1s after
           // each final transcript, that closed into a self-driving loop.
-          if (ttsActiveRef.current) return;
+          //
+          // Nor for a tail after the voice stops (#289).  Live 2026-11-26
+          // 10:20:51 on build #5: the frame being captured as a 112 s reply
+          // ended was sent, and it closed an utterance that still held 7 s
+          // of the room from before the voice; Whisper made 'Mm-hmm' of the
+          // 8.4 s, and the open mic sent it as the parent's answer.  So when
+          // the voice starts, the utterance the server holds is ended there
+          // (link.endUtterance, the marker a stop sends) on the mic the page
+          // opened, and nothing is sent again until the tail has passed.  A
+          // clicked mic is push-to-talk: its dictation runs to Stop, and the
+          // voice only mutes it (rv_2e86 F1).
+          const voiceEndedAt = agentVoiceEndedAtRef.current;
+          if (!ttsActiveRef.current && voiceEndedAt !== null && voiceEndedAt !== tailReadFor) {
+            tailReadFor = voiceEndedAt;
+            const latencies = graphLatencies();
+            tailMs = agentVoiceTailMs({frameSamples: FRAME_SAMPLES, sampleRate: actualRate, ...latencies});
+            console.log(`[STT] the agent stopped speaking; the mic stays deaf ${Math.round(tailMs)} ms after it `
+              + `(output latency ${audioCtx.outputLatency}, base latency ${audioCtx.baseLatency}, `
+              + `input latency ${latencies.inputLatencyS})`);
+          }
+          if (hearsAgentVoice(ttsActiveRef.current, voiceEndedAt, Date.now(), tailMs)) {
+            if (unprompted && !deafForVoice && sentSinceEnd) link.endUtterance();
+            deafForVoice = true;
+            sentSinceEnd = false;
+            return;
+          }
+          deafForVoice = false;
           let float32 = e.inputBuffer.getChannelData(0);
 
           // Resample if AudioContext gave a different rate than 16kHz
@@ -3484,7 +3751,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           for (let i = 0; i < float32.length; i++) {
             pcm16[i] = Math.max(-32768, Math.min(32767, Math.round(float32[i] * 32767)));
           }
-          ws.send(pcm16.buffer);
+          // While the socket is down the link holds the frame and sends it
+          // once it is back.
+          link.send(pcm16.buffer);
+          sentSinceEnd = true;
         };
 
         source.connect(processor);
@@ -3492,24 +3762,17 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
         recognitionRef.current = {
           stop: () => {
-            // Send final control message
-            if (wsReady) {
-              try { ws.send(JSON.stringify({ control: 'final' })); } catch {}
-            }
-            processor.disconnect();
-            source.disconnect();
-            audioCtx.close();
-            stream.getTracks().forEach(t => t.stop());
-            // Wait briefly for final transcription, then close
-            setTimeout(() => {
-              ws.close();
+            // Ask for the last words, wait briefly for them, then close.
+            // finish() also ends any reconnect in progress.
+            link.finish(500, () => {
               clearTimeout(autoSendTimer);
               if (fullText.trim() && handleSendRef.current) {
                 handleSendRef.current();
                 fullText = '';
               }
               setIsRecording(false);
-            }, 500);
+            });
+            stopAudio();
           },
           _type: 'whisper-stream',
         };
@@ -3571,30 +3834,29 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           else interim += result[0].transcript;
         }
         if (unprompted) {
-          // A mic the page opened: only speech that names Nunba, and no
-          // partial speech in the composer (same rule as the Whisper tier).
+          // A mic the page opened: no partial speech in the composer (same
+          // rule as the Whisper tier); its finals are sent marked open_mic.
           if (!newFinal) return;
-          const words = micTurnText(newFinal, true);
-          if (!words) {
-            notAddressed(newFinal);
-            return;
-          }
-          // Chrome's finals carry their own leading space; the words after
-          // the name are trimmed, so two addressed finals need one between.
+          const words = micTurnText(newFinal);
+          if (!words) return;
+          // Chrome's finals carry their own leading space; the words are
+          // trimmed, so two finals need one between.
           newFinal = (committedText ? ' ' : '') + words;
           interim = '';
         }
         if (newFinal) committedText += newFinal;
-        setInputMessage(committedText + interim);
+        // The open mic never writes into or clears the input box (the person
+        // may be typing): its words go as the turn's own text.
+        if (!unprompted) setInputMessage(committedText + interim);
 
         // Re-arm autosend only when THIS event delivered new final text.
         if (newFinal) {
           clearTimeout(autoSendTimer);
           autoSendTimer = setTimeout(() => {
             if (committedText.trim() && handleSendRef.current) {
-              handleSendRef.current();
+              handleSendRef.current({ openMic: unprompted, text: committedText });
               committedText = '';
-              setInputMessage('');
+              if (!unprompted) setInputMessage('');
             }
           }, 1000);
         }
@@ -3622,9 +3884,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       recognition.onend = () => {
         clearTimeout(autoSendTimer);
         if (committedText.trim() && handleSendRef.current) {
-          handleSendRef.current();
+          handleSendRef.current({ openMic: unprompted, text: committedText });
           committedText = '';
-          setInputMessage('');
+          if (!unprompted) setInputMessage('');
         }
         setIsRecording(false);
         if (!_handedOffToNativeMic) micBusyRef.current = false;
@@ -3769,8 +4031,24 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   // ── Video mode: stream webcam frames to VisionService at 5 FPS ──
   const frameStreamRef = useRef(null);
 
+  // ── Camera consent: the one gate (owner 2026-11-09) ──
+  // This page never listened for the owner's camera answer, so a yes started
+  // nothing here and agents found no frame (get_user_camera_inp, 28 calls on
+  // 2026-11-07).  Stream at 1 fps while the consent is on file; video mode
+  // already streams its own 5 fps, so it holds the stream paused.  Video
+  // mode streams only while the consent is on, so the chat bar's camera
+  // switch turns it off too.
+  const cameraOn = useConsentedCameraStream(effectiveUserId, {paused: mediaMode === 'video'});
+
+  // The chat bar's camera switch: the Privacy page camera card's own consent.
+  const handleToggleCamera = () => {
+    setCameraConsent(!cameraOn).catch(() => {
+      pushNotification({type: 'error', message: 'Could not change the camera consent. Please retry.'});
+    });
+  };
+
   useEffect(() => {
-    if (mediaMode !== 'video') {
+    if (mediaMode !== 'video' || !cameraOn) {
       // Cleanup if switching away from video mode
       if (frameStreamRef.current) {
         frameStreamRef.current.stop();
@@ -3874,20 +4152,31 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           const wsPort = 5460;
           const ws = new WebSocket(`ws://127.0.0.1:${wsPort}`);
           let wsInterval = null;
+          let opened = false;
 
           ws.onopen = () => {
+            opened = true;
             console.log('[VIDEO] WebSocket connected, streaming via ws');
             // Send user_id first, then video_start
             ws.send(userId);
             ws.send('video_start');
           };
           ws.onerror = () => {
+            if (opened) return; // onclose follows and releases the camera
             console.warn('[VIDEO] WebSocket onerror, switching to HTTP fallback');
             if (wsInterval) clearInterval(wsInterval);
             try { ws.close(); } catch {}
             startHttpFallback();
           };
           ws.onclose = (ev) => {
+            // A socket that was in use and closed (VisionService stopped,
+            // Nunba quitting): release the camera.  Falling back to HTTP
+            // here kept the device held with nothing taking the frames.
+            if (opened) {
+              if (wsInterval) clearInterval(wsInterval);
+              if (!cancelled) stopCommon();
+              return;
+            }
             // Some WebKit builds close without ever firing onerror or
             // onopen (handshake refused silently) — treat an unopened
             // close the same as an error so we still fall back.
@@ -3965,14 +4254,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         frameStreamRef.current = null;
       }
     };
-  }, [mediaMode, effectiveUserId]);
-
-  // ── Camera consent: the one gate (owner 2026-11-09) ──
-  // This page never listened for the owner's camera answer, so a yes started
-  // nothing here and agents found no frame (get_user_camera_inp, 28 calls on
-  // 2026-11-07).  Stream at 1 fps while the consent is on file; video mode
-  // already streams its own 5 fps, so it holds the stream paused.
-  useConsentedCameraStream(effectiveUserId, {paused: mediaMode === 'video'});
+  }, [mediaMode, effectiveUserId, cameraOn]);
 
   // ── Camera capture — snap frame, send as image ──
   const handleCameraCapture = async () => {
@@ -4003,6 +4285,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   const handleLoadedMetadata = (event) => {
     if (videoRef.current) {
       setDuration(videoRef.current.duration);
+      // A live avatar reply decides itself when to play (utils/liveAvatar: only once what
+      // is buffered covers the rest of the reply).
+      if (liveAvatarRef.current && videoUrl === liveAvatarRef.current.url) return;
       handlePlay();
     }
   };
@@ -4090,7 +4375,14 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     }, PUSHED_REPLY_WAIT_MS);
   };
 
-  const handleSend = async () => {
+  const handleSend = async (how) => {
+    // True for a turn the page-opened mic heard (handleStart, UNPROMPTED_MIC):
+    // it goes marked open_mic and HARTOS decides whether the agent answers.
+    // A click or key passes an event, which is never an open-mic turn.
+    const openMic = how?.openMic === true;
+    // An open-mic turn carries its own words (how.text) and never writes
+    // into or clears the input box, so what the person is typing stays.
+    const turnText = openMic && typeof how.text === 'string' ? how.text : inputMessage;
     // Prime TTS audio element on user gesture — required by WebView2 autoplay policy.
     // Without this, audio.play() from async SSE callbacks is silently blocked.
     // Fire-and-forget: a stray `await` here blocks the rest of handleSend
@@ -4125,6 +4417,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       }
     } catch {}
 
+    // Barge-in: a live avatar reply (not tracked by tts.isSpeaking) stops on a send too.
+    stopLiveAvatar();
     // Barge-in: stop any playing TTS when user sends a new message
     if (tts.isSpeaking) {
       tts.stop();
@@ -4146,7 +4440,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     setCurrentThinkingId(null);
     setThinkingStartTime(null);
 
-    if (!inputMessage.trim() && !fileUrl && !userImage) return;
+    if (!turnText.trim() && !fileUrl && !userImage) return;
     // Queue message when:
     //   - A previous user-initiated request is in flight (loading) AND it's
     //     been less than 10s since that message (existing throttle
@@ -4183,13 +4477,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       (!engineReady && withinEngineBootGrace) ||
       agentsLoading
     ) {
-      setMessageQueue((prev) => [...prev, { text: inputMessage.trim(), id: Date.now() }]);
-      setInputMessage('');
+      setMessageQueue((prev) => [...prev, { text: turnText.trim(), id: Date.now(), openMic }]);
+      if (!openMic) setInputMessage('');
       return;
     }
 
+    // The agent this turn goes to.  setCurrentAgent below shows only on the
+    // next render, so the rest of this send reads turnAgent, not currentAgent.
+    let turnAgent = currentAgent;
     // Parse @agent mention and route to that agent
-    const agentMentionMatch = inputMessage.match(/@(\S+)/);
+    const agentMentionMatch = turnText.match(/@(\S+)/);
     if (agentMentionMatch) {
       const mentionedName = agentMentionMatch[1];
       const targetAgent = allAgents.find(a =>
@@ -4198,6 +4495,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       if (targetAgent && targetAgent.prompt_id !== currentAgent?.prompt_id) {
         setCurrentAgent(targetAgent);
         localStorage.setItem('active_agent_id', String(targetAgent.prompt_id));
+        turnAgent = targetAgent;
       } else if (!targetAgent) {
         setMessages((prev) => [...prev, {
           type: 'system',
@@ -4221,7 +4519,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     setRequestId(msgId);
     const userMessage = {
       type: 'user',
-      content: inputMessage,
+      content: turnText,
       pdf: pdffileUrl || null,
       image: userImage || null,
       messageId: msgId,
@@ -4236,18 +4534,19 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     // rerender is enough in theory, but WKWebView occasionally ignores the
     // rerender when another source (wake-listener, STT) writes to the same
     // value in the same tick.  Direct DOM clear is belt-and-suspenders.
-    if (textareaRef.current) {
+    // Not for an open-mic turn: the box holds what the person is typing.
+    if (!openMic && textareaRef.current) {
       textareaRef.current.value = '';
     }
     setShouldScroll(true);
     setWaitingText(null);
     logger.log('agentdata', agentData);
-    logger.log('currentagent', currentAgent);
+    logger.log('turnAgent', turnAgent);
 
     // Clear form data
     setUploadedPdf(null);
     setUserImage(null);
-    setInputMessage('');
+    if (!openMic) setInputMessage('');
     setFileUrl(null);
     setPdfFile(null);
     setpdfFileUrl(null);
@@ -4310,18 +4609,18 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             // history but new messages must route through the default
             // local agent — the chat backend rejects `agent_type='orphan'`
             // with 400 ("Unknown agent type: orphan", chatbot_routes.py:2822).
-            const _isOrphan = currentAgent?.type === 'orphan' || currentAgent?._isOrphan;
-            const _agentTypeForBackend = _isOrphan ? 'local' : (currentAgent?.type || 'local');
+            const _isOrphan = turnAgent?.type === 'orphan' || turnAgent?._isOrphan;
+            const _agentTypeForBackend = _isOrphan ? 'local' : (turnAgent?.type || 'local');
             const _agentIdForBackend = _isOrphan
               ? 'local_assistant'
-              : (currentAgent?.id || currentAgent?.prompt_id || 'local_assistant');
+              : (turnAgent?.id || turnAgent?.prompt_id || 'local_assistant');
             // Orphan ghosts also drop their stale prompt_id so the
             // backend's "is this a real custom agent?" check
             // (chatbot_routes.py:2427-2439) doesn't try to read a
             // non-existent prompt file at PROMPTS_DIR/{prompt_id}.json.
-            const _promptIdForBackend = _isOrphan ? 0 : (currentAgent?.prompt_id ?? 0);
+            const _promptIdForBackend = _isOrphan ? 0 : (turnAgent?.prompt_id ?? 0);
             const localResult = await chatApi.chat({
-              text: inputMessage,
+              text: turnText,
               user_id: effectiveUserId,
               request_id: msgId,
               agent_id: _agentIdForBackend,
@@ -4329,14 +4628,22 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               conversation_id: conversationId,
               media_mode: mediaMode || 'audio',
               prompt_id: _promptIdForBackend,
-              create_agent: currentAgent?.create_agent || false,
-              autonomous_creation: currentAgent?.autonomous_creation || false,
+              // A video turn names the avatar this agent speaks as, for its face (and its
+              // voice) in the live reply (HARTOS core/teacher_avatar): the key Android
+              // already sends.  Audio turns stay as they were.
+              ...(mediaMode === 'video' && turnAgent?.teacher_avatar_id
+                ? { teacher_avatar_id: turnAgent.teacher_avatar_id } : {}),
+              create_agent: turnAgent?.create_agent || false,
+              autonomous_creation: turnAgent?.autonomous_creation || false,
               image_url: userImage || null,
               file_url: fileUrl || null,
               preferred_lang: localStorage.getItem('hart_language') || 'en',
               // Local | Hybrid | Hive from the toggle: a Hive turn runs here
               // first and escalates (HARTOS speculative_dispatcher).
               intelligence_preference: intelligencePreference,
+              // Heard by the mic the page opened, nobody clicked: HARTOS
+              // (addressee) answers or stays silent from context.
+              ...(openMic ? { open_mic: true } : {}),
             });
             // isRequestInFlight is cleared below, once the reply (or the
             // reason there is none) is on screen.
@@ -4352,7 +4659,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               setCurrentAgent((prev) => ({
                 ...prev,
                 autonomous_creation: true,
-                original_task: inputMessage,
+                original_task: turnText,
               }));
             }
             // Handle creation_suggested from reuse agent (Step 17/19)
@@ -4393,8 +4700,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                   ? { ...prev, agent_status: resultData.agent_status, prompt_id: sid }
                   : { ...prev, agent_status: resultData.agent_status };
               });
-              if (resultData.agent_status === 'completed' && currentAgent?.create_agent) {
-                const agentName = resultData.agent_display_name || resultData.agent_name || currentAgent?.name || 'Created Agent';
+              if (resultData.agent_status === 'completed' && turnAgent?.create_agent) {
+                const agentName = resultData.agent_display_name || resultData.agent_name || turnAgent?.name || 'Created Agent';
                 setCurrentAgent((prev) => ({
                   ...prev,
                   create_agent: false,
@@ -4404,9 +4711,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                   name: agentName,
                 }));
                 setAllAgents((prev) => {
-                  const pid = resultData.prompt_id || currentAgent?.prompt_id;
+                  const pid = resultData.prompt_id || turnAgent?.prompt_id;
                   const exists = prev.some((a) => a.prompt_id === pid);
-                  if (!exists) return [...prev, { ...currentAgent, prompt_id: pid, create_agent: false, autonomous_creation: false, agent_status: null, available: true, name: agentName }];
+                  if (!exists) return [...prev, { ...turnAgent, prompt_id: pid, create_agent: false, autonomous_creation: false, agent_status: null, available: true, name: agentName }];
                   return prev;
                 });
                 setMessages((prev) => [...prev,
@@ -4414,7 +4721,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                   { type: 'system', content: `Your agent "${agentName}" has been shared to the social feed! View it in Thought Experiments.` },
                 ]);
                 if (decryptedUserId && !isGuestMode) {
-                  const pid = resultData.prompt_id || currentAgent?.prompt_id;
+                  const pid = resultData.prompt_id || turnAgent?.prompt_id;
                   chatApi.syncAgents([{
                     prompt_id: pid,
                     name: agentName,
@@ -4422,8 +4729,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                   }]).catch(() => {});
                 }
                 // Navigate to the newly created agent's page
-                const encodedName = encodeURIComponent(agentName);
-                navigate(`/agents/${encodedName}`);
+                navigate(agentPath({ name: agentName, prompt_id: resultData.prompt_id || turnAgent?.prompt_id }));
               }
             }
             // Track prompt_id from auto-generated creation flow — through
@@ -4484,8 +4790,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               // tracked so the else-branch / unmount can cancel a stale retry.
               const _timer = scheduleLoadingRetry(
                 loadingRetryRef.current,
-                inputMessage,
-                (text) => setMessageQueue((prev) => [...prev, { text, id: Date.now() }]),
+                turnText,
+                (text) => setMessageQueue((prev) => [...prev, { text, id: Date.now(), openMic }]),
               );
               if (_timer !== null) {
                 loadingRetryRef.current += 1;
@@ -4522,6 +4828,17 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             // no_content: the reply is pushed to this window later, as on the
             // cloud path, so the turn stays open for it (awaitPushedReply).
             const replyPushed = resultData.status === 'no_content';
+            // An open-mic turn the agent (HARTOS addressee) judged not meant
+            // for it: no reply, no voice, no failure.  The person's bubble
+            // stays, marked heard (shown muted, HEARD_NOT_FOR_ME), so the
+            // whole session is kept and the page shows what the agent decided.
+            const notAddressed = openMic && resultData.not_addressed === true;
+            if (notAddressed) {
+              console.log('[STT] open mic: turn judged not addressed, no reply');
+              updateMessageStatus(msgId, {
+                status: 'sent', error: null, heard: true, heardReason: resultData.reason || '',
+              });
+            }
             if (!cardConsumedText && !replyPushed && responseText) {
               const assistantMessage = {
                 type: 'assistant',
@@ -4533,6 +4850,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                 // routes/chatbot_routes.py:2693.
                 servedBy: resultData.served_by,
                 nodeTier: resultData.node_tier,
+                // The persona HARTOS named for this person in the agent
+                // (design_1125 B): the chat header shows the newest.
+                persona: resultData.persona,
+                // The agent this turn was sent to (an @mention's agent too):
+                // the header counts only the open agent's own replies.
+                promptId: turnAgent?.prompt_id,
+                // The turn this reply ends (handleSend's msgId is the turn's
+                // id): a send of the turn already showing these words is
+                // this reply (constants/chatBubble.repeatsShownMessage).
+                requestId: msgId,
                 timestamp: new Date(),
                 // Draft-first: tag with speculationId so the expert
                 // response arriving via WAMP can replace this bubble
@@ -4567,7 +4894,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                     }
                   }
                 }
-                return [...updated, assistantMessage];
+                // HARTOS makes a turn's newest send its reply, so these words
+                // are usually on screen already, pushed during the turn (live
+                // 2026-11-26: every reply of agents 348, 344 and 353 showed
+                // twice).  Shown once; the thought process above still closes.
+                return repeatsShownMessage(assistantMessage, updated)
+                  ? updated : [...updated, assistantMessage];
               });
               setShouldScroll(true);
 
@@ -4614,15 +4946,15 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                   logger.warn('[TTS] local-reply speak failed:', err?.message || err);
                 });
               }
-            } else if (!cardConsumedText && !replyPushed) {
+            } else if (!cardConsumedText && !replyPushed && !notAddressed) {
               // A 200 with no text and no card: say so on the message
               // rather than end the turn with nothing on screen.
               updateMessageStatus(msgId, { status: 'failed', error: EMPTY_REPLY_REASON });
             }
             // Auto-save after each response (survives force-quit)
-            const _saveId = currentAgent?.prompt_id || currentAgent?.id;
+            const _saveId = turnAgent?.prompt_id || turnAgent?.id;
             if (_saveId) {
-              setTimeout(() => saveMessagesToStorage(messagesRef.current, _saveId), 100);
+              setTimeout(() => saveMessagesToStorage(messagesRef.current, _saveId, turnAgent?.name), 100);
             }
             setLoading(false);
             if (replyPushed) {
@@ -4679,8 +5011,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
 
   // Keep the echo-cancellation gate fed with LIVE playback state — see
   // ttsActiveRef's declaration. Assigned in render body (not an effect) so it
-  // is already current by the time the next audio frame is processed.
-  ttsActiveRef.current = tts.isSpeaking || isPlayingResponse;
+  // is already current by the time the next audio frame is processed.  The
+  // moment the voice stops is noted too: the gate stays shut for a tail
+  // after it (agentVoiceEndedAtRef, #289).
+  const agentVoiceOn = tts.isSpeaking || isPlayingResponse;
+  if (ttsActiveRef.current && !agentVoiceOn) agentVoiceEndedAtRef.current = Date.now();
+  ttsActiveRef.current = agentVoiceOn;
 
   // ── Manual retry for failed messages ──
   const handleRetryMessage = useCallback((messageId) => {
@@ -4702,9 +5038,14 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     try {
       setIsRequestInFlight(true);
       const effectiveUserId = decryptedUserId || guestUserId;
+      // Executing the plan is a turn of this page, started as handleSend
+      // starts one, so its reply's voice plays here.
+      const planTurn = startTurn(requestIdRef);
+      setRequestId(planTurn);
       const result = await chatApi.chat({
         text: plan.task_description,
         user_id: effectiveUserId,
+        request_id: planTurn,
         prompt_id: promptId,
         agentic_execute: true,
         agentic_plan: plan,
@@ -4713,13 +5054,19 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       const resultData = result?.data || result || {};
       const responseText = resultData.text || resultData.response;
       if (responseText) {
-        setMessages((prev) => [...prev, {
+        // A plan run of a matched agent is a REUSE turn: its newest send is
+        // often this reply (repeatsShownMessage, as in handleSend).
+        const planMessage = {
           type: 'assistant',
           content: responseText,
           source: resultData.source || null,
           servedBy: resultData.served_by,
           nodeTier: resultData.node_tier,
-        }]);
+          persona: resultData.persona,
+          promptId,
+          requestId: planTurn,
+        };
+        setMessages((prev) => (repeatsShownMessage(planMessage, prev) ? prev : [...prev, planMessage]));
       } else {
         // No text back: say so, rather than end the run with nothing shown.
         setMessages((prev) => [...prev, { type: 'system', content: EMPTY_REPLY_REASON }]);
@@ -5533,8 +5880,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                   #198 — NotificationBell sits here so the bell + unread badge are
                   visible on the FIRST page the user sees (the chat), matching LinkedIn-
                   style global top-right placement. Same component the AdminLayout uses
-                  (commit 8ffa635e); reads /api/social/notifications. */}
+                  (commit 8ffa635e); reads /api/social/notifications.
+                  On its left, "<agent name> · <persona>" once the open agent's
+                  reply names a persona (design_1125 B, AgentPersonaLabel). */}
               <div className="flex justify-end items-center gap-2 px-3 pt-2">
+                <AgentPersonaLabel name={currentAgent?.name} promptId={currentAgent?.prompt_id}
+                  messages={messages} />
                 <button
                   type="button"
                   onClick={toggleVoiceSpeechConsent}
@@ -5746,11 +6097,6 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                             >
                               Login
                             </RouterLink>
-                            <OtpAuthModal
-                              isOpen={isModalOpen}
-                              onClose={() => setIsModalOpen(false)}
-                              forceGuestMode={isLocalRoute}
-                            />
                           </li>
                           <span className="mx-4">OR</span>
                           <li className="inline mb-0 ps-1">
@@ -5805,6 +6151,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
                   onConfigureLlm={handleConfigureLlm}
                   latestThinkingText={latestThinkingText}
                   showThinkingTraces={showThinkingTraces}
+                  askStates={askStates}
                 />
               )}
             </div>
@@ -5865,7 +6212,20 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             }}
             showThinkingTraces={showThinkingTraces}
             onToggleShowThinkingTraces={toggleShowThinkingTraces}
+            cameraOn={cameraOn}
+            onToggleCamera={handleToggleCamera}
           />
+          {/* The one sign-in modal.  It lived inside the empty-chat welcome
+              card, so with restored history "Please login to talk to agent"
+              opened nothing. */}
+          {!isAuthenticated && (
+            <OtpAuthModal
+              isOpen={isModalOpen}
+              onClose={() => setIsModalOpen(false)}
+              message={sessionExpiredMessage}
+              forceGuestMode={isLocalRoute}
+            />
+          )}
         </div>
       </div>
       {!isAuthenticated && (
@@ -6034,9 +6394,16 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         );
       })()}
 
-      {/* Agent UI Overlay — floating glass cards for agent-pushed components */}
+      {/* Agent UI Overlay — floating glass cards for agent-pushed components.
+          The open agent's own questions are this chat's messages instead
+          (chatAsks; owner 2026-11-23: "the question shd be part of chat"). */}
       <AgentOverlay
         navigate={navigate}
+        chatAsks={currentAgent?.prompt_id != null && currentAgent?.prompt_id !== ''
+          ? {promptId: String(currentAgent.prompt_id), userId: String(effectiveUserId || '')}
+          : null}
+        onChatAsk={handleChatAsk}
+        askIdsToCheck={askIdsToCheck}
         onInlineChatCard={(card) => {
           setMessages((prev) => [...prev, {
             type: 'agent_ui',

@@ -393,6 +393,15 @@ class TestChatPayloadOptionalFields:
         assert 'device_id' not in self._payload()
         assert self._payload(device_id='dev-1')['device_id'] == 'dev-1'
 
+    def test_an_open_mic_turn_reaches_hartos_marked(self):
+        """The page's always-on mic marks its turns open_mic, and HARTOS
+        decides from context whether the agent answers (owner 2026-11-24: no
+        keyword gate in the page).  The mark was dropped here, so HARTOS saw
+        room speech as a typed turn.  Every other caller's body is unchanged."""
+        assert 'open_mic' not in self._payload()
+        assert 'open_mic' not in self._payload(open_mic=False)
+        assert self._payload(open_mic=True)['open_mic'] is True
+
 
 class TestProxyChatKeepsAvatarAndAgentApart:
     """teacher_avatar_id is the avatar, shared by many agents; the proxy /chat

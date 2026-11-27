@@ -42,7 +42,11 @@ export function RealtimeProvider({children}) {
   useEffect(() => {
     const hostname = typeof window !== 'undefined' ? window.location.hostname : '';
     const localBackend = isLocalBackendHost(hostname);
-    const userId = session.identity.user_id || 'guest';
+    // An account that must sign in again ('pending') has no token for its
+    // id, so it connects as the 'guest' placeholder, as Demopage posts it.
+    const userId = session.status === 'pending'
+      ? 'guest'
+      : (session.identity.user_id || 'guest');
     const sessionToken = session.tokens.cloud || session.tokens.hartos_local;
     const token = session.status === 'guest' && localBackend
       ? null
