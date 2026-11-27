@@ -10,6 +10,7 @@ import useAuthSession, {
   setGuestIdentity,
 } from '../hooks/useAuthSession';
 import {agentApi, authApi, chatApi, mailerApi} from '../services/socialApi';
+import {isLocalBackendHost} from '../utils/backendHost';
 import {safeReturnPath} from '../utils/checkoutSession';
 import {getStableDeviceId} from '../utils/deviceId';
 import {encrypt} from '../utils/encryption';
@@ -336,11 +337,15 @@ const OtpAuthModal = ({
 
       if (verifyResp.ok) {
         const data = await verifyResp.json();
-        logger.log(data, 'this is the data');
-        const accessToken = String(data.access_token);
+        if (typeof data.access_token !== 'string' || !data.access_token.trim() || data.user_id == null) {
+          setAlert(true);
+          setAlertContent(data.detail || 'The code was not accepted. Please try again.');
+          return;
+        }
+        const accessToken = data.access_token;
         const userId = String(data.user_id);
-        const emailAddress = String(data.email_address);
-        const refresh_token = String(data?.refresh_token);
+        const emailAddress = data.email_address || (loginMethod === 'email' ? email : '');
+        const refresh_token = data.refresh_token || undefined;
 
         try {
           const expireTokenTime = data.expires_in;
@@ -403,8 +408,8 @@ const OtpAuthModal = ({
           }, 1000);
 
           setIntervalId(interval);
-        } catch (encryptionError) {
-          throw new Error('Failed to encrypt user data');
+        } catch (loginError) {
+          throw loginError;
         }
       } else {
         const errBody = await verifyResp.json().catch(() => ({}));

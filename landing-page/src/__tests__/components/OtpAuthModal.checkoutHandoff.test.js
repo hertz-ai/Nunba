@@ -1,6 +1,8 @@
 /* eslint-disable testing-library/no-node-access, testing-library/no-container -- the phone field has no label, so the test finds it by its input type, as OtpAuthModal.test.js does */
+import axios from 'axios';
 import {encryptionMock} from '../../testSupport/checkoutKit';
 import OtpAuthModal from '../../pages/OtpAuthModal';
+import {chatApi} from '../../services/socialApi';
 
 import {render, screen, fireEvent, waitFor} from '@testing-library/react';
 import React from 'react';
@@ -26,7 +28,11 @@ jest.mock(
 jest.mock('../../services/socialApi', () => ({
   agentApi: {checkHandle: jest.fn()},
   authApi: {guestRegister: jest.fn(), guestRecover: jest.fn()},
-  chatApi: {migrateAgents: jest.fn(), post: jest.fn(() => Promise.resolve({}))},
+  chatApi: {
+    migrateAgents: jest.fn(),
+    post: jest.fn(() => Promise.resolve({})),
+    setDesktopIdentity: jest.fn(),
+  },
   mailerApi: {renewToken: jest.fn()},
 }));
 jest.mock('../../utils/logger', () => ({
@@ -78,6 +84,10 @@ async function signInWith(verifyBody, props = {}) {
 beforeEach(() => {
   jest.clearAllMocks();
   localStorage.clear();
+  // jsdom runs on localhost, which OtpAuthModal treats as the local desktop:
+  // it syncs the new login to the desktop and confirms it via /auth/me first.
+  chatApi.setDesktopIdentity.mockResolvedValue({success: true});
+  axios.get.mockResolvedValue({data: {success: true, data: {id: 42}}});
 });
 
 describe('OtpAuthModal: what a cloud sign-in leaves for the checkout', () => {

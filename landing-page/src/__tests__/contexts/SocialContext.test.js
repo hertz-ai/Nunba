@@ -1,3 +1,4 @@
+jest.mock('../../utils/deviceId', () => ({getStableDeviceId: jest.fn().mockResolvedValue('test-device')}));
 /**
  * SocialContext.test.js — Unit tests for the SocialContext provider.
  *

@@ -1,4 +1,5 @@
 import useAuthSession, {
+  clearAuth,
   readAuthSession,
   setGuestIdentity,
   setAccessToken,
@@ -268,8 +269,7 @@ export function SocialProvider({children}) {
   }, [fetchProfile, fetchResonance, fetchOnboarding, fetchUnread]);
 
   const logout = useCallback(() => {
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('refresh_token');
+    clearAuth(); // the one logout: every auth key, plus the desktop's copy
     apiCache.clearAll(); // Flush user-scoped cache to prevent data bleed
     setCurrentUser(null);
     setResonance(null);

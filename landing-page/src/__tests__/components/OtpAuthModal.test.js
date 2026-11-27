@@ -54,6 +54,7 @@ jest.mock('../../services/socialApi', () => ({
   },
   chatApi: {
     migrateAgents: jest.fn(),
+    setDesktopIdentity: jest.fn(),
   },
   mailerApi: {
     renewToken: jest.fn(),
