@@ -186,3 +186,11 @@ landing-page/.nyc_output/
 landing-page/cypress/live-probes/_last_run.json
 # Previous frozen tree kept aside by scripts/build.py during a rebuild
 build.prev/
+
+# Never tracked: the owner-ordered sweep of 2026-11-26 (c3ba0850) tracked these, and the freeze
+# ships every TRACKED root *.py (scripts/deps.py tracked_files) -- review rv_sweep.  Scratch
+# helpers, an aider tag cache (absolute home paths, in a public repo) and generated recipes.
+.aider*
+/check_*.py
+/run_python.py
+/llm/

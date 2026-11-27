@@ -19,7 +19,8 @@ process:
   - the app's own switches are set so that importing main boots no model
     (HEVOLVE_EAGER_LLM=0, NUNBA_DISABLE_LLAMA_AUTOSTART=1, HEVOLVE_DRAFT_FIRST=0);
   - NUNBA_TEST_HOME names a private folder that llama.llama_installer.home_dir
-    returns in place of the person's home.
+    returns in place of the person's home.  A runner that sets it to a folder
+    of its own keeps that folder.
 
 None of it can be a fixture: POST /chat with no model up answers at once and
 hands the start to a background thread (routes/chatbot_routes.py ->
@@ -41,6 +42,7 @@ managed binary and does not boot a model on its own, but it has no hook).
 Standard library only, so importing this module starts nothing.
 """
 import atexit
+import importlib.util
 import os
 import re
 import shutil
@@ -48,6 +50,18 @@ import subprocess
 import sys
 import tempfile
 import time
+
+
+def _home_pair_rule():
+    """llama/home_pair.py's stand_in, the rule home_dir reads NUNBA_TEST_HOME
+    by.  Loaded from its file, so this helper still imports nothing of
+    Nunba's before install() has run."""
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        'llama', 'home_pair.py')
+    spec = importlib.util.spec_from_file_location('_nunba_home_pair', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.stand_in
 
 
 class ModelServerStartRefused(OSError):
@@ -308,11 +322,32 @@ def install():
     os.environ.setdefault('NUNBA_DISABLE_LLAMA_AUTOSTART', '1')
     os.environ.setdefault('HEVOLVE_DRAFT_FIRST', '0')
 
-    if not os.environ.get('NUNBA_TEST_HOME'):
-        # Read by llama.llama_installer.home_dir: the person's home, then the
-        # folder that stands in for it.
-        _remove_private_homes_left_behind(tempfile.gettempdir(), time.time())
-        private_home = tempfile.mkdtemp(prefix='nunba_test_home_')
-        atexit.register(shutil.rmtree, private_home, ignore_errors=True)
+    # Read by llama.llama_installer.home_dir as "<the person's home>
+    # <os.pathsep><the folder that stands in for it>", and only as that pair:
+    # anything less, or another home first, is the person's real home.  A run
+    # that sets the variable itself keeps its folder, re-paired with this home
+    # here by the same rule home_dir uses.  On 24 Nov 2026 a direct-call
+    # driver set it to its folder alone, this kept it as it was, and llama
+    # saved server_port 8083 into the owner's real ~/.nunba/llama_config.json.
+    #
+    # A value this process already settled on is left as it is.  A later
+    # install(), say one inside a test that moved HOME, would otherwise
+    # re-pair it with the moved home: home_dir then gives the private folder
+    # while the test runs, and the REAL home once the test puts HOME back
+    # (rv_6d01, 24 Nov 2026).  The values are kept on the subprocess module
+    # for the reason the audit-hook mark is: a second import of this file
+    # must see them.
+    value = os.environ.get('NUNBA_TEST_HOME', '')
+    settled = subprocess.__dict__.setdefault('nunba_test_homes_settled', set())
+    if value not in settled and not _home_pair_rule()(value, os.path.expanduser('~')):
+        person, sep, private_home = value.partition(os.pathsep)
+        private_home = private_home or ('' if sep else person)
+        if private_home:
+            private_home = os.path.abspath(private_home)
+        else:
+            _remove_private_homes_left_behind(tempfile.gettempdir(), time.time())
+            private_home = tempfile.mkdtemp(prefix='nunba_test_home_')
+            atexit.register(shutil.rmtree, private_home, ignore_errors=True)
         os.environ['NUNBA_TEST_HOME'] = os.pathsep.join(
             [os.path.expanduser('~'), private_home])
+    settled.add(os.environ['NUNBA_TEST_HOME'])

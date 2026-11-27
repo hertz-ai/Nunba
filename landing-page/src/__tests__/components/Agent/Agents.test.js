@@ -209,8 +209,9 @@ describe('Agents page — navigation', () => {
     // slugify the URL param too, and agentSlug is idempotent, so URLs already in
     // users' history ("/agents/Local-Tutor") still resolve to the same agent —
     // pinned in __tests__/utils/agentSlug.test.js.
+    // The prompt id rides along as ?id= (design_1125 D1).
     expect(mockNavigate).toHaveBeenCalledWith(
-      '/agents/local-tutor',
+      '/agents/local-tutor?id=1',
       expect.objectContaining({state: {agentData: SAMPLE_LOCAL}}),
     );
   });
@@ -238,10 +239,35 @@ describe('Agents page — navigation', () => {
     // slugify the URL param too, and agentSlug is idempotent, so URLs already in
     // users' history ("/agents/Local-Tutor") still resolve to the same agent —
     // pinned in __tests__/utils/agentSlug.test.js.
+    // The prompt id rides along as ?id= (design_1125 D1).
     expect(mockNavigate).toHaveBeenCalledWith(
-      '/agents/local-tutor',
+      '/agents/local-tutor?id=1',
       expect.objectContaining({state: {agentData: SAMPLE_LOCAL}}),
     );
+  });
+
+  // design_1125 D1: two agents with one name have one slug, so each card's
+  // URL carries its own prompt id.
+  it('two agents with one name: each card navigates with its own ?id=', () => {
+    const FIRST = {prompt_id: 95530004763, name: 'Speech Therapy Companion', description: 'the first one'};
+    const SECOND = {prompt_id: 95568353503, name: 'Speech Therapy Companion', description: 'the second one'};
+    renderPage({predefinedAgents: [FIRST, SECOND]});
+    fireEvent.click(screen.getByText('the second one').closest('[role="button"]'));
+    expect(mockNavigate).toHaveBeenLastCalledWith(
+      '/agents/speech-therapy-companion?id=95568353503',
+      expect.objectContaining({state: {agentData: SECOND}}),
+    );
+    fireEvent.click(screen.getByText('the first one').closest('[role="button"]'));
+    expect(mockNavigate).toHaveBeenLastCalledWith(
+      '/agents/speech-therapy-companion?id=95530004763',
+      expect.objectContaining({state: {agentData: FIRST}}),
+    );
+  });
+
+  it('a card with no prompt_id navigates by its name alone', () => {
+    renderPage({predefinedAgents: [{name: 'No Id Agent', description: 'has no id'}]});
+    fireEvent.click(cardFor(/No Id Agent/i));
+    expect(mockNavigate).toHaveBeenCalledWith('/agents/no-id-agent', expect.anything());
   });
 });
 

@@ -400,7 +400,7 @@ class TestModelLifecycleManager(unittest.TestCase):
     # ── ModelState crash fields ──────────────────────────────────
 
     def test_model_state_crash_fields_default(self):
-        s = self.ModelState(name='test')
+        s = self.ModelState(name='test', model_type='tts')
         self.assertEqual(s.crash_count, 0)
         self.assertEqual(s.last_crash_time, 0.0)
         self.assertIsNone(s.last_exit_code)
@@ -408,7 +408,7 @@ class TestModelLifecycleManager(unittest.TestCase):
         self.assertFalse(s.downgraded)
 
     def test_model_state_to_dict_includes_crash(self):
-        s = self.ModelState(name='test', crash_count=2, last_exit_code=137,
+        s = self.ModelState(name='test', model_type='tts', crash_count=2, last_exit_code=137,
                             downgraded=True)
         d = s.to_dict()
         self.assertEqual(d['crash_count'], 2)
@@ -416,17 +416,17 @@ class TestModelLifecycleManager(unittest.TestCase):
         self.assertTrue(d['downgraded'])
 
     def test_model_state_healthy_when_unloaded(self):
-        s = self.ModelState(name='test', crash_count=5)
+        s = self.ModelState(name='test', model_type='tts', crash_count=5)
         # UNLOADED = healthy regardless of crash_count
         self.assertTrue(s.to_dict()['healthy'])
 
     def test_model_state_unhealthy_when_loaded_with_crashes(self):
-        s = self.ModelState(name='test', device=self.ModelDevice.GPU,
+        s = self.ModelState(name='test', model_type='tts', device=self.ModelDevice.GPU,
                             crash_count=1)
         self.assertFalse(s.to_dict()['healthy'])
 
     def test_model_state_healthy_when_loaded_no_crashes(self):
-        s = self.ModelState(name='test', device=self.ModelDevice.GPU,
+        s = self.ModelState(name='test', model_type='tts', device=self.ModelDevice.GPU,
                             crash_count=0)
         self.assertTrue(s.to_dict()['healthy'])
 
@@ -467,7 +467,7 @@ class TestModelLifecycleManager(unittest.TestCase):
     def test_handle_dead_process_oom(self):
         # Simulate a GPU model that died with OOM
         self.mlm._models['test_tool'] = self.ModelState(
-            name='test_tool', device=self.ModelDevice.GPU,
+            name='test_tool', model_type='tts', device=self.ModelDevice.GPU,
             vram_gb=4.0, priority=self.ModelPriority.WARM)
 
         self.mlm._handle_dead_process('test_tool', 137, 'sidecar')
@@ -484,7 +484,7 @@ class TestModelLifecycleManager(unittest.TestCase):
 
     def test_handle_dead_process_crash(self):
         self.mlm._models['test_tool'] = self.ModelState(
-            name='test_tool', device=self.ModelDevice.GPU,
+            name='test_tool', model_type='tts', device=self.ModelDevice.GPU,
             priority=self.ModelPriority.WARM)
 
         self.mlm._handle_dead_process('test_tool', 1, 'sidecar')
@@ -497,7 +497,7 @@ class TestModelLifecycleManager(unittest.TestCase):
 
     def test_handle_dead_process_disappeared(self):
         self.mlm._models['test_tool'] = self.ModelState(
-            name='test_tool', device=self.ModelDevice.CPU,
+            name='test_tool', model_type='tts', device=self.ModelDevice.CPU,
             priority=self.ModelPriority.IDLE)
 
         self.mlm._handle_dead_process('test_tool', None, 'orphan')
@@ -508,7 +508,7 @@ class TestModelLifecycleManager(unittest.TestCase):
 
     def test_handle_dead_process_exceeds_max_restarts(self):
         self.mlm._models['test_tool'] = self.ModelState(
-            name='test_tool', device=self.ModelDevice.GPU,
+            name='test_tool', model_type='tts', device=self.ModelDevice.GPU,
             crash_count=3)  # Already at max
 
         self.mlm._handle_dead_process('test_tool', 1, 'sidecar')
@@ -520,7 +520,7 @@ class TestModelLifecycleManager(unittest.TestCase):
 
     def test_exponential_backoff(self):
         self.mlm._models['t'] = self.ModelState(
-            name='t', device=self.ModelDevice.GPU)
+            name='t', model_type='tts', device=self.ModelDevice.GPU)
 
         # First crash: 5s
         self.mlm._handle_dead_process('t', 1, 'sidecar')
@@ -540,7 +540,7 @@ class TestModelLifecycleManager(unittest.TestCase):
 
     def test_backoff_capped_at_max(self):
         self.mlm._models['t'] = self.ModelState(
-            name='t', device=self.ModelDevice.GPU,
+            name='t', model_type='tts', device=self.ModelDevice.GPU,
             crash_count=10)  # Very high crash count
         self.mlm._max_crash_restarts = 20  # Allow many restarts for this test
 
@@ -553,7 +553,7 @@ class TestModelLifecycleManager(unittest.TestCase):
     def test_downgrade_gpu_to_cpu_offload(self):
         """OOM on GPU → restart on cpu_offload"""
         self.mlm._models['t'] = self.ModelState(
-            name='t', device=self.ModelDevice.GPU)
+            name='t', model_type='tts', device=self.ModelDevice.GPU)
 
         self.mlm._handle_dead_process('t', 137, 'sidecar')  # OOM
         info = self.mlm._restart_pending['t']
@@ -575,7 +575,7 @@ class TestModelLifecycleManager(unittest.TestCase):
     def test_downgrade_cpu_offload_to_cpu_only(self):
         """OOM on cpu_offload → restart on cpu_only"""
         self.mlm._models['t'] = self.ModelState(
-            name='t', device=self.ModelDevice.CPU_OFFLOAD)
+            name='t', model_type='tts', device=self.ModelDevice.CPU_OFFLOAD)
 
         self.mlm._handle_dead_process('t', 137, 'sidecar')
         info = self.mlm._restart_pending['t']
@@ -591,7 +591,7 @@ class TestModelLifecycleManager(unittest.TestCase):
 
     def test_notify_access_resets_crash_count(self):
         self.mlm._models['recovered'] = self.ModelState(
-            name='recovered', device=self.ModelDevice.GPU,
+            name='recovered', model_type='tts', device=self.ModelDevice.GPU,
             crash_count=2, restart_backoff_s=20.0, downgraded=True)
 
         self.mlm.notify_access('recovered')
@@ -602,7 +602,7 @@ class TestModelLifecycleManager(unittest.TestCase):
         self.assertFalse(state.downgraded)
 
     def test_notify_access_updates_counters(self):
-        self.mlm._models['m'] = self.ModelState(name='m')
+        self.mlm._models['m'] = self.ModelState(name='m', model_type='tts')
         self.mlm.notify_access('m')
         state = self.mlm._models['m']
         self.assertEqual(state.access_count, 1)
@@ -614,7 +614,7 @@ class TestModelLifecycleManager(unittest.TestCase):
     def test_request_swap_with_gpu_model(self):
         # Add a GPU model that can be evicted
         self.mlm._models['victim'] = self.ModelState(
-            name='victim', device=self.ModelDevice.GPU,
+            name='victim', model_type='tts', device=self.ModelDevice.GPU,
             priority=self.ModelPriority.IDLE,
             last_access_time=time.time() - 300)
 
@@ -631,7 +631,7 @@ class TestModelLifecycleManager(unittest.TestCase):
     def test_request_swap_no_evictable(self):
         # Only ACTIVE models — can't evict
         self.mlm._models['busy'] = self.ModelState(
-            name='busy', device=self.ModelDevice.GPU,
+            name='busy', model_type='tts', device=self.ModelDevice.GPU,
             priority=self.ModelPriority.ACTIVE,
             active_inference_count=1)
 
@@ -641,7 +641,7 @@ class TestModelLifecycleManager(unittest.TestCase):
 
     def test_request_swap_with_explicit_target(self):
         self.mlm._models['target'] = self.ModelState(
-            name='target', device=self.ModelDevice.GPU,
+            name='target', model_type='tts', device=self.ModelDevice.GPU,
             priority=self.ModelPriority.WARM)
         self.mlm._do_unload = MagicMock()
 
@@ -653,7 +653,7 @@ class TestModelLifecycleManager(unittest.TestCase):
         self.mlm._do_unload = MagicMock()
         for i in range(10):
             self.mlm._models[f'v{i}'] = self.ModelState(
-                name=f'v{i}', device=self.ModelDevice.GPU,
+                name=f'v{i}', model_type='tts', device=self.ModelDevice.GPU,
                 priority=self.ModelPriority.EVICTABLE,
                 last_access_time=time.time() - i * 100)
             self.mlm.request_swap(f'new{i}', evict_target=f'v{i}')
@@ -670,7 +670,7 @@ class TestModelLifecycleManager(unittest.TestCase):
         })
         # Displacer is now idle
         self.mlm._models['displacer'] = self.ModelState(
-            name='displacer', device=self.ModelDevice.GPU,
+            name='displacer', model_type='tts', device=self.ModelDevice.GPU,
             priority=self.ModelPriority.IDLE)
 
         # Mock restart and VRAM check
@@ -691,7 +691,7 @@ class TestModelLifecycleManager(unittest.TestCase):
             'timestamp': time.time(),
         })
         self.mlm._models['active_model'] = self.ModelState(
-            name='active_model', device=self.ModelDevice.GPU,
+            name='active_model', model_type='tts', device=self.ModelDevice.GPU,
             priority=self.ModelPriority.ACTIVE,
             active_inference_count=1)
 
@@ -746,7 +746,7 @@ class TestModelLifecycleManager(unittest.TestCase):
 
     def test_inference_guard_prevents_eviction(self):
         self.mlm._models['guarded'] = self.ModelState(
-            name='guarded', device=self.ModelDevice.GPU)
+            name='guarded', model_type='tts', device=self.ModelDevice.GPU)
 
         with self.mlm.inference_guard('guarded'):
             state = self.mlm._models['guarded']
@@ -900,7 +900,7 @@ class TestIntegration(unittest.TestCase):
             orch = ModelOrchestrator(catalog=catalog)
             mlm = ModelLifecycleManager()
             mlm._models['tts_test'] = ModelState(
-                name='tts_test', device=ModelDevice.GPU)
+                name='tts_test', model_type='tts', device=ModelDevice.GPU)
 
             # Simulate crash — handle_dead_process calls notify_unloaded
             # which should sync catalog via orchestrator
@@ -942,7 +942,7 @@ class TestIntegration(unittest.TestCase):
                 # Step 2: Simulate access
                 mlm = ModelLifecycleManager()
                 mlm._models['tts-piper'] = ModelState(
-                    name='tts-piper', device=ModelDevice.CPU, crash_count=1)
+                    name='tts-piper', model_type='tts', device=ModelDevice.CPU, crash_count=1)
                 mlm.notify_access('tts-piper')
                 self.assertEqual(mlm._models['tts-piper'].crash_count, 0)
 
@@ -964,7 +964,7 @@ class TestIntegration(unittest.TestCase):
 
         mlm = ModelLifecycleManager()
         mlm._models['old'] = ModelState(
-            name='old', device=ModelDevice.GPU,
+            name='old', model_type='tts', device=ModelDevice.GPU,
             priority=ModelPriority.EVICTABLE,
             last_access_time=time.time() - 600)
         mlm._do_unload = MagicMock()
@@ -1119,7 +1119,7 @@ class TestThreadSafety(unittest.TestCase):
 
         mlm = ModelLifecycleManager()
         mlm._models['concurrent'] = ModelState(
-            name='concurrent', device=ModelDevice.GPU)
+            name='concurrent', model_type='tts', device=ModelDevice.GPU)
 
         errors = []
 
@@ -1184,7 +1184,7 @@ class TestThreadSafety(unittest.TestCase):
         # Add 4 evictable models
         for i in range(4):
             mlm._models[f'victim{i}'] = ModelState(
-                name=f'victim{i}', device=ModelDevice.GPU,
+                name=f'victim{i}', model_type='tts', device=ModelDevice.GPU,
                 priority=ModelPriority.EVICTABLE,
                 last_access_time=time.time() - i * 100)
 
@@ -1487,11 +1487,22 @@ class TestSTTLoaderDownload(unittest.TestCase):
         self.assertFalse(result)
 
     def test_download_is_downloaded_checks_faster_whisper_spec(self):
-        """STTLoader.is_downloaded() returns True iff faster_whisper importlib spec is found."""
-        with patch('importlib.util.find_spec', return_value=MagicMock()):
-            self.assertTrue(self.loader.is_downloaded(self.entry))
-        with patch('importlib.util.find_spec', return_value=None):
-            self.assertFalse(self.loader.is_downloaded(self.entry))
+        """STTLoader.is_downloaded() needs the faster_whisper package AND the
+        row's own weights (owner 2026-11-24: one source of truth for what is
+        on disk; the package alone used to count)."""
+        from models.catalog import ModelEntry, ModelType
+        entry = ModelEntry(id='stt-faster-whisper-base', name='Whisper Base',
+                           model_type=ModelType.STT)
+        cached = 'integrations.service_tools.whisper_tool._faster_whisper_model_cached'
+        with patch('importlib.util.find_spec', return_value=MagicMock()), \
+             patch(cached, return_value=True):
+            self.assertTrue(self.loader.is_downloaded(entry))
+        with patch('importlib.util.find_spec', return_value=None), \
+             patch(cached, return_value=True):
+            self.assertFalse(self.loader.is_downloaded(entry))
+        with patch('importlib.util.find_spec', return_value=MagicMock()), \
+             patch(cached, return_value=False):
+            self.assertFalse(self.loader.is_downloaded(entry))
 
 
 # ═══════════════════════════════════════════════════════════════════════

@@ -10,6 +10,7 @@ import {RealtimeProvider} from './contexts/RealtimeContext';
 import {SocialProvider} from './contexts/SocialContext';
 import {NunbaThemeProvider} from './contexts/ThemeContext';
 import useMainPagePresence from './hooks/useMainPagePresence';
+import useOpenAgentChat from './hooks/useOpenAgentChat';
 import {useReferral} from './hooks/useReferral';
 import useStorageSync from './hooks/useStorageSync';
 import MainRoutes from './MainRoute';
@@ -35,6 +36,10 @@ function App() {
   // Desktop: tell the host whether the owner is looking at this page, so the
   // floating companion hides over Nunba (no-op in the companion and a browser).
   useMainPagePresence();
+
+  // Desktop: the floating window's Open on an agent's question opens that
+  // agent's chat here (design_1125 A; no-op where nothing raises the event).
+  useOpenAgentChat();
 
   const [contactRequest, setContactRequest] = useState(null);
   const navigate = useNavigate();

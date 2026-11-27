@@ -70,8 +70,12 @@ export default function useCameraConsent(userId) {
 
   useEffect(() => {
     // The list is the signed-in user's own; without a token there is
-    // nothing to read (a 401 would also end a guest's session).
-    if (!userId || !hasToken()) return undefined;
+    // nothing to read (a 401 would also end a guest's session).  Signed
+    // out, the signed-in answer no longer holds: only a guest's answer does.
+    if (!userId || !hasToken()) {
+      setAllowed(guestAnswer());
+      return undefined;
+    }
     let alive = true;
     const read = () => {
       consentApi
@@ -113,6 +117,23 @@ export default function useCameraConsent(userId) {
   }, []);
 
   return allowed;
+}
+
+/**
+ * The chat bar's camera switch.  It makes the Privacy page camera card's own
+ * calls (consentApi.grant / consentApi.revoke, camera_capture, scope '*'),
+ * then gives the answer to every mounted useCameraConsent at once.  Off
+ * stops this page's camera before the revoke, so it stops even if the call
+ * fails; on counts only once the grant is written.  A guest has no consent
+ * row, so a guest's answer is kept for the tab, as the card's is.
+ */
+export async function setCameraConsent(on) {
+  const answer = (approved) => window.dispatchEvent(
+    new CustomEvent(NUNBA_CAMERA_CONSENT, {detail: {approved}}));
+  const call = {consent_type: CAMERA_CONSENT_TYPE, scope: '*'};
+  if (!on) answer(false);
+  if (hasToken()) await (on ? consentApi.grant(call) : consentApi.revoke(call));
+  if (on) answer(true);
 }
 
 // ── One camera stream per person ──────────────────────────────────────────
@@ -170,4 +191,5 @@ export function useConsentedCameraStream(userId, {paused = false} = {}) {
     userId,
     channel: 'camera',
   });
+  return allowed;
 }

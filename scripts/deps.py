@@ -566,6 +566,28 @@ def missing_embed_packages(site_packages_dir: str) -> list[str]:
     return missing
 
 
+def crossbarhttp_is_real(site_packages_dir: str) -> bool:
+    """Whether ``crossbarhttp`` in ``site_packages_dir`` is crossbarhttp3's
+    package (CORE_DEPS 'crossbarhttp3'): its ``crossbarhttp/crossbarhttp.py``
+    holds Client and its ``__init__`` re-exports it from there.
+
+    Not real: Hevolve_Database's stub (an ``__init__`` whose Client.publish
+    returned {"ok": True} and sent nothing; shipped by its find_packages()
+    until 2026-11-23), that stub written over the real module, or nothing.
+    setup_freeze_nunba._ship_the_real_crossbarhttp checks python-embed with
+    it after the sibling installs."""
+    import os
+    pkg = os.path.join(site_packages_dir, 'crossbarhttp')
+    if not os.path.isfile(os.path.join(pkg, 'crossbarhttp.py')):
+        return False
+    try:
+        with open(os.path.join(pkg, '__init__.py'), encoding='utf-8') as fh:
+            init = fh.read()
+    except OSError:
+        return False
+    return 'from .crossbarhttp import' in init and 'class Client' not in init
+
+
 def get_all_deps():
     """Get combined dict of all deps for auditing."""
     all_deps = {}

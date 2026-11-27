@@ -31,7 +31,11 @@ logger = logging.getLogger(__name__)
 
 # Auth decorator — single source of truth in routes/auth.py
 from routes.auth import require_local_or_token as _require_local_or_token
-from routes.auth import admitted_device_user, require_local_token_or_device
+from routes.auth import (
+    admitted_device_user,
+    is_admitted_device,
+    require_local_token_or_device,
+)
 
 # ============== Nunba-layer TTS (works on ALL tiers) ==============
 
@@ -73,12 +77,27 @@ def _busy_text_for_failure(err_text):
     return None
 
 
-def _fire_nunba_tts(text, user_id, request_id, language='en'):
+def _avatar_id_of(value):
+    """The avatar id a chat body carries, by HARTOS's one reader
+    (core.teacher_avatar.avatar_id_from); None when it carries none."""
+    try:
+        from core.teacher_avatar import avatar_id_from
+        return avatar_id_from(value)
+    except Exception as e:
+        logger.warning(f"avatar id unread (HARTOS core.teacher_avatar unavailable): {e}")
+        return None
+
+
+def _fire_nunba_tts(text, user_id, request_id, language='en',
+                    media_mode=None, avatar_id=None):
     """Synthesize TTS and push audio via SSE — works regardless of HARTOS tier.
 
     Called from chat_route when HARTOS Tier-1 didn't handle TTS.
     Uses Nunba's own tts_engine (kokoro/piper/indic_parler) and pushes
-    the audio URL to the frontend via SSE broadcast.
+    the audio URL to the frontend via SSE broadcast.  On a video turn
+    (media_mode 'video') of an avatar with a face, the same bundle also
+    carries its live talking-face stream: HARTOS's add_live_avatar, the
+    one helper both TTS publishers call.
     """
     # Internal error text must never be spoken.  The reply string was
     # handed straight to TTS, so backend faults got READ ALOUD: the owner
@@ -140,6 +159,15 @@ def _fire_nunba_tts(text, user_id, request_id, language='en'):
                     'request_id': str(request_id),
                     'action': 'TTS',
                 }
+                if media_mode == 'video':
+                    try:
+                        from core.port_registry import get_advertisable_base_url
+                        from integrations.service_tools.avatarforcing_tool import add_live_avatar
+                        add_live_avatar(_payload, audio_path=audio_path, avatar_id=avatar_id,
+                                        media_mode=media_mode, user_id=user_id,
+                                        phone_base=get_advertisable_base_url())
+                    except Exception as e:
+                        logger.warning(f"Nunba TTS: live avatar skipped: {e}")
                 # Push via ALL transports so every consumer gets audio:
                 # 1. SSE (local Nunba desktop)
                 # 2. Local embedded WAMP (LAN clients)
@@ -2349,6 +2377,113 @@ CLOUD_API_CONFIG = {
 }
 
 
+def _cloud_turn_can_reach_central(agent_config, online):
+    """Whether the current request's cloud-agent turn can be answered by
+    central: ``(endpoint, authorization, miss)``.
+
+    The one rule for both the /prompts availability flag and the CLOUD AGENT
+    forward, so a listed cloud agent is one whose turn goes.  ``endpoint``
+    is the agent's cloud_endpoint, else CLOUD_API_CONFIG's.  The turn goes
+    only online, with a bearer, to a central: the bearer is the page's own
+    login (the inbound Authorization), and it goes only when the endpoint's
+    ORIGIN is a known central (HARTOS's sync_engine.is_central_origin).  No
+    other credential stands in: HEVOLVE_LLM_API_KEY is the person's own key
+    for their LLM provider (desktop/ai_key_vault.py), which central cannot
+    take; a phone's device token only this desktop proves (central answers
+    it 401, measured 2026-11-23 on the Cafe agent 344), so it never leaves
+    the node.  A phone's turn goes instead as the phone's account, on that
+    account's credits, with the login this desktop holds for it
+    (sync_engine.central_login_for; owner rule: a central agent runs on
+    central, as the account), else it is a miss.  A caller with no
+    Authorization gets no stored login: desktop /chat is reachable on the
+    LAN (#52), and a body's user_id is not who the caller is.  Waits on
+    #306: verify_device_jwt must hold a phone's token to the account it was
+    paired as.  ``authorization`` is the header to send, None with ``miss``
+    the reason when the turn cannot go.  The cheap misses come before
+    HARTOS's rules are imported, so a turn that needs no bearer never
+    depends on them (app.py --validate holds a bundle to having them).  The
+    reason names what about the endpoint is not a central's (HARTOS's
+    sync_engine.central_origin_mismatch: its host, scheme, port, userinfo
+    or characters) and its address as written, without userinfo, never a
+    bearer: a tab in it shows as \\t, not as the host urlsplit would clean
+    it to.
+
+    Design limit, named: an endpoint on a regional host is a miss today.
+    Only a central takes these logins; a regional relay of cloud turns does
+    not exist yet.
+    """
+    endpoint = ((agent_config or {}).get('cloud_endpoint')
+                or CLOUD_API_CONFIG['chat_endpoint'])
+    authorization = request.headers.get('Authorization')
+    phone = is_admitted_device()
+    if not online:
+        return endpoint, None, 'no internet'
+    if not phone and not authorization:
+        return endpoint, None, 'not signed in'
+    from integrations.social.sync_engine import (
+        central_login_for,
+        central_origin_mismatch,
+    )
+    mismatch = central_origin_mismatch(endpoint)
+    if mismatch:
+        # The authority as written (no urlsplit cleaning), userinfo cut off.
+        address = endpoint.split('://', 1)[-1]
+        for cut in '/?#':
+            address = address.split(cut, 1)[0]
+        address = address.rsplit('@', 1)[-1]
+        return (endpoint, None,
+                f'endpoint is not a known central: its {mismatch} '
+                f'({f"address {address!r}" if address else "no address"})')
+    if phone:
+        account = admitted_device_user()
+        login = central_login_for(account, endpoint) if account else ''
+        if not login:
+            return endpoint, None, 'not signed in on this desktop'
+        authorization = f'Bearer {login}'
+    return endpoint, authorization, ''
+
+
+def _pull_central_agent_here(prompt_id, body_user_id):
+    """Pull a central agent's recipe to this node so its turn runs here, on
+    the free local model; True when ``<prompt_id>.json`` landed.
+
+    Owner rule 11-23: anything in central syncs to local and works locally
+    if possible; central costs credits.  Measured 11-23: the tablet's Cafe
+    (344) and Luna (345) turns were labelled cloud because no file was
+    here, so HARTOS's own pull-on-demand never ran, and local_assistant
+    answered after central's 401.
+
+    The pull is HARTOS's own pair (core.recipe_sync.pull_recipe with
+    sync_engine.recipe_sync_route, as its /chat pull-on-demand), as the
+    caller's account: a phone's token account (#306 holds it to the account
+    it was paired as), else the body's user_id under the page's own
+    Authorization.  A caller with no Authorization pulls nothing (desktop
+    /chat is reachable on the LAN, #52), nor does one offline or one whose
+    account this desktop holds no login for: recipe_sync_route sends the
+    login only to a central, for a cloud id.  A pull the parent refused
+    (404/403/410) is not asked again for ten minutes (pull_recipe), so a
+    real-time conversation does not pay that round trip every turn.
+    """
+    if is_admitted_device():
+        account = admitted_device_user()
+    elif request.headers.get('Authorization'):
+        account = body_user_id
+    else:
+        return False
+    if not account or not check_internet_connection():
+        return False
+    from core.platform_paths import get_recipe_prompts_dir
+    from core.recipe_sync import pull_recipe
+    from integrations.social.sync_engine import recipe_sync_route
+    parent, login = recipe_sync_route(account)
+    if not (parent and login):
+        return False
+    prompts_dir = get_recipe_prompts_dir()
+    return (pull_recipe(prompts_dir, prompt_id, str(account),
+                        central_url=parent, bearer=login)
+            and os.path.isfile(os.path.join(prompts_dir, f'{prompt_id}.json')))
+
+
 _internet_cache = {'online': False, 'checked_at': 0}
 # Concurrency primitives for check_internet_connection.
 #   _internet_check_lock guards _internet_cache writes + _internet_check_in_flight
@@ -2540,13 +2675,16 @@ def get_prompts_route():
         except Exception as e:
             logger.warning(f'HARTOS agent fetch failed: {e}')
 
-    # ── 3. Cloud agents last (only when online + authenticated) ──
-    has_auth = bool(request.headers.get('Authorization') or os.environ.get('HEVOLVE_LLM_API_KEY'))
+    # ── 3. Cloud agents last (only when online; usable when its turn goes) ──
+    # Available exactly when the CLOUD AGENT forward would send its turn
+    # (_cloud_turn_can_reach_central, the one rule): guests can see but
+    # not use.
     if agent_type in ['all', 'cloud'] and is_online:
         for agent in CLOUD_AGENTS:
             if not any(_is_same_agent(a, agent) for a in agents):
                 agent_copy = agent.copy()
-                agent_copy['available'] = has_auth  # guests can see but not use
+                agent_copy['available'] = bool(
+                    _cloud_turn_can_reach_central(agent, is_online)[1])
                 agent_copy['origin'] = ORIGIN_HIVE
                 agents.append(agent_copy)
 
@@ -2718,6 +2856,10 @@ def _run_chat_turn(data):
     intelligence_preference = data.get('intelligence_preference')
     if intelligence_preference not in ('local_only', 'auto', 'hive_preferred'):
         intelligence_preference = None
+    # open_mic: the page's always-on mic heard this, nobody clicked it.
+    # Forwarded to HARTOS, which decides from context whether the agent
+    # answers or stays silent (owner 2026-11-24: no keyword gate).
+    open_mic = data.get('open_mic') is True
     # Honor the body, then fall back to the canonical persisted reader — the
     # same shape as preferred_lang below.  The bare 'auto' default overrode a
     # stored 'local_only' choice on every turn, which is the same defect the
@@ -2966,8 +3108,10 @@ def _run_chat_turn(data):
                its questions, so without this the setup deadlocked:
                forwarded to the cloud, 401, answered by the generic
                assistant (HARTOS task #136, measured live 2026-10-18);
-             - otherwise the agent exists only in the cloud -> type
-               'cloud', and the CLOUD branch forwards the turn there.
+             - otherwise the agent is central's: its recipe is pulled here
+               when it can be (_pull_central_agent_here; owner 11-23,
+               local first) and the turn runs here, type 'local'; else
+               type 'cloud', and the CLOUD branch forwards the turn there.
                Owner rule 2026-10-04: an agent with an id on this node
                runs here, a cloud-only agent runs in the cloud.  This
                used to force create-mode for every unknown id too, which
@@ -3048,9 +3192,18 @@ def _run_chat_turn(data):
                     else "HARTOS's stored record of the agent")
                 return ({'id': _pid_int, 'type': 'local'}, _pid_int,
                         'local', _pid_int, False)
+            # Central's agent runs HERE when its recipe can be pulled (owner
+            # 11-23: local first; the local model is free, central costs
+            # credits); only an agent that cannot be pulled goes to central.
+            if _pull_central_agent_here(_pid_int, user_id):
+                logger.info(
+                    'prompt_id=%s had no recipe on this node; pulled it from '
+                    'central and the turn runs here', _pid_int)
+                return ({'id': _pid_int, 'type': 'local'}, _pid_int,
+                        'local', _pid_int, False)
             logger.info(
-                'prompt_id=%s has no recipe on this node - cloud-only '
-                'agent, forwarding the turn to the cloud', _pid_int)
+                'prompt_id=%s has no recipe on this node and none was '
+                'pulled - forwarding the turn to the cloud', _pid_int)
             return ({'id': _pid_int, 'type': 'cloud'}, _pid_int,
                     'cloud', _pid_int, False)
         # 5. No usable prompt_id and either no agent_id_legacy OR a
@@ -3113,21 +3266,20 @@ def _run_chat_turn(data):
     # A cloud agent's turn goes to the cloud.  When the cloud does not answer
     # it (offline, not signed in, an error), local_assistant answers it here:
     # no turn is refused.
+    #
+    # Whether it can go, where and with which bearer is
+    # _cloud_turn_can_reach_central's answer, the same one /prompts lists
+    # cloud agents by.  No bearer is ever logged, only the reason.
     if agent_type == 'cloud':
         logger.info(f'Chat with CLOUD agent: {agent_id}')
-        auth_header = request.headers.get('Authorization')
-        api_key = os.environ.get('HEVOLVE_LLM_API_KEY')
-        if not check_internet_connection():
-            _cloud_miss = 'no internet'
-        elif not auth_header and not api_key:
-            _cloud_miss = 'not signed in'
-        else:
-            cloud_endpoint = CLOUD_API_CONFIG['chat_endpoint']
-            if agent_config and agent_config.get('cloud_endpoint'):
-                cloud_endpoint = agent_config['cloud_endpoint']
+        cloud_endpoint, auth_header, _cloud_miss = _cloud_turn_can_reach_central(
+            agent_config, check_internet_connection())
+        if auth_header:
             payload = {
                 'text': text,
-                'user_id': user_id,
+                # A phone acts as its token's account only, never as a
+                # user_id its body names.
+                'user_id': admitted_device_user() or user_id,
                 'teacher_avatar_id': teacher_avatar_id or 1,
                 'request_id': request_id,
                 'video_req': video_req
@@ -3136,11 +3288,8 @@ def _run_chat_turn(data):
             # chatbot.py custom_gpt: getprompt/?prompt_id=).
             if prompt_id:
                 payload['prompt_id'] = prompt_id
-            cloud_headers = {'Content-Type': 'application/json'}
-            if auth_header:
-                cloud_headers['Authorization'] = auth_header
-            if api_key and 'Authorization' not in cloud_headers:
-                cloud_headers['Authorization'] = f'Bearer {api_key}'
+            cloud_headers = {'Content-Type': 'application/json',
+                             'Authorization': auth_header}
             try:
                 response = requests.post(
                     cloud_endpoint,
@@ -3384,6 +3533,7 @@ def _run_chat_turn(data):
                     device_id=device_id,
                     attachments=attachments,
                     goal_tags=goal_tags,
+                    open_mic=open_mic,
                 )
                 # Surface explicit LangChain errors (guardrails, prompt injection, etc.)
                 if result.get('error') and not (result.get('text') or result.get('response')):
@@ -3415,6 +3565,25 @@ def _run_chat_turn(data):
                     # "all at once" rendering the user reported.  Drained
                     # buffer is now diag-only; not attached to HTTP responses.
                     return jsonify(error_response)
+
+                # An open-mic turn HARTOS judged not meant for the agent: the
+                # agent stays silent.  No reply, no TTS, and NOT the raw-llama
+                # fallback below, which would answer the room's words.  The
+                # agent's own verdict and its one-line reason go to the page,
+                # which shows the bubble as heard.
+                if open_mic and result.get('not_addressed'):
+                    logger.info(f'open-mic turn judged not addressed '
+                                f'(request_id={request_id}), no reply')
+                    return jsonify({
+                        'text': '',
+                        'agent_id': agent_id,
+                        'agent_type': 'local',
+                        'source': 'langchain_local',
+                        'success': True,
+                        'addressed': False,
+                        'not_addressed': True,
+                        'reason': result.get('reason') or '',
+                    })
 
                 response_text = result.get('text') or result.get('response')
                 # The `media` HARTOS's /chat reply carries (a Reel Studio
@@ -3513,6 +3682,11 @@ def _run_chat_turn(data):
                         response_json['agent_name'] = result['agent_name']
                     if result.get('agent_display_name'):
                         response_json['agent_display_name'] = result['agent_display_name']
+                    # The persona of this turn's person in the agent (HARTOS
+                    # _chat_reply, design_1125 B): the page names it beside
+                    # the agent's name.  None named, none passed on.
+                    if result.get('persona'):
+                        response_json['persona'] = result['persona']
                     # Pass through creation_suggested flag
                     if result.get('creation_suggested'):
                         response_json['creation_suggested'] = True
@@ -3618,7 +3792,9 @@ def _run_chat_turn(data):
                                           (preferred_lang and not preferred_lang.startswith('en')
                                            and result.get('_tier') != 'direct'))
                     if audio_mode and response_text and _nunba_handles_tts:
-                        _fire_nunba_tts(response_text, user_id, request_id, preferred_lang)
+                        _fire_nunba_tts(response_text, user_id, request_id, preferred_lang,
+                                        media_mode=media_mode,
+                                        avatar_id=_avatar_id_of(teacher_avatar_id))
                     return jsonify(response_json)
                 else:
                     logger.warning(f'LangChain returned error or empty: {result}')
@@ -3696,7 +3872,9 @@ def _run_chat_turn(data):
                     'success': True
                 }
                 if audio_mode and response_text:
-                    _fire_nunba_tts(response_text, user_id, request_id, preferred_lang)
+                    _fire_nunba_tts(response_text, user_id, request_id, preferred_lang,
+                                    media_mode=media_mode,
+                                    avatar_id=_avatar_id_of(teacher_avatar_id))
                 return jsonify(_resp)
         except ImportError:
             logger.warning('Llama config not available')
@@ -4118,7 +4296,9 @@ def agents_sync_get():
 
 
 def agents_sync_post():
-    """POST /agents/sync - Push agent configs, last-write-wins merge."""
+    """POST /agents/sync - Push agent configs, last-write-wins merge, per key:
+    a newer client copy wins on the keys it sends; a key it does not send is
+    kept as stored (tests/test_agent_sync_keeps_stored_keys.py)."""
     user_id = _get_user_id_from_auth()
     if not user_id:
         return jsonify({'success': False, 'error': 'Authentication required'}), 401
@@ -4144,10 +4324,13 @@ def agents_sync_post():
                     existing = json.load(f)
                 server_ts = existing.get('updated_at', '')
                 if client_ts > server_ts:
-                    # Client is newer — overwrite
-                    agent['creator_user_id'] = str(user_id)
+                    # Client is newer: it wins on the keys it sends, and nothing
+                    # stored is dropped -- a phone's copy lacks what the desktop's
+                    # CREATE wrote (flows, personas, an avatar id ...), and writing
+                    # that copy whole erased it (coordinator hevolve-66e6, 11-26).
+                    merged = {**existing, **agent, 'creator_user_id': str(user_id)}
                     with open(fpath, 'w', encoding='utf-8') as f:
-                        json.dump(agent, f, indent=2)
+                        json.dump(merged, f, indent=2)
                     updated.append(pid)
                 else:
                     # Server is newer — return it

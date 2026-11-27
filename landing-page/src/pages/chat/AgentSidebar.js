@@ -1,7 +1,6 @@
 /* eslint-disable no-unused-vars */
 import AgentPoster from '../../assets/images/AgentPoster.png';
 import HARTSpeechPlayer from '../../components/HART/HARTSpeechPlayer';
-import OtpAuthModal from '../OtpAuthModal';
 import SIDEBAR_LINKS from '../sidebarLinks';
 
 import {ChevronRight, Menu, Star, Plus, X} from 'lucide-react';
@@ -326,12 +325,6 @@ const AgentSidebar = ({
                       Login
                     </span>
                   </RouterLink>
-                  <OtpAuthModal
-                    isOpen={isModalOpen}
-                    onClose={() => setIsModalOpen(false)}
-                    message={sessionExpiredMessage}
-                    forceGuestMode={isLocalRoute}
-                  />
                   <RouterLink
                     to="#signup-section"
                     className="py-[6px] px-4 text-sm text-center rounded font-semibold text-white"

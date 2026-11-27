@@ -286,11 +286,13 @@ class TestAgentRouting:
     @pytest.fixture
     def node(self, tmp_path, monkeypatch):
         (tmp_path / '54.json').write_text('{}')     # a placeholder recipe
-        state = {'online': True, 'cloud_status': 200, 'cloud': [], 'hartos': []}
+        state = {'online': True, 'cloud_status': 200, 'cloud': [], 'hartos': [],
+                 'sent': []}
         monkeypatch.delenv('HEVOLVE_LLM_API_KEY', raising=False)
 
         def cloud_post(url, json=None, headers=None, **_kw):
             state['cloud'].append(json)
+            state['sent'].append({'url': url, 'headers': dict(headers or {})})
             if isinstance(state['cloud_status'], Exception):
                 raise state['cloud_status']
             return MagicMock(status_code=state['cloud_status'],
@@ -300,9 +302,38 @@ class TestAgentRouting:
             state['hartos'].append(kwargs)
             return {'text': 'local says hi'}
 
+        # Central's recipe store, for the pull a central agent's turn makes
+        # first (_pull_central_agent_here): no parent unless a test names
+        # one; every pull recorded, answered with pull_status.
+        import importlib
+        recipe_sync = importlib.import_module('core.recipe_sync')
+        sync_engine = importlib.import_module('integrations.social.sync_engine')
+        state.update(parent='', pull_status=404, pulls=[])
+
+        class CentralStore:
+            def get(self, url, params=None, headers=None, **_kw):
+                pid = url.rstrip('/').rsplit('/', 1)[-1]
+                state['pulls'].append({'url': url,
+                                       'user_id': (params or {}).get('user_id'),
+                                       'headers': dict(headers or {})})
+                files = {f'{pid}.json': json.dumps({'name': 'Cafe', 'flows': []})}
+                resp = MagicMock(status_code=state['pull_status'])
+                resp.json.return_value = {
+                    'schema_version': recipe_sync.SCHEMA_VERSION,
+                    'prompt_id': pid, 'files': files,
+                    'checksum': recipe_sync.envelope_checksum(files)}
+                return resp
+
         import routes.chatbot_routes as cr
         with patch('core.platform_paths.get_prompts_dir',
                    return_value=str(tmp_path)), \
+                patch('core.platform_paths.get_recipe_prompts_dir',
+                      return_value=str(tmp_path)), \
+                patch.object(sync_engine.SyncEngine, 'parent_tier_url',
+                             staticmethod(lambda: state['parent'])), \
+                patch('core.http_pool.get_http_session',
+                      return_value=CentralStore()), \
+                patch.object(recipe_sync, '_refused_pulls', {}, create=True), \
                 patch('llama.llama_config.LlamaConfig'), \
                 patch.object(cr, 'check_internet_connection',
                              side_effect=lambda: state['online']), \
@@ -447,6 +478,523 @@ class TestAgentRouting:
                               goal_tags=['reel_studio'])
         assert body['text'] == 'cloud says hi' and node['hartos'] == []
         assert 'RuntimeError' in caplog.text and 'rule bug' in caplog.text
+
+    # ── a cloud turn's bearer goes only to a central (2026-11-23) ────────
+    # Measured live: a tablet's turn for the Cafe agent (344, central only)
+    # carried the phone's device token, Nunba forwarded it to azurekong,
+    # central answered 401 and local_assistant answered instead.  Every
+    # bearer (the page's own login, the node's HEVOLVE_LLM_API_KEY) goes
+    # only to an endpoint whose ORIGIN is a known central (HARTOS's
+    # sync_engine.is_central_origin, imported from the HARTOS tree this
+    # test process runs), and a phone's device token never leaves the node.
+    # The values are fake; no log line at any level may carry one.
+
+    PAGE_LOGIN = 'fake-page-login-7f3a'
+    NODE_KEY = 'fake-node-api-key-91c2'
+    DEVICE_TOKEN = 'fake-device-token-c0de'
+    CENTRAL = 'https://azurekong.hertzai.com/chat/custom_gpt'
+
+    @staticmethod
+    def _as_phone(flask_app, user_id='10202'):
+        """What HARTOS's API gate leaves on a request from a phone the
+        owner allowed (security.middleware._admit_owner_allowed_device)."""
+        from flask import g
+
+        @flask_app.before_request
+        def _the_gate_admitted_a_phone():
+            g.auth_source = 'device'
+            g.device_public_key = 'fake-device-public-key'
+            g.jwt_payload = {'user_id': user_id}
+
+    def _turn(self, client, caplog, authorization=None, **body):
+        import logging
+        caplog.set_level(logging.DEBUG)
+        headers = {'Authorization': authorization} if authorization else {}
+        return client.post('/chat', headers=headers, json={
+            'text': 'hi', 'user_id': '10202', 'preferred_lang': 'en',
+            'media_mode': 'text', 'prompt_id': 344, **body}).get_json()
+
+    STORED_LOGIN = 'fake-stored-login-10202'
+    OTHER_LOGIN = 'fake-stored-login-20303'
+
+    def _no_bearer_logged(self, caplog):
+        for secret in (self.PAGE_LOGIN, self.NODE_KEY, self.DEVICE_TOKEN,
+                       self.STORED_LOGIN, self.OTHER_LOGIN):
+            assert secret not in caplog.text, f'{secret} reached the log'
+
+    @staticmethod
+    def _miss(caplog):
+        return next(r.getMessage() for r in caplog.records
+                    if 'not answered by the cloud' in r.getMessage())
+
+    @pytest.fixture
+    def stored_logins(self, tmp_path, monkeypatch):
+        """The logins this desktop holds, in a users table of this test's
+        own: the rows a desktop sign-in writes (the cloud id, its Hevolve
+        login as api_token).  HARTOS's central_login_for reads them the way
+        it reads the node's, through integrations.social.models.db_session;
+        the node is a desktop (flat tier).  Returns store(user_id, login).
+        The modules are the ones sys.modules holds, which the route's and
+        HARTOS's own imports find."""
+        import contextlib
+        import importlib
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        models = importlib.import_module('integrations.social.models')
+        key_delegation = importlib.import_module('security.key_delegation')
+        engine = create_engine(f"sqlite:///{tmp_path / 'logins.db'}")
+        models.User.__table__.create(engine)
+        session = sessionmaker(bind=engine)
+
+        @contextlib.contextmanager
+        def db_session(commit=True):
+            s = session()
+            try:
+                yield s
+                if commit:
+                    s.commit()
+            finally:
+                s.close()
+
+        monkeypatch.setattr(models, 'db_session', db_session)
+        monkeypatch.setattr(key_delegation, 'get_node_tier', lambda: 'flat')
+
+        def store(user_id, login):
+            with db_session() as s:
+                s.add(models.User(id=user_id, username=f'u{len(user_id)}{user_id[:8]}',
+                                  display_name='Desk', user_type='human',
+                                  email=f'{user_id}@example.com', api_token=login))
+        return store
+
+    @pytest.mark.parametrize('node_key', [False, True])
+    def test_a_phones_device_token_never_leaves_the_node(
+            self, flask_app, client, node, caplog, monkeypatch, node_key,
+            stored_logins):
+        if node_key:
+            monkeypatch.setenv('HEVOLVE_LLM_API_KEY', self.NODE_KEY)
+        self._as_phone(flask_app)
+        body = self._turn(client, caplog, f'Bearer {self.DEVICE_TOKEN}')
+        assert node['sent'] == [], 'a phone turn was sent off the node'
+        assert body['text'] == 'local says hi'
+        assert body['agent_id'] == 'local_assistant'
+        assert '(not signed in on this desktop)' in self._miss(caplog)
+        self._no_bearer_logged(caplog)
+
+    def test_a_phones_turn_goes_to_central_as_its_account(
+            self, flask_app, client, node, caplog, stored_logins):
+        stored_logins('10202', self.STORED_LOGIN)
+        self._as_phone(flask_app, '10202')
+        body = self._turn(client, caplog, f'Bearer {self.DEVICE_TOKEN}')
+        assert body['text'] == 'cloud says hi'
+        assert [s['url'] for s in node['sent']] == [self.CENTRAL]
+        assert node['sent'][0]['headers']['Authorization'] == \
+            f'Bearer {self.STORED_LOGIN}'
+        assert self.DEVICE_TOKEN not in json.dumps(node['sent'])
+        assert node['cloud'][0]['user_id'] == '10202'
+        self._no_bearer_logged(caplog)
+
+    def test_a_phone_acts_only_as_its_tokens_account(
+            self, flask_app, client, node, caplog, stored_logins):
+        """A device token for account A with a body naming B goes with A's
+        login, as A, never B's (HARTOS's gate refuses that body with a 403
+        first; the route does not lean on it)."""
+        stored_logins('10202', self.STORED_LOGIN)
+        stored_logins('20303', self.OTHER_LOGIN)
+        self._as_phone(flask_app, '10202')
+        self._turn(client, caplog, f'Bearer {self.DEVICE_TOKEN}',
+                   user_id='20303')
+        assert node['sent'][0]['headers']['Authorization'] == \
+            f'Bearer {self.STORED_LOGIN}'
+        assert self.OTHER_LOGIN not in json.dumps(node['sent'])
+        assert node['cloud'][0]['user_id'] == '10202'
+        self._no_bearer_logged(caplog)
+
+    @pytest.mark.parametrize('held, spends', [
+        ({'20303': 'b'}, 'b'),
+        ({'10202': 'a'}, None),
+        ({'10202': 'a', '20303': 'b'}, 'b'),
+    ], ids=['its own login', 'only another accounts login', 'both held'])
+    def test_a_phone_spends_only_its_own_accounts_credits(
+            self, flask_app, client, node, caplog, stored_logins, held,
+            spends):
+        """Owner 11-23: "central credits are against client id and if client
+        id is same then allow".  Phone B (its token names account 20303)
+        goes to central only on B's own stored login.  With only A's login
+        held it is refused: nothing is sent, /prompts lists the agent as not
+        available, and the miss says why (review rv_6546: a mutant that used
+        any cloud-id login the desktop holds for any phone survived)."""
+        logins = {'a': self.STORED_LOGIN, 'b': self.OTHER_LOGIN}
+        for account, which in held.items():
+            stored_logins(account, logins[which])
+        self._as_phone(flask_app, '20303')
+        with self._agent_with_endpoint(self.CENTRAL):
+            listed = self._listed(client, f'Bearer {self.DEVICE_TOKEN}')
+            body = self._turn(client, caplog, f'Bearer {self.DEVICE_TOKEN}',
+                              prompt_id=None, agent_id='cloud_radha',
+                              user_id='20303')
+        available = [a['available'] for a in listed if a['id'] == 'cloud_radha']
+        if spends:
+            assert available == [True]
+            assert [s['headers']['Authorization'] for s in node['sent']] == \
+                [f'Bearer {logins[spends]}']
+            assert node['cloud'][0]['user_id'] == '20303'
+        else:
+            assert available == [False], 'listed on another account\'s login'
+            assert node['sent'] == [], 'sent on another account\'s login'
+            assert body['agent_id'] == 'local_assistant'
+            assert '(not signed in on this desktop)' in self._miss(caplog)
+        assert self.STORED_LOGIN not in json.dumps(node['sent'])
+        self._no_bearer_logged(caplog)
+
+    def test_a_caller_with_no_authorization_never_gets_a_stored_login(
+            self, client, node, caplog, stored_logins):
+        """Desktop /chat is reachable on the LAN (#52): a body naming the
+        owner's id is not the owner."""
+        stored_logins('10202', self.STORED_LOGIN)
+        body = self._turn(client, caplog, user_id='10202')
+        assert node['sent'] == [] and body['text'] == 'local says hi'
+        assert '(not signed in)' in self._miss(caplog)
+
+    def test_a_phone_on_a_local_account_gets_no_stored_login(
+            self, flask_app, client, node, caplog, stored_logins):
+        """A uuid row holds this node's own token, not a Hevolve login."""
+        local = '3f1c9a2e-5b7d-4e1a-9c3b-2d4f6a8b0c1e'
+        stored_logins(local, self.STORED_LOGIN)
+        self._as_phone(flask_app, local)
+        self._turn(client, caplog, f'Bearer {self.DEVICE_TOKEN}', user_id=local)
+        assert node['sent'] == []
+        assert '(not signed in on this desktop)' in self._miss(caplog)
+        self._no_bearer_logged(caplog)
+
+    def test_a_phone_turn_to_an_endpoint_that_is_no_central_sends_no_login(
+            self, flask_app, client, node, caplog, stored_logins):
+        stored_logins('10202', self.STORED_LOGIN)
+        self._as_phone(flask_app, '10202')
+        with self._agent_with_endpoint(
+                'https://azurekong.hertzai.com@evil.com/chat/custom_gpt'):
+            self._turn(client, caplog, f'Bearer {self.DEVICE_TOKEN}',
+                       prompt_id=None, agent_id='cloud_radha')
+        assert node['sent'] == []
+        assert ("(endpoint is not a known central: its userinfo "
+                "(address 'evil.com'))") in self._miss(caplog)
+        self._no_bearer_logged(caplog)
+
+    # ── a central agent runs HERE first (owner 11-23: local first) ───────
+    # Measured 11-23: the tablet's Cafe (344) and Luna (345) turns had no
+    # file here, were labelled cloud, and local_assistant answered after
+    # central's 401; HARTOS's own pull never ran.  Now step 4 pulls the
+    # recipe with HARTOS's pair (recipe_sync_route + pull_recipe, real here;
+    # only central's store is a stand-in) and runs the agent locally.
+
+    CENTRAL_ROOT = 'https://azurekong.hertzai.com'
+
+    def _central_holds_it(self, node, status=200):
+        node['parent'] = self.CENTRAL_ROOT
+        node['pull_status'] = status
+
+    def test_a_central_agent_with_no_file_here_is_pulled_and_runs_here(
+            self, client, node, caplog, stored_logins, tmp_path):
+        stored_logins('10202', self.STORED_LOGIN)
+        self._central_holds_it(node)
+        body = self._turn(client, caplog, f'Bearer {self.PAGE_LOGIN}')
+        assert body['text'] == 'local says hi' and node['sent'] == [], \
+            'the turn went to central though its recipe could be pulled'
+        assert node['hartos'][0]['agent_id'] == 344
+        assert [p['url'] for p in node['pulls']] == [
+            f'{self.CENTRAL_ROOT}/prompts/sync/344']
+        assert node['pulls'][0]['user_id'] == '10202'
+        assert node['pulls'][0]['headers'].get('Authorization') == \
+            f'Bearer {self.STORED_LOGIN}'
+        assert (tmp_path / '344.json').is_file()
+        self._turn(client, caplog, f'Bearer {self.PAGE_LOGIN}')
+        assert len(node['pulls']) == 1, 'the next turn found the file here'
+        self._no_bearer_logged(caplog)
+
+    def test_a_refused_pull_falls_back_to_the_forward(
+            self, client, node, caplog, stored_logins):
+        stored_logins('10202', self.STORED_LOGIN)
+        self._central_holds_it(node, status=404)
+        body = self._turn(client, caplog, f'Bearer {self.PAGE_LOGIN}')
+        assert body['text'] == 'cloud says hi' and node['hartos'] == []
+        assert len(node['pulls']) == 1
+        assert [s['url'] for s in node['sent']] == [self.CENTRAL]
+
+    @pytest.mark.parametrize('status', [403, 404, 410])
+    def test_two_turns_on_a_refused_id_make_one_pull(
+            self, client, node, caplog, stored_logins, status):
+        """Latency aware for real-time conversations: central's refusal is
+        remembered (ten minutes, per account and id), not asked each turn."""
+        stored_logins('10202', self.STORED_LOGIN)
+        self._central_holds_it(node, status=status)
+        self._turn(client, caplog, f'Bearer {self.PAGE_LOGIN}')
+        self._turn(client, caplog, f'Bearer {self.PAGE_LOGIN}')
+        assert len(node['pulls']) == 1
+        assert len(node['sent']) == 2, 'both turns still went to central'
+
+    def test_a_phone_pulls_as_its_tokens_account(
+            self, flask_app, client, node, caplog, stored_logins):
+        stored_logins('10202', self.STORED_LOGIN)
+        stored_logins('20303', self.OTHER_LOGIN)
+        self._central_holds_it(node)
+        self._as_phone(flask_app, '10202')
+        body = self._turn(client, caplog, f'Bearer {self.DEVICE_TOKEN}',
+                          user_id='20303')
+        assert body['text'] == 'local says hi' and node['sent'] == []
+        assert node['pulls'][0]['user_id'] == '10202'
+        assert node['pulls'][0]['headers'].get('Authorization') == \
+            f'Bearer {self.STORED_LOGIN}'
+        assert self.DEVICE_TOKEN not in json.dumps(node['pulls'])
+        self._no_bearer_logged(caplog)
+
+    def test_a_phone_pulls_as_its_own_account_not_the_desktop_owners(
+            self, flask_app, client, node, caplog, stored_logins, monkeypatch):
+        """The desktop owner is 10202 (signed in here: the record and its
+        HEVOLVE_OWNER_USER_ID export); the phone was allowed as 20303.  Its
+        pull goes as 20303 on 20303's own login (review rv_e619: a pull as
+        the owner survived every test, the phone and the owner were one
+        account in all of them)."""
+        from desktop import guest_identity
+        stored_logins('10202', self.STORED_LOGIN)
+        stored_logins('20303', self.OTHER_LOGIN)
+        monkeypatch.setenv('HEVOLVE_OWNER_USER_ID', '10202')
+        monkeypatch.setattr(guest_identity, 'get_desktop_owner_id',
+                            lambda: '10202')
+        self._central_holds_it(node)
+        self._as_phone(flask_app, '20303')
+        body = self._turn(client, caplog, f'Bearer {self.DEVICE_TOKEN}',
+                          user_id='20303')
+        assert body['text'] == 'local says hi' and node['sent'] == []
+        assert [p['user_id'] for p in node['pulls']] == ['20303'], \
+            'the pull did not go as the phone\'s account'
+        assert node['pulls'][0]['headers'].get('Authorization') == \
+            f'Bearer {self.OTHER_LOGIN}'
+        assert self.STORED_LOGIN not in json.dumps(node['pulls'])
+        self._no_bearer_logged(caplog)
+
+    def test_a_phone_this_desktop_holds_no_login_for_keeps_its_miss(
+            self, flask_app, client, node, caplog, stored_logins):
+        self._central_holds_it(node)
+        self._as_phone(flask_app, '10202')
+        body = self._turn(client, caplog, f'Bearer {self.DEVICE_TOKEN}')
+        assert node['pulls'] == [] and node['sent'] == []
+        assert body['agent_id'] == 'local_assistant'
+        assert '(not signed in on this desktop)' in self._miss(caplog)
+
+    @pytest.mark.parametrize('caller', ['no authorization', 'offline'])
+    def test_a_caller_that_cannot_pull_never_pulls(
+            self, client, node, caplog, stored_logins, caller):
+        """Desktop /chat is reachable on the LAN (#52): a body naming the
+        owner's id with no Authorization is not the owner, so no stored
+        login pulls for it; offline asks nothing."""
+        stored_logins('10202', self.STORED_LOGIN)
+        self._central_holds_it(node)
+        authorization = f'Bearer {self.PAGE_LOGIN}'
+        if caller == 'offline':
+            node['online'] = False
+        else:
+            authorization = None
+        body = self._turn(client, caplog, authorization, user_id='10202')
+        assert node['pulls'] == [] and node['sent'] == []
+        assert body['agent_id'] == 'local_assistant'
+
+    def test_a_caller_with_no_authorization_is_not_signed_in(
+            self, client, node, caplog):
+        body = self._turn(client, caplog)
+        assert node['sent'] == [] and body['text'] == 'local says hi'
+        assert '(not signed in)' in self._miss(caplog)
+
+    @pytest.mark.parametrize('node_key', [False, True])
+    def test_the_pages_own_login_still_goes_to_central(
+            self, client, node, caplog, monkeypatch, node_key):
+        if node_key:
+            monkeypatch.setenv('HEVOLVE_LLM_API_KEY', self.NODE_KEY)
+        body = self._turn(client, caplog, f'Bearer {self.PAGE_LOGIN}')
+        assert body['text'] == 'cloud says hi'
+        assert [s['url'] for s in node['sent']] == [self.CENTRAL]
+        assert node['sent'][0]['headers']['Authorization'] == \
+            f'Bearer {self.PAGE_LOGIN}'
+        self._no_bearer_logged(caplog)
+
+    def test_the_nodes_llm_key_is_never_sent_to_central(
+            self, client, node, caplog, monkeypatch):
+        """HEVOLVE_LLM_API_KEY is the person's own key for their LLM
+        provider (desktop/ai_key_vault.py exports it); central cannot take
+        it, and sending it there discloses it.  A node with only that key is
+        not signed in to central."""
+        monkeypatch.setenv('HEVOLVE_LLM_API_KEY', self.NODE_KEY)
+        body = self._turn(client, caplog)
+        assert node['sent'] == [] and body['text'] == 'local says hi'
+        assert '(not signed in)' in self._miss(caplog)
+        self._no_bearer_logged(caplog)
+
+    @staticmethod
+    def _agent_with_endpoint(endpoint):
+        import routes.chatbot_routes as cr
+        return patch.object(cr, 'CLOUD_AGENTS', [{
+            'id': 'cloud_radha', 'name': 'Radha', 'type': 'cloud',
+            'cloud_endpoint': endpoint}])
+
+    NOT_CENTRAL = [
+        ('https://cloud.example.com/chat/custom_gpt', 'host', 'cloud.example.com'),
+        ('https://azurekong.hertzai.com.evil/chat/custom_gpt', 'host',
+         'azurekong.hertzai.com.evil'),
+        ('https://azurekong.hertzai.com@evil.com/chat/custom_gpt', 'userinfo',
+         'evil.com'),
+        ('https://evil.com/azurekong.hertzai.com/chat/custom_gpt', 'host',
+         'evil.com'),
+        ('http://azurekong.hertzai.com/chat/custom_gpt', 'scheme',
+         'azurekong.hertzai.com'),
+        ('https://azurekong.hertzai.com:8443/chat/custom_gpt', 'port',
+         'azurekong.hertzai.com:8443'),
+        # cleaned to the central by urlsplit, so refused: the URL approved
+        # must be the URL called; the reason shows it as written, tab and all
+        ('https://azure\tkong.hertzai.com/chat/custom_gpt', 'characters',
+         'azure\tkong.hertzai.com'),
+    ]
+
+    @pytest.mark.parametrize('endpoint, mismatch, host', NOT_CENTRAL)
+    def test_an_agent_endpoint_that_is_no_central_gets_no_authorization(
+            self, client, node, caplog, monkeypatch, endpoint, mismatch, host):
+        """Nothing goes to it, from any source: the turn is a miss whose
+        reason names what is not a central's (host, scheme, port, userinfo
+        or characters) and the endpoint's host, never a bearer."""
+        monkeypatch.setenv('HEVOLVE_LLM_API_KEY', self.NODE_KEY)
+        with self._agent_with_endpoint(endpoint):
+            body = self._turn(client, caplog, f'Bearer {self.PAGE_LOGIN}',
+                              prompt_id=None, agent_id='cloud_radha')
+        assert node['sent'] == [] and body['text'] == 'local says hi'
+        assert (f'(endpoint is not a known central: its {mismatch} '
+                f'(address {host!r}))') in self._miss(caplog)
+        self._no_bearer_logged(caplog)
+
+    @pytest.mark.parametrize('caller', ['offline', 'no authorization',
+                                        'phone offline'])
+    def test_a_turn_that_needs_no_bearer_never_needs_hartos_rule(
+            self, flask_app, client, node, caplog, monkeypatch, caller):
+        """The cheap misses come before HARTOS's rules are imported: with a
+        bundled HARTOS that lacks them, these turns are still answered here
+        (app.py --validate fails such a bundle; a turn must not).  An online
+        phone turn needs central_login_for, so it is no cheap miss."""
+        # The module object the route's import will find (sys.modules), not
+        # a package attribute an earlier test's patch.dict(sys.modules) may
+        # have left pointing at a stale copy.
+        import importlib
+        sync_engine = importlib.import_module('integrations.social.sync_engine')
+        monkeypatch.delattr(sync_engine, 'central_origin_mismatch')
+        monkeypatch.delattr(sync_engine, 'central_login_for')
+        monkeypatch.delattr(sync_engine, 'recipe_sync_route')
+        monkeypatch.delattr(importlib.import_module('core.recipe_sync'),
+                            'pull_recipe')
+        authorization = f'Bearer {self.PAGE_LOGIN}'
+        if caller == 'offline':
+            node['online'] = False
+        elif caller == 'no authorization':
+            authorization = None
+        else:
+            node['online'] = False
+            self._as_phone(flask_app)
+            authorization = f'Bearer {self.DEVICE_TOKEN}'
+        body = self._turn(client, caplog, authorization)
+        assert body['text'] == 'local says hi'
+        assert node['sent'] == []
+
+    def test_the_default_endpoint_is_held_to_the_same_rule(
+            self, client, node, caplog):
+        import routes.chatbot_routes as cr
+        elsewhere = 'https://chat.example.net/chat/custom_gpt'
+        with patch.dict(cr.CLOUD_API_CONFIG, {'chat_endpoint': elsewhere}):
+            self._turn(client, caplog, f'Bearer {self.PAGE_LOGIN}')
+        assert node['sent'] == []
+        assert ("(endpoint is not a known central: its host "
+                "(address 'chat.example.net'))") in self._miss(caplog)
+        self._no_bearer_logged(caplog)
+
+    def test_an_empty_endpoint_says_it_has_no_address(self, client, node,
+                                                      caplog):
+        import routes.chatbot_routes as cr
+        with patch.dict(cr.CLOUD_API_CONFIG, {'chat_endpoint': ''}):
+            self._turn(client, caplog, f'Bearer {self.PAGE_LOGIN}')
+        assert node['sent'] == []
+        assert ('(endpoint is not a known central: its host (no address))'
+                in self._miss(caplog))
+
+    def test_a_central_agent_endpoint_written_differently_keeps_its_bearer(
+            self, client, node, caplog):
+        endpoint = 'https://AzureKong.HertzAI.com:443/chat/teachme2'
+        with self._agent_with_endpoint(endpoint):
+            self._turn(client, caplog, f'Bearer {self.PAGE_LOGIN}',
+                       prompt_id=None, agent_id='cloud_radha')
+        assert [s['url'] for s in node['sent']] == [endpoint]
+        assert node['sent'][0]['headers']['Authorization'] == \
+            f'Bearer {self.PAGE_LOGIN}'
+        self._no_bearer_logged(caplog)
+
+    # ── /prompts lists a cloud agent as usable exactly when its turn goes ──
+    # One rule (_cloud_turn_can_reach_central) for the listing and the
+    # forward: a key-only node listed every cloud agent as available while
+    # each of its turns missed (review of 65bf814d).
+
+    def _listed(self, client, authorization=None):
+        import routes.chatbot_routes as cr
+        headers = {'Authorization': authorization} if authorization else {}
+        with patch.object(cr, 'HEVOLVE_PROMPTS_AVAILABLE', False):
+            return client.get('/prompts?type=cloud',
+                              headers=headers).get_json()['prompts']
+
+    def test_a_key_only_node_lists_no_cloud_agent_as_available(
+            self, client, node, monkeypatch):
+        monkeypatch.setenv('HEVOLVE_LLM_API_KEY', self.NODE_KEY)
+        listed = self._listed(client)
+        assert listed and not any(a['available'] for a in listed)
+
+    def test_a_signed_in_page_lists_the_cloud_agents_as_available(
+            self, client, node):
+        listed = self._listed(client, f'Bearer {self.PAGE_LOGIN}')
+        assert listed and all(a['available'] for a in listed)
+
+    CALLERS = ['no authorization', 'page login', 'node key only',
+               'page login and node key', 'phone', 'phone and node key',
+               'phone with a stored login', 'offline']
+
+    @pytest.mark.parametrize('endpoint', [
+        CENTRAL, 'https://AzureKong.HertzAI.com:443/chat/teachme2',
+        *(endpoint for endpoint, _mismatch, _host in NOT_CENTRAL)])
+    @pytest.mark.parametrize('caller', CALLERS)
+    def test_the_listing_and_the_turn_agree(
+            self, flask_app, client, node, caplog, monkeypatch, caller,
+            endpoint, stored_logins):
+        authorization = None
+        if 'page login' in caller:
+            authorization = f'Bearer {self.PAGE_LOGIN}'
+        if 'node key' in caller:
+            monkeypatch.setenv('HEVOLVE_LLM_API_KEY', self.NODE_KEY)
+        if 'phone' in caller:
+            self._as_phone(flask_app, '10202')
+            authorization = f'Bearer {self.DEVICE_TOKEN}'
+        if caller == 'phone with a stored login':
+            stored_logins('10202', self.STORED_LOGIN)
+        if caller == 'offline':
+            node['online'] = False
+            authorization = f'Bearer {self.PAGE_LOGIN}'
+        with self._agent_with_endpoint(endpoint):
+            listed = self._listed(client, authorization)
+            body = self._turn(client, caplog, authorization, prompt_id=None,
+                              agent_id='cloud_radha')
+        available = any(a['id'] == 'cloud_radha' and a['available']
+                        for a in listed)
+        went = [s for s in node['sent'] if 'Authorization' in s['headers']]
+        assert available == bool(went) == (body['text'] == 'cloud says hi')
+        central = endpoint in (self.CENTRAL,
+                               'https://AzureKong.HertzAI.com:443/chat/teachme2')
+        signed_in = ('page login' in caller
+                     or caller == 'phone with a stored login')
+        assert available == (signed_in and central)
+        bearer = (self.STORED_LOGIN if caller == 'phone with a stored login'
+                  else self.PAGE_LOGIN)
+        assert all(s['headers']['Authorization'] == f'Bearer {bearer}'
+                   for s in went)
+        self._no_bearer_logged(caplog)
 
 
 

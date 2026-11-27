@@ -207,6 +207,44 @@ describe('useStorageSync', () => {
   });
 });
 
+// Live 2026-11-25: in the startup burst the access_token read was aborted by
+// the 3 s axios timeout, fetchStorageKey turned that into null, and the hook
+// took null as "no token on file".  It wrote the guest/pending keyset, never
+// asked again, and the window said "Please login to talk to agent" until a
+// manual reload.  A null can also mean "the read failed", so the hook must ask
+// again before it gives up on a sign-in that is on file.
+describe('a failed startup read does not sign the window out', () => {
+  const timesOut = () => Promise.reject(Object.assign(
+    new Error('timeout of 3000ms exceeded'), {code: 'ECONNABORTED'}));
+  const halfWrittenFile = () => Promise.resolve(
+    {data: {success: false, error: 'Expecting value: line 1 column 1'}});
+
+  it.each([
+    ['the token read times out once', {access_token: timesOut}],
+    ['the token read finds a half-written file once', {access_token: halfWrittenFile}],
+    ['the user_id and token reads both time out once',
+      {user_id: timesOut, access_token: timesOut}],
+  ])('%s', async (_label, failOnce) => {
+    const failed = new Set();
+    axios.get.mockImplementation((url) => {
+      const key = url.split('/').pop();
+      if (failOnce[key] && !failed.has(key)) {
+        failed.add(key);
+        return failOnce[key]();
+      }
+      return Promise.resolve({data: {data: CLOUD_VALUES[key] ?? null, success: true}});
+    });
+
+    renderHook(() => useStorageSync());
+
+    await waitFor(() => {
+      expect(localStorage.getItem('access_token')).toBe(CLOUD_VALUES.access_token);
+    }, {timeout: 3000});
+    expect(localStorage.getItem('pending_cloud_user_id')).toBeNull();
+    expect(localStorage.getItem('guest_mode')).toBeNull();
+  });
+});
+
 // app.py:1862 wipes the HART identity out of user_data.json when
 // llama_config.json carries a hand-set `first_run: true`, leaving
 // `hart_reset_on_first_run: true` as the consumed-once marker.  The wipe

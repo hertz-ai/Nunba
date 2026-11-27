@@ -10,6 +10,7 @@ import logging
 import os
 import sys
 import threading
+import time
 
 from desktop.platform_utils import get_subprocess_flags
 
@@ -23,6 +24,127 @@ IS_LINUX = sys.platform.startswith('linux')
 # Global tray icon reference
 _tray_icon = None
 _window_instance = None
+
+# Set by quit_app before it closes the windows.  app.on_closing turns every
+# close into a hide to the tray; while this is set it lets the close through.
+QUITTING = False
+
+# How long Quit waits for each step (windows, supervisors, child processes).
+QUIT_WAIT_S = 5.0
+
+# The modules whose stop_supervisor() is their process-shutdown hook.  A
+# supervisor respawns its child 1 s after it exits (core/process_supervisor.py),
+# so Quit stops them before it ends any child.  A module never imported has
+# no supervisor running.
+_SUPERVISOR_MODULES = (
+    'integrations.agent_engine.hevolveai_supervisor',
+    'integrations.social.livekit_supervisor',
+    'integrations.social.whatsapp_supervisor',
+)
+
+# The programs Nunba runs as its own children: the Python of its GPU workers
+# and sidecars, llama-server, and WebView2 (the window's browser, which held
+# the camera after Quit).  Quit ends these and everything under them.  Any
+# other child belongs to the person: an app the agent opened with
+# os.startfile is Nunba's child on Windows, and may hold unsaved work.
+_OWN_PROGRAMS = ('python', 'llama-server', 'msedgewebview2')
+
+
+def _is_own_program(name):
+    """Whether a child process named ``name`` is one of Nunba's own programs
+    (_OWN_PROGRAMS, or Nunba's own executable, which a frozen build with no
+    python-embed runs its workers on)."""
+    name = (name or '').lower()
+    if name.endswith('.exe'):
+        name = name[:-4]
+    own = _OWN_PROGRAMS + (
+        os.path.splitext(os.path.basename(sys.executable or ''))[0].lower(),)
+    return any(p and name.startswith(p) for p in own)
+
+
+def _own_children(psutil):
+    """Nunba's own child processes and every process under them."""
+    own = []
+    for kid in psutil.Process().children():
+        try:
+            if not _is_own_program(kid.name()):
+                continue
+            own.append(kid)
+            own.extend(kid.children(recursive=True))
+        except psutil.Error:
+            pass
+    return own
+
+
+def _stop_supervisors():
+    """Run every imported supervisor's stop_supervisor(), each on its own
+    thread so one that hangs does not hold the others, all within
+    QUIT_WAIT_S."""
+    def _stop(mod_name, stop):
+        try:
+            stop()
+        except Exception as e:
+            logger.warning(f"Quit: could not stop {mod_name}: {e}")
+
+    stoppers = []
+    for mod_name in _SUPERVISOR_MODULES:
+        stop = getattr(sys.modules.get(mod_name), 'stop_supervisor', None)
+        if stop is None:
+            continue
+        t = threading.Thread(target=_stop, args=(mod_name, stop), daemon=True,
+                             name=f'QuitStop-{mod_name.rsplit(".", 1)[-1]}')
+        t.start()
+        stoppers.append(t)
+    deadline = time.monotonic() + QUIT_WAIT_S
+    for t in stoppers:
+        t.join(max(0.0, deadline - time.monotonic()))
+
+
+def quit_app():
+    """Quit Nunba: close the windows, stop the supervisors, end Nunba's own
+    child processes, then exit.
+
+    os._exit alone does not end children on Windows.  After Quit the
+    WebView2 tree that opened the camera (getUserMedia) kept the device,
+    and the llama-servers kept running.  Only Nunba's own programs are
+    ended (_OWN_PROGRAMS); an app opened for the person keeps running.
+    Each step waits at most QUIT_WAIT_S; the exit happens even if a step
+    raises or hangs."""
+    global QUITTING
+    QUITTING = True
+    try:
+        def _close_windows():
+            import webview
+            for w in list(webview.windows):
+                try:
+                    w.destroy()
+                except Exception as e:
+                    logger.warning(f"Quit: could not close a window: {e}")
+
+        closer = threading.Thread(target=_close_windows, daemon=True, name='QuitCloseWindows')
+        closer.start()
+        closer.join(QUIT_WAIT_S)
+
+        _stop_supervisors()
+
+        import psutil
+        kids = _own_children(psutil)
+        for kid in kids:
+            try:
+                kid.terminate()
+            except psutil.Error:
+                pass
+        _, alive = psutil.wait_procs(kids, timeout=QUIT_WAIT_S)
+        for kid in alive:
+            try:
+                kid.kill()
+            except psutil.Error:
+                pass
+        logger.info(f"Quit: ended {len(kids)} of Nunba's own process(es), {len(alive)} killed")
+    except Exception as e:
+        logger.error(f"Quit: shutdown step failed, exiting anyway: {e}")
+    finally:
+        os._exit(0)
 
 
 class TrayHandler:
@@ -63,10 +185,7 @@ class TrayHandler:
         """Handle quit action"""
         logger.info("Quit selected from system tray")
         self.stop()
-        try:
-            os._exit(0)
-        except Exception:
-            sys.exit(0)
+        quit_app()
 
     def _on_restore(self, *args):
         """Handle restore/show action — restores to previous position and size.

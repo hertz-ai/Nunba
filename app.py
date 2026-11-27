@@ -2453,6 +2453,7 @@ if getattr(args, 'validate', False):
         'hartos.gather_agentdetails', 'hartos.lifecycle_hooks',
         # 5. Integrations
         'integrations', 'integrations.social',
+        'integrations.social.sync_engine',
         'integrations.channels', 'integrations.service_tools',
         'integrations.distributed_agent',
         # 6. Distributed agent deps
@@ -2629,6 +2630,29 @@ if getattr(args, 'validate', False):
              'Tier-1 LangChain pipeline failed to load — chat will fall back to raw llama.cpp'),
             ('_active_tier', lambda v: 'Tier-1' in str(v),
              'Backend adapter not on Tier-1 — check hart_intelligence import chain'),
+        ],
+        # The rule routes/chatbot_routes.py's _cloud_turn_can_reach_central
+        # imports by name, unguarded (first-party HARTOS is never
+        # try/except-degraded): a bundled HARTOS without it would fail every
+        # signed-in cloud-agent turn and /prompts listing, so it fails the
+        # build instead.
+        'integrations.social.sync_engine': [
+            ('central_origin_mismatch', callable,
+             'bundled HARTOS has no central_origin_mismatch: every '
+             'signed-in cloud-agent turn would fail'),
+            ('central_login_for', callable,
+             'bundled HARTOS has no central_login_for: every phone turn '
+             'for a cloud agent would fail'),
+            ('recipe_sync_route', callable,
+             'bundled HARTOS has no recipe_sync_route: every turn for a '
+             'central agent with no recipe here would fail'),
+        ],
+        # The pull _pull_central_agent_here runs before a central agent's
+        # turn, imported the same way.
+        'core.recipe_sync': [
+            ('pull_recipe', callable,
+             'bundled HARTOS has no pull_recipe: every turn for a central '
+             'agent with no recipe here would fail'),
         ],
     }
 
@@ -5972,7 +5996,18 @@ def start_flask():
                 target=_do_focus, name='api-focus', daemon=True).start()
             return jsonify({"focused": True})
 
+        # user_data.json is this desktop's own sign-in: the desktop owner,
+        # the consent gates and the stored login a phone's cloud turn spends
+        # all follow it, and only the page on this machine signs in or out
+        # here.  Both routes take the loopback-or-token rule: a LAN guest JWT
+        # read and rewrote it (review rv_aedb), and a phone the owner allowed
+        # is told why it is refused (review rv_6546).
+        from routes.auth import (
+            require_local_or_token_for_sign_in as _local_or_token_sign_in,
+        )
+
         @_serving_app.route('/api/storage/set', methods = ['POST', 'OPTIONS'])
+        @_local_or_token_sign_in
         def set_storage():
             if request.method == 'OPTIONS':
                 return jsonify({"status": "ok"})
@@ -6010,6 +6045,7 @@ def start_flask():
                 from desktop.guest_identity import (
                     PLACEHOLDER_USER_ID,
                     USER_DATA_LOCK,
+                    _atomic_write,
                     get_user_data_file_path,
                     is_placeholder_user_id,
                 )
@@ -6067,14 +6103,39 @@ def start_flask():
                         user_data.pop('user_id')
                         set_keys.remove('user_id')
 
+                    # Who leaves this desktop's sign-in, and the login they
+                    # leave, read before the clear and the update below
+                    # replace them: a sign-out (it clears access_token), or a
+                    # sign-in as another account over a cloud account with
+                    # no sign-out between (A replaced by C).
+                    _on_file = str(stored.get('user_id') or '')
+                    _replaced = ('user_id' in user_data
+                                 and _on_file.isascii() and _on_file.isdigit()
+                                 and str(user_data['user_id']) != _on_file)
+                    _signed_out = ((stored.get('user_id'), stored.get('access_token'))
+                                   if 'access_token' in clear_keys or _replaced
+                                   else (None, None))
                     _cleared = []
                     for key in clear_keys:
                         if stored.pop(key, None) is not None:
                             _cleared.append(key)
                     stored.update(user_data)
 
-                    with open(user_data_file, 'w') as f:
-                        json.dump(stored, f)
+                    # Atomic: get_storage reads this file without the lock, and
+                    # open(..., 'w') emptied it before the dump, so a read in
+                    # between got a half-written file and the page took the
+                    # sign-in as missing (live 2026-11-25).  On Windows the
+                    # replace fails while a reader holds the file open, so try
+                    # again briefly rather than lose the write.
+                    import time
+                    for _attempt in range(10):
+                        try:
+                            _atomic_write(user_data_file, stored)
+                            break
+                        except PermissionError:
+                            if _attempt == 9:
+                                raise
+                            time.sleep(0.02 * (_attempt + 1))
 
                     logger.info(
                         f"user_data.json merged — set={set_keys} "
@@ -6088,6 +6149,43 @@ def start_flask():
                         sync_owner_identity_env()
                     except Exception as _own_err:
                         logger.warning(f"desktop owner re-export failed: {_own_err}")
+
+                # Sign-out, and a sign-in that replaces the account, also drop
+                # the Hevolve login this desktop stored for the account that
+                # left, in the users row the sign-in wrote (the upsert below):
+                # HARTOS's central_login_for reads that api_token for a phone's
+                # cloud-agent turn and for recipe sync, so a signed-out or
+                # replaced account's login kept being used (review rv_6546).
+                # The row is the one holding the login the record had, or the
+                # account's own cloud-id row; another account's row is never
+                # touched.  Ids only in the log, never a token.
+                _out_id, _out_token = _signed_out
+                _out_id = str(_out_id or '')
+                if _out_token or (_out_id.isascii() and _out_id.isdigit()):
+                    try:
+                        from integrations.social.models import User, db_session
+                        with db_session() as _db:
+                            _rows = []
+                            if _out_token:
+                                _rows += _db.query(User).filter(
+                                    User.api_token == _out_token).all()
+                            if _out_id.isascii() and _out_id.isdigit():
+                                _rows += _db.query(User).filter(
+                                    User.id == _out_id).all()
+                            _dropped = sorted({r.id for r in _rows if r.api_token})
+                            for _row in _rows:
+                                _row.api_token = None
+                            if _dropped:
+                                _db.commit()
+                                logger.info("The stored login of the account that "
+                                            "left this desktop's sign-in dropped "
+                                            f"from users row(s) {_dropped}")
+                    except Exception as _out_err:
+                        logger.warning(
+                            "The stored login of the account that left this "
+                            "desktop's sign-in NOT dropped "
+                            f"(account {_out_id or 'unknown'}): "
+                            f"{type(_out_err).__name__}")
 
                 # Check if we have all required keys to update the URL
                 required_keys = ['agentname', 'user_id', 'access_token', 'email']
@@ -6103,19 +6201,44 @@ def start_flask():
                 # can't be acquired.  Idempotent — repeated calls only
                 # write when a field actually changed (token rotation,
                 # email/username edit).
-                if all(k in user_data for k in required_keys):
+                #
+                # Binding a sign-in needs user_id + access_token only: the
+                # row is the account's own (its id is the cloud user_id) and
+                # the token is what the social API finds the caller by.  The
+                # sign-in writer (setAuthFromOtp) posts the two, with the
+                # email when the account has one, and waits for this answer
+                # before it stores the token, so the row already holds the
+                # token when the page first sends it to the social API.
+                # email and agentname are written when posted and never
+                # required: a phone-only account has no email, and a first
+                # sign-in on this desktop has no agentname yet (the page's
+                # mirror posts it once the agent has loaded).  Requiring
+                # either bound nothing; the page's first calls got 401 and
+                # the page deleted the token (review of 82e62c0e).
+                update_keys = ['user_id', 'access_token']
+                if all(k in user_data for k in update_keys):
                     try:
                         from integrations.social.models import User, db_session
                         cloud_user_id = str(user_data['user_id'])
-                        cloud_email = user_data['email']
+                        cloud_email = user_data.get('email')
                         cloud_token = user_data['access_token']
-                        cloud_username = user_data['agentname']
+                        cloud_username = user_data.get('agentname')
                         with db_session() as _db:
-                            existing = (
-                                _db.query(User).filter(User.id == cloud_user_id).first()
-                                or _db.query(User).filter(User.email == cloud_email).first()
-                            )
+                            existing = _db.query(User).filter(
+                                User.id == cloud_user_id).first()
+                            if existing is None and cloud_email:
+                                # By email only when one is posted: with
+                                # none, `User.email == None` is IS NULL and
+                                # finds another account's row.
+                                existing = _db.query(User).filter(
+                                    User.email == cloud_email).first()
                             if existing is None:
+                                # username is required and unique: the
+                                # agentname when the post carries one, else
+                                # one made from the account id (unique, as
+                                # the id is).
+                                cloud_username = (cloud_username
+                                                  or f'user_{cloud_user_id}')
                                 _db.add(User(
                                     id=cloud_user_id,
                                     username=cloud_username,
@@ -6135,7 +6258,7 @@ def start_flask():
                                 if existing.api_token != cloud_token:
                                     existing.api_token = cloud_token
                                     changed.append('api_token')
-                                if existing.email != cloud_email:
+                                if cloud_email and existing.email != cloud_email:
                                     existing.email = cloud_email
                                     changed.append('email')
                                 if changed:
@@ -6194,6 +6317,7 @@ def start_flask():
                 return jsonify({'success': False, 'error': str(e)})
 
         @_serving_app.route('/api/storage/get/<key>', methods=['GET', 'OPTIONS'])
+        @_local_or_token_sign_in
         def get_storage(key):
             if request.method == 'OPTIONS':
                 return jsonify({"status": "ok"})
@@ -6203,8 +6327,22 @@ def start_flask():
                 user_data_file = get_user_data_file_path()
 
                 if os.path.exists(user_data_file):
-                    with open(user_data_file) as f:
-                        user_data = json.load(f)
+                    # On Windows a read that opens the record while
+                    # set_storage's os.replace swaps it in gets
+                    # PermissionError for an instant (1 of 420 concurrent
+                    # reads, review rv_auth7), and the page took the failed
+                    # read as the sign-in missing.  Try again briefly, as
+                    # the writer does; any other error answers as before.
+                    import time
+                    for _attempt in range(10):
+                        try:
+                            with open(user_data_file) as f:
+                                user_data = json.load(f)
+                            break
+                        except PermissionError:
+                            if _attempt == 9:
+                                raise
+                            time.sleep(0.02 * (_attempt + 1))
 
                     if key in user_data:
                         return jsonify({"success": True, "data": user_data[key]})
@@ -7338,10 +7476,8 @@ def setup_system_tray(window_instance):
         def on_quit_clicked(icon, item):
             logger.info("Quit selected from system tray menu")
             icon.stop()
-            try:
-                os._exit(0)
-            except Exception:
-                sys.exit(0)
+            from desktop.tray_handler import quit_app
+            quit_app()  # closes the windows and ends the children, then exits
 
         def on_restore_clicked(icon, item):
             # pystray callbacks run on pystray's thread — pywebview calls
@@ -7486,6 +7622,9 @@ def on_closing():
     already closed the form (and, for the last window, ended the message
     loop) -- the window was gone, tray Restore had nothing to show, and the
     app served headless until Quit (gui_app.log 11:28:38 -> 11:29:04)."""
+    from desktop import tray_handler
+    if tray_handler.QUITTING:
+        return True  # Quit is closing the windows: let the close through
     global _window
     try:
         if _window:
@@ -8243,6 +8382,22 @@ def main():
                     except Exception:
                         pass
 
+                def on_companion_open_ask(self, prompt_id=None, ask_id=None, agent_name=None):
+                    """Open on an agent's question in the floating window
+                    (design_1125 A): the main window comes forward on that
+                    agent's chat, where the question is (the page's
+                    useOpenAgentChat hook takes the event)."""
+                    from desktop.companion_open_ask import open_agent_chat_script
+                    script = open_agent_chat_script(prompt_id, ask_id, agent_name)
+                    try:
+                        if _window:
+                            _window.show()
+                            _window.restore()
+                            _window.evaluate_js(script)
+                    except Exception:
+                        logger.warning("companion: the agent's chat for question %s was not "
+                                       "opened", ask_id, exc_info=True)
+
                 def on_companion_prompt(self, text, context=None):
                     """User submitted a quick prompt from the floating input bar.
 
@@ -8273,6 +8428,16 @@ def main():
                         # steering client (review of Nunba e6e806bf).
                         _url = f"http://127.0.0.1:{_port}/chat"
                         _body = {"text": prompt, "source": "companion_input_bar"}
+                        # The turn's id the companion minted and recorded as
+                        # this desktop's (VoiceOrbPage), so the reply's voice
+                        # plays on this desktop (landing-page ttsGuards
+                        # shouldPlayPushedClip: only the device used speaks a
+                        # turn).  Without it the server minted an id no window
+                        # knew.  The route keeps it only in the form a client
+                        # may name a turn by (_turn_request_id).
+                        _rid = context.get("request_id") if isinstance(context, dict) else None
+                        if isinstance(_rid, str) and _rid.strip():
+                            _body["request_id"] = _rid.strip()
                         try:
                             # /chat's contract names the prompt `text`
                             # (routes/chatbot_routes.py chat_route); the

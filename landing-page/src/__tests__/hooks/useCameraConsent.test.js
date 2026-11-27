@@ -30,9 +30,15 @@ jest.mock('../../services/realtimeService', () => ({
   },
 }));
 const mockList = jest.fn();
+const mockGrant = jest.fn(() => Promise.resolve({success: true}));
+const mockRevoke = jest.fn(() => Promise.resolve({success: true}));
 jest.mock('../../services/socialApi', () => ({
   __esModule: true,
-  consentApi: {list: (...args) => mockList(...args)},
+  consentApi: {
+    list: (...args) => mockList(...args),
+    grant: (...args) => mockGrant(...args),
+    revoke: (...args) => mockRevoke(...args),
+  },
 }));
 // One entry per mounted surface, in mount order: what it last asked the
 // camera streamer to do.
@@ -52,7 +58,7 @@ jest.mock('../../hooks/useCameraFrameStream', () => {
 // eslint-disable-next-line import/first
 import {NUNBA_CAMERA_CONSENT} from '../../constants/events';
 // eslint-disable-next-line import/first
-import useCameraConsent, {useConsentedCameraStream} from '../../hooks/useCameraConsent';
+import useCameraConsent, {setCameraConsent, useConsentedCameraStream} from '../../hooks/useCameraConsent';
 
 // eslint-disable-next-line import/first
 import {act, render, renderHook, waitFor} from '@testing-library/react';
@@ -88,6 +94,8 @@ beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
   mockList.mockReset();
+  mockGrant.mockClear();
+  mockRevoke.mockClear();
   mockStreams.clear();
   Object.keys(mockHandlers).forEach((k) => delete mockHandlers[k]);
 });
@@ -288,5 +296,99 @@ describe('the agent page streams through the one hook', () => {
   // paused claim above, never through a second useCameraFrameStream call.
   test('and never calls useCameraFrameStream itself', () => {
     expect(src).not.toMatch(/useCameraFrameStream\(/);
+  });
+  // The chat bar's camera switch (owner 2026-11-25: "why cant the switch in
+  // Nunba chat be used to switch off camera?").
+  test('its chat bar switch shows the consent and flips it', () => {
+    expect(src).toMatch(/const cameraOn = useConsentedCameraStream\(/);
+    expect(src).toMatch(/cameraOn=\{cameraOn\}/);
+    expect(src).toMatch(/onToggleCamera=\{handleToggleCamera\}/);
+    expect(src).toMatch(/setCameraConsent\(!cameraOn\)/);
+  });
+
+  // A video-mode socket that opened and then closed released nothing: the
+  // page fell back to HTTP posting and kept the camera held.
+  test('video mode releases the camera when its open socket closes', () => {
+    const close = src.slice(src.indexOf('ws.onclose = (ev) => {'));
+    expect(close).toMatch(/^ws\.onclose = \(ev\) => \{[\s\S]*?if \(opened\) \{\s*if \(wsInterval\) clearInterval\(wsInterval\);\s*if \(!cancelled\) stopCommon\(\);\s*return;/);
+    expect(src).toMatch(/ws\.onopen = \(\) => \{\s*opened = true;/);
+    expect(src).toMatch(/ws\.onerror = \(\) => \{\s*if \(opened\) return;/);
+  });
+
+  test('video mode streams only while the camera is on', () => {
+    expect(src).toMatch(/if \(mediaMode !== 'video' \|\| !cameraOn\)/);
+    expect(src).toMatch(/\}, \[mediaMode, effectiveUserId, cameraOn\]\);/);
+  });
+});
+
+// The chat bar's switch makes the Privacy page camera card's own calls:
+// consentApi.grant / consentApi.revoke, camera_capture, scope '*'.
+describe('setCameraConsent: the chat bar camera switch', () => {
+  const CARD_CALL = {consent_type: 'camera_capture', scope: '*'};
+
+  test("off: the card's revoke, and the camera stops at once", async () => {
+    signedIn();
+    mockList.mockResolvedValue(GRANTED);
+    const {result} = renderHook(() => useCameraConsent('u1'));
+    await waitFor(() => expect(result.current).toBe(true));
+    await act(async () => { await setCameraConsent(false); });
+    expect(mockRevoke).toHaveBeenCalledWith(CARD_CALL);
+    expect(mockGrant).not.toHaveBeenCalled();
+    expect(result.current).toBe(false);
+  });
+
+  test('off stops the camera here even when the revoke fails', async () => {
+    signedIn();
+    mockList.mockResolvedValue(GRANTED);
+    mockRevoke.mockImplementationOnce(() => Promise.reject(new Error('offline')));
+    const {result} = renderHook(() => useCameraConsent('u1'));
+    await waitFor(() => expect(result.current).toBe(true));
+    await act(async () => { await setCameraConsent(false).catch(() => {}); });
+    expect(result.current).toBe(false);
+  });
+
+  test("on: the card's grant, then the camera is on", async () => {
+    signedIn();
+    mockList.mockResolvedValue(NONE);
+    const {result} = renderHook(() => useCameraConsent('u1'));
+    await waitFor(() => expect(mockList).toHaveBeenCalled());
+    await act(async () => { await setCameraConsent(true); });
+    expect(mockGrant).toHaveBeenCalledWith(CARD_CALL);
+    expect(result.current).toBe(true);
+  });
+
+  test('a failed grant leaves the camera off', async () => {
+    signedIn();
+    mockList.mockResolvedValue(NONE);
+    mockGrant.mockImplementationOnce(() => Promise.reject(new Error('offline')));
+    const {result} = renderHook(() => useCameraConsent('u1'));
+    await waitFor(() => expect(mockList).toHaveBeenCalled());
+    await act(async () => { await setCameraConsent(true).catch(() => {}); });
+    expect(result.current).toBe(false);
+  });
+
+  test("a guest's switch writes no consent row; the answer lasts the tab", async () => {
+    const {result} = renderHook(() => useCameraConsent('guest'));
+    await act(async () => { await setCameraConsent(true); });
+    expect(mockGrant).not.toHaveBeenCalled();
+    expect(result.current).toBe(true);
+    expect(sessionStorage.getItem('nunba_camera_consent')).toBe('true');
+  });
+
+  test('signing out turns the camera off', async () => {
+    signedIn();
+    mockList.mockResolvedValue(GRANTED);
+    const {result, rerender} = renderHook(({id}) => useCameraConsent(id), {initialProps: {id: 'u1'}});
+    await waitFor(() => expect(result.current).toBe(true));
+    localStorage.removeItem('access_token');
+    rerender({id: null});
+    expect(result.current).toBe(false);
+  });
+
+  test('useConsentedCameraStream returns the answer it follows', async () => {
+    signedIn();
+    mockList.mockResolvedValue(GRANTED);
+    const {result} = renderHook(() => useConsentedCameraStream('u1'));
+    await waitFor(() => expect(result.current).toBe(true));
   });
 });

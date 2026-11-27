@@ -16,7 +16,7 @@
  * Everything else here exists to stop a "tidy-up" from breaking backward
  * compatibility, which is the expensive failure: old links dying quietly.
  */
-import { agentSlug, matchAgentBySlug } from '../../utils/agentSlug';
+import { agentSlug, matchAgentBySlug, agentPath } from '../../utils/agentSlug';
 
 const LOCAL_TUTOR = { prompt_id: 1, name: 'Local Tutor' };
 const DR_WHO = { prompt_id: 2, name: 'Dr. Who?' };
@@ -91,5 +91,77 @@ describe('matchAgentBySlug — the round trip', () => {
     expect(matchAgentBySlug([null, undefined, LOCAL_TUTOR], 'local-tutor')).toBe(
       LOCAL_TUTOR,
     );
+  });
+});
+
+// design_1125 D1: two agents named "Speech Therapy Companion" on the owner's
+// desktop.  A name slug cannot tell them apart, so the gallery card adds
+// ?id=<prompt_id> and the resolver tries that id first.
+describe('matchAgentBySlug with an id (two agents with one name)', () => {
+  const FIRST = {prompt_id: 95530004763, name: 'Speech Therapy Companion'};
+  const SECOND = {prompt_id: 95568353503, name: 'Speech Therapy Companion'};
+  const TWINS = [FIRST, SECOND];
+  const SLUG = 'speech-therapy-companion';
+
+  test('the id picks the agent, whichever of the two it is', () => {
+    expect(matchAgentBySlug(TWINS, SLUG, '95568353503')).toBe(SECOND);
+    expect(matchAgentBySlug(TWINS, SLUG, '95530004763')).toBe(FIRST);
+  });
+
+  test('the id matches a number or a string prompt_id', () => {
+    expect(matchAgentBySlug(TWINS, SLUG, 95568353503)).toBe(SECOND);
+    const asText = {prompt_id: '95568353503', name: SECOND.name};
+    expect(matchAgentBySlug([FIRST, asText], SLUG, '95568353503')).toBe(asText);
+  });
+
+  test('the id wins over the name in the URL', () => {
+    expect(matchAgentBySlug([LOCAL_TUTOR, ...TWINS], 'local-tutor', '95568353503')).toBe(SECOND);
+  });
+
+  test('with no id the name decides, as before (the first of the two)', () => {
+    expect(matchAgentBySlug(TWINS, SLUG)).toBe(FIRST);
+    expect(matchAgentBySlug(TWINS, SLUG, null)).toBe(FIRST);
+    expect(matchAgentBySlug(TWINS, SLUG, '')).toBe(FIRST);
+  });
+
+  test('an id no agent has falls back to the name', () => {
+    expect(matchAgentBySlug(TWINS, SLUG, '123')).toBe(FIRST);
+    expect(matchAgentBySlug(TWINS, 'nobody-here', '123')).toBeUndefined();
+  });
+});
+
+// design_1125 F1: every link to an agent page is built by agentPath, so the
+// id rides along from the chat page too, not only from the gallery.
+describe('agentPath, the one writer of an agent page URL', () => {
+  const FIRST = {prompt_id: 95530004763, name: 'Speech Therapy Companion'};
+  const SECOND = {prompt_id: 95568353503, name: 'Speech Therapy Companion'};
+
+  // The :agentName param and the ?id the router hands the page for a URL.
+  const readBack = (url) => {
+    const u = new URL(url, 'http://nunba.local');
+    return [decodeURIComponent(u.pathname.split('/')[2]), u.searchParams.get('id')];
+  };
+
+  test('the name slug plus the prompt id', () => {
+    expect(agentPath(SECOND)).toBe('/agents/speech-therapy-companion?id=95568353503');
+    expect(agentPath({prompt_id: '7', name: 'Local Tutor'})).toBe('/agents/local-tutor?id=7');
+  });
+
+  test('an agent with no prompt id gets the slug alone', () => {
+    expect(agentPath({name: 'Local Tutor'})).toBe('/agents/local-tutor');
+  });
+
+  test('each link resolves back to its own agent, whichever of two with one name', () => {
+    [FIRST, SECOND].forEach((agent) => {
+      expect(matchAgentBySlug([FIRST, SECOND], ...readBack(agentPath(agent)))).toBe(agent);
+    });
+  });
+
+  test('a name with no Latin letters keeps its own path segment', () => {
+    // agentSlug drops other scripts entirely, and "/agents/?id=42" would be
+    // the gallery's route, not the agent page.
+    const tamil = {prompt_id: 42, name: 'தமிழ் ஆசிரியர்'};
+    expect(agentPath(tamil)).toBe(`/agents/${encodeURIComponent(tamil.name)}?id=42`);
+    expect(matchAgentBySlug([FIRST, tamil], ...readBack(agentPath(tamil)))).toBe(tamil);
   });
 });
