@@ -5212,31 +5212,30 @@ def register_routes(app):
     app.route("/agents/<prompt_id>/post", methods=["POST"])(agent_post)
 
     # TTS audio serving — for async push playback (pupit topic)
-    # Cache the search_dirs list (perf-engineer: glob on every request is ~2ms)
-    _tts_search_dirs = None
-    _tts_search_dirs_ts = 0
 
     def tts_serve_audio(filename):
-        """Serve a TTS audio file by filename. Used by frontend after WAMP/SSE push."""
-        nonlocal _tts_search_dirs, _tts_search_dirs_ts
+        """Serve a reply's stored voice by file name. Used by frontend after WAMP/SSE push.
+
+        The folders, the name rule and the type are HARTOS core.spoken_media's: the one reader the
+        stored face is replayed through too (/avatar/live), and the one list its pruner keeps within
+        a share of the free disk.  It follows HEVOLVE_MODEL_DIR (model_storage.get_base_dir) where
+        this route's own list did not, and caches the list 30 s as this route did."""
         from pathlib import Path
 
         from flask import abort, send_file
         # Security: only serve from known dirs, no path traversal
         if '..' in filename or '/' in filename or '\\' in filename:
             abort(400)
-        # Cache search dirs for 30s — engine dirs don't change often
+        try:
+            from core.spoken_media import find_spoken_media, media_type
+            path = find_spoken_media(filename, kind='audio')
+            if path is not None:
+                return send_file(str(path), mimetype=media_type(path), conditional=True)
+        except ImportError as e:
+            logger.warning(f"tts audio: the spoken media store is not importable ({e})")
         import tempfile as _tempfile
-        import time as _t
-        now = _t.time()
-        if _tts_search_dirs is None or now - _tts_search_dirs_ts > 30:
-            _home = Path.home()
-            _tts_search_dirs = list((_home / '.hevolve' / 'models').glob('*/output'))
-            _tts_search_dirs += [
-                _home / '.nunba' / 'piper' / 'cache',
-                _home / '.nunba' / 'vibevoice' / 'cache',
-                _home / '.nunba' / 'tts_cache' / 'presynth',
-                _home / '.nunba' / 'tts_cache',
+        if filename.lower().endswith('.wav'):
+            search_dirs = [
                 # _fire_nunba_tts's synthesize_text() call can land here
                 # depending on which backend/fallback path handled the
                 # request — some write via bare tempfile.NamedTemporaryFile
@@ -5246,12 +5245,10 @@ def register_routes(app):
                 # to decode the JSON error body as audio.
                 Path(_tempfile.gettempdir()),
             ]
-            _tts_search_dirs_ts = now
-        search_dirs = _tts_search_dirs
-        for d in search_dirs:
-            path = d / filename
-            if path.is_file():
-                return send_file(str(path), mimetype='audio/wav')
+            for d in search_dirs:
+                path = d / filename
+                if path.is_file():
+                    return send_file(str(path), mimetype='audio/wav')
         abort(404)
     app.route("/tts/audio/<filename>", methods=["GET"])(tts_serve_audio)
 

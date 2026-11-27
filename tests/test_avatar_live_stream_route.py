@@ -216,3 +216,68 @@ def test_this_machine_watches_any_stream(app_client, sidecar, owned_by):
     owned_by('43')
     r = app_client.get('/avatar/live/abcdef012345.mp4')
     assert r.get_data() == b'moovfrag1frag2' and r.status_code == 200
+
+
+# ── a reply's face kept after its live session: its replay (owner 2026-11-26) ────────────────
+
+@pytest.fixture
+def stored(monkeypatch, tmp_path):
+    """HARTOS's one spoken-media reader finds this reply's kept face (core.spoken_media)."""
+    import core.spoken_media as sm
+    kept = tmp_path / 'abcdef012345.mp4'
+    kept.write_bytes(b'kept-face')
+    asked = []
+
+    def find(name, *, kind):
+        asked.append((name, kind))
+        return kept if name == 'abcdef012345.mp4' else None
+    monkeypatch.setattr(sm, 'find_spoken_media', find)
+    return asked
+
+
+def test_a_gone_session_replays_its_kept_face(app_client, monkeypatch, stored):
+    import main
+    from integrations.service_tools import avatarforcing_tool
+    up = _Upstream(status=404)
+    monkeypatch.setattr(avatarforcing_tool, 'sidecar_port', lambda: 4321)
+    monkeypatch.setattr(main.requests, 'get', lambda *a, **k: up)
+    r = app_client.get('/avatar/live/abcdef012345.mp4')
+    assert r.status_code == 200 and r.mimetype == 'video/mp4'
+    assert r.get_data() == b'kept-face'
+    assert up.closed and stored == [('abcdef012345.mp4', 'video')]
+
+
+def test_a_stopped_model_still_replays_a_kept_face(app_client, monkeypatch, stored):
+    from integrations.service_tools import avatarforcing_tool
+    monkeypatch.setattr(avatarforcing_tool, 'sidecar_port', lambda: None)
+    r = app_client.get('/avatar/live/abcdef012345.mp4')
+    assert r.status_code == 200 and r.get_data() == b'kept-face'
+
+
+def test_with_nothing_kept_the_answers_are_as_before(app_client, monkeypatch):
+    import core.spoken_media as sm
+    from integrations.service_tools import avatarforcing_tool
+    monkeypatch.setattr(sm, 'find_spoken_media', lambda name, *, kind: None)
+    monkeypatch.setattr(avatarforcing_tool, 'sidecar_port', lambda: None)
+    assert app_client.get('/avatar/live/abcdef012345.mp4').status_code == 503
+
+
+def test_a_kept_face_is_never_replayed_by_delete(app_client, monkeypatch, stored):
+    import main
+    from integrations.service_tools import avatarforcing_tool
+    monkeypatch.setattr(avatarforcing_tool, 'sidecar_port', lambda: None)
+    monkeypatch.setattr(main.requests, 'delete', lambda *a, **k: pytest.fail('reached the sidecar'))
+    assert app_client.delete('/avatar/live/abcdef012345.mp4').status_code == 503
+    assert stored == []
+
+
+@pytest.mark.parametrize('owner', ['43', None])
+def test_another_users_kept_face_is_answered_like_none(app_client, monkeypatch, stored, phone_of,
+                                                       owned_by, owner):
+    from integrations.service_tools import avatarforcing_tool
+    monkeypatch.setattr(avatarforcing_tool, 'sidecar_port', lambda: None)
+    phone_of('42')
+    owned_by(owner)
+    r = app_client.get('/avatar/live/abcdef012345.mp4', environ_base=PHONE)
+    r.get_data()
+    assert r.status_code == 404 and stored == []

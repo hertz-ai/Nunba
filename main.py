@@ -2327,17 +2327,43 @@ def avatar_live_stream(sid):
     """
     if not _re.fullmatch(r'[0-9a-f]{12}', sid or ''):  # main's module-level import
         return jsonify({'error': 'no such stream'}), 404
+    owner_checked = False
     try:
         from integrations.service_tools.avatarforcing_tool import sidecar_port, stream_owner
         from routes.auth import admitted_device_user
         phone_user = admitted_device_user()  # None for this machine and the local token
         if phone_user is not None and phone_user != stream_owner(sid):
             return jsonify({'error': 'no such stream'}), 404
+        owner_checked = True
         port = sidecar_port()
     except Exception as e:
         logging.warning(f"avatar stream {sid}: model lookup failed: {e}")
+        if not owner_checked:
+            # A check that did not complete clears nothing: answered like a stream that does not
+            # exist, and the stored face is never reached (review rv_lowvram P1: a phone of user 42
+            # got user 43's kept face when the owner lookup raised).
+            return jsonify({'error': 'no such stream'}), 404
         port = None
+    def stored_face():
+        """This reply's face as kept after its live session (HARTOS core.spoken_media, the one
+        reader of a node's spoken media, as /tts/audio is for its voice): its replay, with no GPU.
+        Served after the same owner check as the live stream, above."""
+        try:
+            from core.spoken_media import find_spoken_media
+            path = find_spoken_media(f'{sid}.mp4', kind='video')
+        except Exception as e:
+            logging.debug(f"avatar stream {sid}: stored face not looked up: {e}")
+            path = None
+        if path is None:
+            return None
+        from flask import send_file
+        return send_file(str(path), mimetype='video/mp4', conditional=True)
+
     if not port:
+        if request.method == 'GET':  # the model is gone (evicted, restarted): its replay may not be
+            stored = stored_face()
+            if stored is not None:
+                return stored
         return jsonify({'error': 'the talking-avatar model is not running'}), 503
     sidecar = f'http://127.0.0.1:{port}/live.mp4'
     if request.method == 'DELETE':
@@ -2354,6 +2380,10 @@ def avatar_live_stream(sid):
         return jsonify({'error': 'the talking-avatar model did not answer'}), 502
     if upstream.status_code != 200:
         upstream.close()
+        if upstream.status_code == 404:  # its live session ended: play what was kept of it
+            stored = stored_face()
+            if stored is not None:
+                return stored
         return jsonify({'error': 'no such stream'}), upstream.status_code
 
     def relay():
