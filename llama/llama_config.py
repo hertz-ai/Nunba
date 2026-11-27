@@ -175,6 +175,16 @@ def embeddings_args(spec_args) -> list:
 # the two can never drift on whether thinking is suppressed.
 _LLAMA_THINK_OFF_ENV = 'LLAMA_ARG_CHAT_TEMPLATE_KWARGS'
 _LLAMA_THINK_OFF_VALUE = '{"enable_thinking":false}'
+# The same parameter's spelling on OLDER llama.cpp builds.  Build 476
+# (312cf03, the macOS arm64 binary in ~/.nunba/llama.cpp) documents it as
+#   --chat-template-kwargs STRING ... (env: LLAMA_CHAT_TEMPLATE_KWARGS)
+# and ignores the LLAMA_ARG_ name.  Its main server still does not think
+# because it also carries --reasoning-budget 0, but the caption server on
+# :8081 has only this env var, so on that build it thought on every call.
+# Measured 2026-11-17 on an M4: 500 tokens of reasoning_content, content ''
+# after 11.5 s; with both names set, content 'OK', reasoning 0.
+# Both names are set; a build that does not know a name ignores it.
+_LLAMA_THINK_OFF_ENV_LEGACY = 'LLAMA_CHAT_TEMPLATE_KWARGS'
 
 # The prompt cache each llama-server keeps in host RAM.  Build 10330's own
 # ``--help``: ``--cache-ram N  set the maximum cache size in MiB (default:
@@ -193,6 +203,19 @@ _LLAMA_CACHE_RAM_ENV = 'LLAMA_ARG_CACHE_RAM'
 _LLAMA_CACHE_RAM_MIB = '2048'
 
 
+def _darwin_unified_free_gib() -> float:
+    """Available unified memory in GiB on macOS; 0.0 if unreadable.
+
+    Used only by the ctx-size decision (see _derive_ctx_size).  0.0 keeps
+    the caller's existing smallest-tier behaviour when psutil is missing.
+    """
+    try:
+        import psutil
+        return psutil.virtual_memory().available / (1024 ** 3)
+    except Exception:
+        return 0.0
+
+
 def llama_child_env(base: dict | None = None) -> dict:
     """Environment for a spawned llama-server: inherited env + thinking off
     + a bounded host-RAM prompt cache.
@@ -203,7 +226,12 @@ def llama_child_env(base: dict | None = None) -> dict:
     override an explicit choice.
     """
     env = dict(base) if base is not None else os.environ.copy()
-    env.setdefault(_LLAMA_THINK_OFF_ENV, _LLAMA_THINK_OFF_VALUE)
+    # An operator's value under either spelling is the choice for both.
+    _think = (env.get(_LLAMA_THINK_OFF_ENV)
+              or env.get(_LLAMA_THINK_OFF_ENV_LEGACY)
+              or _LLAMA_THINK_OFF_VALUE)
+    env.setdefault(_LLAMA_THINK_OFF_ENV, _think)
+    env.setdefault(_LLAMA_THINK_OFF_ENV_LEGACY, _think)
     env.setdefault(_LLAMA_CACHE_RAM_ENV, _LLAMA_CACHE_RAM_MIB)
     return env
 
@@ -1969,6 +1997,21 @@ class LlamaConfig:
                 # 28160128202 produced 0 action files in 3 CREATE turns.
                 free_gb = vram_manager.refresh_gpu_info(
                     force=True).get('free_gb', 0)
+                # macOS only, and only for THIS sizing decision: a Mac has no
+                # nvidia-smi/rocm-smi, and vram_manager latches the all-zero
+                # reading for such hosts before its Metal branch runs, so
+                # free_gb is 0.0 on every Mac and ctx pins at the 4096 tier,
+                # below the ~8k-token tool schema (every agentic turn 400s).
+                # Measured 2026-11-17 on an M4 16 GB:
+                #   Dynamic context size: 4096 (VRAM free=0.000GiB ...)
+                #   llama 400: request (4288 tokens) exceeds ... (4096 tokens)
+                # Metal shares unified memory, so available RAM is the headroom.
+                # Read here, not in vram_manager, so model/TTS/STT selection
+                # and every other platform are untouched.  Applies only when
+                # the probe gave nothing, so a probe that learns Metal later
+                # wins.
+                if not free_gb and sys.platform == 'darwin':
+                    free_gb = _darwin_unified_free_gib()
                 # MEASURE the weights.  `preset.size_mb / 1024.0` mixed units:
                 # size_mb is decimal MB on the rows whose files were measured
                 # (2B, 4B), so dividing by the binary 1024 overstated the 4B
