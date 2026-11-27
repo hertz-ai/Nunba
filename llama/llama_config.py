@@ -452,6 +452,12 @@ def scan_openai_compatible_ports(ports: list[int] = None) -> dict | None:
 #: must not keep their own, or the field stops having a single answer again.
 _PREF_CACHE = None
 
+#: How long a model load is waited for: a llama-server answering 503
+#: "Loading model" past this is treated as failed.  ONE value for every wait
+#: on a load (the post-spawn VRAM measurement and auto-setup's wait for a
+#: server already loading on the main port), so they cannot drift apart.
+MODEL_LOAD_WAIT_S = 90
+
 
 class LlamaConfig:
     """Manages Llama.cpp configuration and server lifecycle"""
@@ -1295,6 +1301,27 @@ class LlamaConfig:
         if progress_callback:
             progress_callback('scanning', 0.02)
 
+        # A server on the main LLM's own port that answers 503 "Loading model"
+        # is the model this machine already runs, not "no LLM": wait for it
+        # (the same ceiling every load wait uses) so the scan below finds it
+        # serving.  Past the deadline it counts as failed and setup goes on.
+        # Live 27 Nov 2026 11:55 IST: Nunba restarted, this scan ran while
+        # the 4B was still loading ("No existing LLM endpoints found"), the
+        # diagnosis downgraded to the 2B and the 2B was saved as the choice
+        # while the 4B kept serving (D20).  Only the main port: the caption
+        # server on its own port is never taken for the main LLM.
+        _main_port = self.config.get('server_port')
+        if _main_port:
+            _main_type, _main_info = self.check_server_type(_main_port)
+            if (_main_type in (ServerType.NUNBA_MANAGED, ServerType.EXTERNAL_LLAMA)
+                    and (_main_info or {}).get('status') == 'loading'):
+                logger.info(f"Auto-setup: the LLM on :{_main_port} is still loading "
+                            f"its model; waiting up to {MODEL_LOAD_WAIT_S}s before "
+                            f"choosing anything")
+                if not self._wait_until_serving(_main_port, timeout=MODEL_LOAD_WAIT_S):
+                    logger.warning(f"Auto-setup: the LLM on :{_main_port} did not finish "
+                                   f"loading in {MODEL_LOAD_WAIT_S}s; treating it as failed")
+
         existing = scan_existing_llm_endpoints()
         if not existing:
             existing = scan_openai_compatible_ports()
@@ -1464,7 +1491,13 @@ class LlamaConfig:
             logger.info(f"Model {preset.size_mb}MB > budget {diag['compute_budget_mb']}MB — CPU mode")
 
         # ── 6. Apply run_mode to config ────────────────────────────
-        self.config['selected_model_index'] = model_idx
+        # The model CHOICE (selected_model_index) is not written here: it is
+        # saved below only once a server is serving it.  Written before the
+        # start, a start that then failed (or that reused a server already on
+        # the port, which _do_start_server saves the config for) left a model
+        # nothing runs as the next launch's model: live 27 Nov 2026 11:55-
+        # 11:56 IST, the 2B was saved, its start timed out ("Server start by
+        # another process timed out"), and the 4B kept serving (D20).
         self.config['first_run'] = False
         self.config['llm_mode'] = 'local'
         self.config['use_gpu'] = (diag['run_mode'] == 'gpu')
@@ -1475,6 +1508,36 @@ class LlamaConfig:
             progress_callback('starting', 0.85)
 
         started = self.start_server(model_preset=preset)
+
+        # ── 7b. Keep as the choice what the server actually serves ──
+        # start_server is also True when it reused a server already on the
+        # port, or when another process's start finished first; neither need
+        # be serving this preset.  The server itself says what it serves, so
+        # that model (when it is a known preset) becomes the choice and is
+        # what step 8 books.  Not identified: the saved choice is left as it
+        # was, never set to a preset nothing was seen serving.
+        if started:
+            _serve_port = self.config.get('server_port')
+            _served = None
+            if _serve_port and self._wait_until_serving(_serve_port,
+                                                        timeout=MODEL_LOAD_WAIT_S):
+                _served = self.serving_model_file(_serve_port)
+            _served_idx = next((i for i, p in enumerate(MODEL_PRESETS)
+                                if _served and p.file_name == _served), None)
+            if _served_idx is not None:
+                if _served_idx != model_idx:
+                    logger.info(f"Auto-setup: :{_serve_port} serves "
+                                f"{MODEL_PRESETS[_served_idx].display_name}, not "
+                                f"{preset.display_name}; keeping the served model "
+                                f"as the choice")
+                model_idx = _served_idx
+                preset = MODEL_PRESETS[model_idx]
+                self.config['selected_model_index'] = model_idx
+                self._save_config()
+            else:
+                logger.info(f"Auto-setup: the model served on :{_serve_port} was not "
+                            f"identified ({_served or 'no answer'}); the saved model "
+                            f"choice is left unchanged")
 
         # ── 8. Register VRAM allocation (so TTS/vision see the LLM's reservation) ──
         # Canonical key 'llm' — idempotent, same key used by ModelOrchestrator
@@ -2858,7 +2921,7 @@ class LlamaConfig:
                                 # the weights; measure once they are in.
                                 if _vram_before is not None:
                                     if self._wait_until_serving(
-                                            desired_port, timeout=90):
+                                            desired_port, timeout=MODEL_LOAD_WAIT_S):
                                         _measured_gb = spawn_vram_delta_gb(
                                             _vram_before,
                                             fresh_free_vram_gb(vm))
