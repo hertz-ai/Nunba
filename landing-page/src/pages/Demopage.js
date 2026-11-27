@@ -35,6 +35,8 @@ import autobahn from 'autobahn';
 import { classifyError, getBackoff, startTurn, MAX_RETRIES, turnHasReply, EMPTY_REPLY_REASON, PUSHED_REPLY_MISSING_REASON } from '../utils/chatRetry';
 import { shouldSpeakLocalReply, isDraftReply, hasServerAudioPayload, shouldPlayPushedClip, speaksPushedText, initialTtsEnabled } from '../utils/ttsGuards';
 import { startLiveAvatar, stopLiveAvatar } from '../utils/liveAvatar';
+import { afterVideoError, idleLinkOf } from '../utils/idleFace';
+import { agentKey, openingMode, rememberChoice } from '../utils/agentMediaMode';
 import { mergeRestoredMessages } from '../utils/mergeRestoredMessages';
 import { normalizeRestoredMessages } from '../utils/normalizeRestoredMessages';
 import { holdsAgentChat, isSetupCard, restoreServerHistory } from '../utils/serverChatHistory';
@@ -704,6 +706,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   //             'video' (full video + idle filler), 'text' (no media at all)
   const [mediaMode, setMediaMode] = useState(() => localStorage.getItem('nunba_media_mode') || 'audio');
   const isTextMode = mediaMode === 'text';
+  // A text-mode link (?isTextMode) sets the mode for the session: the agent's default never overrides it.
+  const forcedModeRef = useRef(false);
+  // Set while the mode changes to an agent's default, so it is not saved as the person's mode.
+  const agentDefaultModeRef = useRef(false);
   const setIsTextMode = (val) => setMediaMode(val ? 'text' : 'video');
   const [isTrialExpired, setIsTrialExpired] = useState(false);
   const [currentInteractionType, setCurrentInteractionType] = useState('text');
@@ -764,6 +770,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   });
   const [requestIdFromCrossbar, setRequestIdFromCrossbar] = useState(null);
   const [idleVideoUrl, setIdleVideoUrl] = useState(null);
+  // Idle URLs that failed to load: not tried again until the next agent listing (utils/idleFace).
+  // Declared here, before the render reads it (the open agent's idle pick, changeMediaMode): read
+  // before its declaration it threw on every render (TDZ; rv_page, 27 Nov).
+  const failedIdleUrlsRef = useRef(new Set());
   const [isPlayingResponse, setIsPlayingResponse] = useState(false);
 
   const [waitingText, setWaitingText] = useState(null);
@@ -917,8 +927,14 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     if (el && !el.paused) audioRef.current = el;
   }, [tts.isSpeaking]);
 
-  // Persist media mode to localStorage
+  // Persist media mode to localStorage: the PERSON's mode only.  A mode an agent opened in by its
+  // default is not written, so the page's saved mode (read by NunbaChat and Agent.js) stays the
+  // person's own choice (rv_page F3/F7).
   useEffect(() => {
+    if (agentDefaultModeRef.current) {
+      agentDefaultModeRef.current = false;
+      return;
+    }
     localStorage.setItem('nunba_media_mode', mediaMode);
   }, [mediaMode]);
 
@@ -1244,15 +1260,6 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               mergeCarriedSetupCards(savedMessages, carriedSetup), askStatesRef.current));
           }, 100);
 
-          if (matchedAgent.fillers) {
-            const idleFiller = matchedAgent.fillers.find(
-              (filler) => filler.type === 'idle'
-            );
-            if (idleFiller?.video_link) {
-              setIdleVideoUrl(idleFiller.video_link);
-              setVideoUrl(idleFiller.video_link);
-            }
-          }
         }
       }
     }
@@ -1281,16 +1288,6 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       });
 
       setCurrentAgent(agentDatafromApi);
-
-      if (agentDatafromApi.fillers) {
-        const idleFiller = agentDatafromApi.fillers.find(
-          (filler) => filler.type === 'idle'
-        );
-        if (idleFiller?.video_link) {
-          setIdleVideoUrl(idleFiller.video_link);
-          setVideoUrl(idleFiller.video_link);
-        }
-      }
 
       setShowCreateAgentForm(false);
       navigate(agentPath(agentDatafromApi));
@@ -1344,22 +1341,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   useEffect(() => {
     if (agentData) {
       setCurrentAgent(agentData);
-      if (agentData.fillers) {
-        const idleFiller = agentData.fillers.find(
-          (filler) => filler.type === 'idle'
-        );
-        if (idleFiller?.video_link) {
-          logger.log(idleFiller.video_link, 'idleFiller.video_link');
-          setIdleVideoUrl(idleFiller.video_link);
-          // Only auto-load idle video in full video mode (not audio-only or text)
-          if (mediaMode === 'video') {
-            setVideoUrl(idleFiller.video_link);
-          }
-        }
-      }
     }
 
     const fetchPrompts = async () => {
+      failedIdleUrlsRef.current = new Set(); // a new listing may carry a clip made since (rv_page F4)
       try {
         let allAgents = [];
 
@@ -1787,6 +1772,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       console.warn('[Email Warning]: No email found in URL');
     }
     if (params.isTextMode) {
+      forcedModeRef.current = true; // a text-mode link is not overridden by the agent's default
       setIsTextMode(true);
       logger.log('[Text Mode]: Text mode enabled from URL');
     }
@@ -1963,8 +1949,11 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     return 260;
   };
 
-  const changeMediaMode = (newMode) => {
+  const changeMediaMode = (newMode, {remember = true} = {}) => {
     setMediaMode(newMode);
+    // The person's own choice (the mode menu, the cycle button) is remembered for this agent and
+    // wins the next time it opens (utils/agentMediaMode).
+    if (remember) rememberChoice(currentAgent, newMode);
     // A live avatar reply lives in the video element this change replaces (its onStop
     // clears the speaking state); the mode's own video choice below then applies.
     stopLiveAvatar();
@@ -1989,12 +1978,48 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       }
       setVideoUrl(null); // clear idle video
     } else if (newMode === 'video') {
-      // Full video mode: restore idle video
-      if (idleVideoUrl) {
-        setVideoUrl(idleVideoUrl);
+      // Full video mode: restore THIS agent's idle face, by the one pick (utils/idleFace).  Not the
+      // idleVideoUrl state: in the commit that opens another agent it still holds the last one's.
+      const idleLink = idleLinkOf(currentAgent, failedIdleUrlsRef.current)
+        || idleLinkOf(agentData, failedIdleUrlsRef.current);
+      if (idleLink) {
+        setVideoUrl(idleLink);
       }
     }
   };
+
+  // The open agent's idle face (rv_page F1/F2): ONE effect, keyed on the open agent, sets it for
+  // every way an agent is opened (the route, a create, the agentData prop, the list, an @mention,
+  // the saved restore, the orphan and the default), so the face shown is never the last agent's.
+  // A new agent shows its own face, or none; the same agent's face arriving later (a listing with a
+  // new clip, a failed link) replaces only an idle face on screen, never a reply that is playing.
+  // Declared before the opening-mode effect, which may switch the mode in the same commit.
+  const openedAgentKey = agentKey(currentAgent);
+  const openedIdleLink = idleLinkOf(currentAgent, failedIdleUrlsRef.current);
+  const idleAgentKeyRef = useRef(null);
+  useEffect(() => {
+    const switched = idleAgentKeyRef.current !== openedAgentKey;
+    idleAgentKeyRef.current = openedAgentKey;
+    const previousIdle = idleVideoUrlRef.current;
+    const shown = mediaMode === 'video' ? openedIdleLink : null;
+    setIdleVideoUrl(openedIdleLink);
+    setVideoUrl((current) => (switched || !current || current === previousIdle ? shown : current));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openedAgentKey, openedIdleLink]);
+
+  // The mode an agent opens in (owner 27 Nov: "Face agents open in video"): the person's own
+  // choice for it, else video for an agent with a face, else voice.  Decided again when the agent's
+  // face becomes known (it can arrive after the agent itself); a text-mode link is left alone.
+  const openedAgentHasFace = Boolean(currentAgent?.teacher_avatar_id);
+  useEffect(() => {
+    if (!openedAgentKey || forcedModeRef.current) return;
+    const mode = openingMode(currentAgent);
+    if (mode && mode !== mediaMode) {
+      agentDefaultModeRef.current = true;
+      changeMediaMode(mode, {remember: false});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openedAgentKey, openedAgentHasFace]);
 
   // Legacy toggle for mobile (cycles: audio → video → text → audio)
   const toggleTextMode = () => {
@@ -3302,10 +3327,19 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   };
 
   const handleVideoError = (e) => {
-    // A live avatar reply handles its own errors (utils/liveAvatar falls back to the audio);
-    // hiding the element would hide every later reply and the idle face with it.
-    if (liveAvatarRef.current && e.target.src === liveAvatarRef.current.url) return;
-    e.target.style.display = 'none';
+    // A live avatar reply handles its own errors (utils/liveAvatar falls back to the audio).
+    // Nothing is hidden for good any more: that left video mode with no face for every later
+    // reply (owner 27 Nov).  A failed idle face falls back to the portrait and is not retried;
+    // a failed clip goes back to the idle face (utils/idleFace).
+    const next = afterVideoError({
+      failedSrc: e.target.src,
+      idleUrl: idleVideoUrlRef.current,
+      liveUrl: liveAvatarRef.current ? liveAvatarRef.current.url : null,
+      failedIdle: failedIdleUrlsRef.current,
+    });
+    if (next.ignore) return;
+    if (next.clearIdle) setIdleVideoUrl(null);
+    setVideoUrl(next.videoUrl);
   };
 
   const handleMediaEnded = () => {
@@ -3321,14 +3355,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       // Get idle video URL
       let targetIdleUrl = idleVideoUrl;
       if (!targetIdleUrl) {
-        const idleVideo =
-          currentAgent?.fillers?.find((filler) => filler.type === 'idle') ||
-          agentData?.fillers?.find((filler) => filler.type === 'idle');
-
-        if (idleVideo?.video_link) {
-          targetIdleUrl = idleVideo.video_link;
-          setIdleVideoUrl(targetIdleUrl);
-        }
+        // the one pick (utils/idleFace): a link that already failed is not tried again (no loop)
+        targetIdleUrl = idleLinkOf(currentAgent, failedIdleUrlsRef.current)
+          || idleLinkOf(agentData, failedIdleUrlsRef.current);
+        if (targetIdleUrl) setIdleVideoUrl(targetIdleUrl);
       }
 
       // Only restore idle video in full video mode (not audio-only or text)
@@ -3379,8 +3409,6 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       const carriedSetup = messages.filter(isGlobalSetupCard);
       setMessages(carriedSetup);
 
-      const idleFiller = chat.fillers?.find((filler) => filler.type === 'idle');
-      setVideoUrl(idleFiller?.video_link);
       setCurrentAgent(chat);
 
       setTimeout(() => {

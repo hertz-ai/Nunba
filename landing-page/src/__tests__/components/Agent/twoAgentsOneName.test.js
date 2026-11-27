@@ -21,6 +21,7 @@
  * tests do (openMicAddressed, demopageTextOnlyVoiceOnTheDeviceUsed).
  */
 import fs from 'fs';
+import {idleLinkOf} from '../../../utils/idleFace';
 import path from 'path';
 import React from 'react';
 import {render, screen, fireEvent, waitFor} from '@testing-library/react';
@@ -123,6 +124,9 @@ function demopageOpens({agentData, agentName, search}) {
     askStatesRef: {current: {}},
     setIdleVideoUrl: () => {},
     setVideoUrl: () => {},
+    // Demopage's one idle-face pick (utils/idleFace) and its failed-link memory.
+    idleLinkOf,
+    failedIdleUrlsRef: {current: new Set()},
   };
   const names = Object.keys(scope);
   // eslint-disable-next-line no-new-func
@@ -252,6 +256,9 @@ function chatPage(open) {
     setCurrentAgent: (v) => { page.open = typeof v === 'function' ? v(page.open) : v; },
     setVideoUrl: () => {},
     setIdleVideoUrl: () => {},
+    // Demopage's one idle-face pick (utils/idleFace) and its failed-link memory.
+    idleLinkOf,
+    failedIdleUrlsRef: {current: new Set()},
     setIsOpen: () => {},
     setShowCreateAgentForm: () => {},
     setAllAgents: () => {},
