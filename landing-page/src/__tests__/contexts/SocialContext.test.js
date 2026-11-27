@@ -225,6 +225,42 @@ describe('SocialContext - with token', () => {
     });
   });
 
+  // A cloud Hevolve account can carry its Hevolve role ('student',
+  // 'indvteacher') on the social user row.  That is not a tier: the
+  // server treats it as a plain signed-in member, so the page must too,
+  // not rank it below a guest and hide Privacy and Encounters.
+  it.each(['student', 'indvteacher'])(
+    'a signed-in user whose role %s is not a tier is a flat member',
+    async (role) => {
+      mockAxiosInstance.get.mockImplementation((url) => {
+        if (url === '/auth/me')
+          return Promise.resolve({data: {id: 'u1', username: 'testuser', role}});
+        return Promise.resolve({data: {}});
+      });
+      renderProvider();
+      await flushWithTimers();
+      await waitFor(() => {
+        expect(screen.getByTestId('accessTier').textContent).toBe('flat');
+      });
+    }
+  );
+
+  it.each(['guest', 'regional', 'central'])(
+    'a tier role %s is kept as it is',
+    async (role) => {
+      mockAxiosInstance.get.mockImplementation((url) => {
+        if (url === '/auth/me')
+          return Promise.resolve({data: {id: 'u1', username: 'testuser', role}});
+        return Promise.resolve({data: {}});
+      });
+      renderProvider();
+      await flushWithTimers();
+      await waitFor(() => {
+        expect(screen.getByTestId('accessTier').textContent).toBe(role);
+      });
+    }
+  );
+
   it('fetches resonance wallet on mount', async () => {
     renderProvider();
     await flushWithTimers();

@@ -26,6 +26,10 @@ import React, {
 
 const SocialContext = createContext();
 
+// The tiers RoleGuard and SocialLayout rank (anonymous < guest < flat <
+// regional < central).  Any other role a user row carries is not a tier.
+const ACCESS_TIERS = new Set(['anonymous', 'guest', 'flat', 'regional', 'central']);
+
 /**
  * Recover `guest_user_id` from the Flask-injected hardware-derived
  * id when localStorage was wiped (WebView2 UserDataFolder wipe on
@@ -327,8 +331,11 @@ export function SocialProvider({children}) {
     (!currentUser && _authSession._raw.guest_mode
       && _authSession.status !== 'pending');
   const accessTier = useMemo(() => {
-    if (currentUser?.role) return currentUser.role;
-    // Authenticated user without role field defaults to 'flat'
+    // Only a tier name is a tier.  A cloud Hevolve account can carry its
+    // Hevolve role ('student', 'indvteacher') on the social user row; the
+    // server treats that as a plain member, and so does this page.
+    if (ACCESS_TIERS.has(currentUser?.role)) return currentUser.role;
+    // Authenticated user with no tier role defaults to 'flat'
     if (currentUser && !currentUser._pending) return 'flat';
     if (isGuest) return 'guest';
     return 'anonymous';
