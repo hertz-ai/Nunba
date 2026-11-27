@@ -2305,6 +2305,41 @@ def harthash():
     return jsonify(build_identity())
 
 
+@app.route('/avatar/idle/<prompt_id>.mp4', methods=["GET"])
+@require_local_token_or_device
+def avatar_idle_face(prompt_id):
+    """An agent's idle face: 60 s of silence spoken by its portrait, made by the live face's own
+    model (HARTOS integrations/service_tools/avatarforcing_idle; owner 27 Nov "60 seconds of idle
+    video using the same no volume audio that is used in central").  The agent list carries this
+    link as the agent's idle filler.  Keyed by AGENT (review hartos-17 I1): this machine and the
+    local token see any agent's; an allowed phone only an agent the list shows its user (the
+    listing's own rule, core.prompt_files.agent_account); anything else is answered as a clip
+    that does not exist.  The file name is built here from the agent's avatar, never from the
+    caller's text."""
+    if not _re.fullmatch(r'\d{1,20}', prompt_id or ''):
+        return jsonify({'error': 'no idle face'}), 404
+    path = None
+    try:
+        from core.platform_paths import get_recipe_prompts_dir
+        from core.prompt_files import agent_account
+        from integrations.service_tools.avatarforcing_idle import stored_clip
+        from routes.auth import admitted_device_user
+        record_path = os.path.join(get_recipe_prompts_dir(), f'{prompt_id}.json')
+        with open(record_path, encoding='utf-8') as f:
+            record = json.load(f)
+        phone_user = admitted_device_user()
+        account = agent_account(record)
+        if phone_user is None or not account or account == phone_user:
+            path = stored_clip(record.get('teacher_avatar_id'))
+    except Exception as e:
+        logging.debug(f"idle face {prompt_id}: none ({type(e).__name__}: {e})")
+        path = None
+    if path is None:
+        return jsonify({'error': 'no idle face'}), 404
+    from flask import send_file
+    return send_file(str(path), mimetype='video/mp4', conditional=True)
+
+
 @app.route('/avatar/live/<sid>.mp4', methods=["GET", "DELETE"])
 @require_local_token_or_device
 def avatar_live_stream(sid):
