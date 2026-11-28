@@ -2318,7 +2318,10 @@ def _clear_half_built_venv(engine: str, created_here: bool = False) -> None:
             # (_MISSING_MODULE_RE, as the heal step reads it).
             top = str(required).split('.')[0]
             missing = _MISSING_MODULE_RE.search(err or '')
-            if rc == 0 or not missing or missing.group(1).split('.')[0] != top:
+            # Only the engine's own top package being absent says the venv
+            # holds no engine.  A missing submodule of it ('melo.x') is a
+            # broken engine that IS there: kept, for a repair to fix.
+            if rc == 0 or not missing or missing.group(1) != top:
                 return
         logger.warning(
             "[venv] %s: the install failed and its venv holds no '%s' (%s); "

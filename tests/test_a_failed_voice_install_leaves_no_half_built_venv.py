@@ -84,8 +84,14 @@ def test_an_older_half_built_venv_is_cleared_when_its_interpreter_says_so(instal
     assert not venv.exists()
 
 
-@pytest.mark.parametrize('answer', [IMPORTS, TIMED_OUT, OTHER_FAILURE],
-                         ids=['still_imports', 'probe_timed_out', 'fails_another_way'])
+SUBMODULE_MISSING = (1, '', "ModuleNotFoundError: No module named 'melo.api'")
+ANOTHER_MISSING = (1, '', "ModuleNotFoundError: No module named 'soundfile'")
+
+
+@pytest.mark.parametrize(
+    'answer', [IMPORTS, TIMED_OUT, OTHER_FAILURE, SUBMODULE_MISSING, ANOTHER_MISSING],
+    ids=['still_imports', 'probe_timed_out', 'fails_another_way',
+         'engine_submodule_missing', 'another_package_missing'])
 def test_a_failed_repair_keeps_a_venv_not_known_to_be_empty(installer, answer):
     """A venv that was there before the install is a voice that may work."""
     package_installer, venv, probe, _ensure = installer
