@@ -1,6 +1,5 @@
-/* eslint-disable testing-library/no-node-access, testing-library/no-container -- the phone field has no label, so the test finds it by its input type, as OtpAuthModal.test.js does */
-import {encryptionMock} from '../../testSupport/checkoutKit';
 import OtpAuthModal from '../../pages/OtpAuthModal';
+import {encryptionMock} from '../../testSupport/checkoutKit';
 
 import {render, screen, fireEvent, waitFor} from '@testing-library/react';
 import React from 'react';
