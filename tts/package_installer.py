@@ -2286,35 +2286,48 @@ def _self_heal_missing_transitives(
     return False, healed
 
 
-def _clear_half_built_venv(engine: str) -> None:
-    """After a venv install's pip step failed: remove the venv, unless its
-    engine still imports.
+def _clear_half_built_venv(engine: str, created_here: bool = False) -> None:
+    """After a venv install's pip step failed: remove the venv when it is
+    known to hold no engine, and only then.
 
     Live 28 Nov 2026: melotts' pip step failed and left a venv folder with
     python.exe and no ``melo``.  A reply's fallback later took the folder for
     a voice and stopped Whisper to start it.  Owner, the same day: clear and
-    install from scratch when something half-built is in the way.  A failed
-    repair of a voice that still imports keeps the voice; when the engine's
-    import name cannot be read, nothing is removed.  Never raises.
+    install from scratch when something half-built is in the way.
+
+    Known to hold no engine means one of two things (review of 35266de3):
+    this install created the venv (``created_here``: there was nothing in it
+    before), or the venv's own interpreter says "No module named <engine>".
+    A probe that timed out, or failed any other way, says nothing about the
+    engine: a slow probe under load after an offline failed repair would
+    have wiped a voice that works, and getting it back is a download of
+    several GB.  So anything else keeps the venv.  When the engine's import
+    name cannot be read, nothing is removed.  Never raises.
     """
     try:
         spec = (_hartos_engine_registry() or {}).get(engine)
         required = getattr(spec, 'required_package', None)
         if not required:
             return
-        from tts.backend_venv import (
-            invalidate_venv_probe_cache,
-            is_venv_healthy,
-            wipe_venv,
-        )
-        invalidate_venv_probe_cache(engine)   # ask the venv as it is now
-        if is_venv_healthy(engine, required):
-            return
+        from tts import backend_venv
+        if not created_here:
+            rc, _out, err = backend_venv.invoke_in_venv(
+                engine, required, [],
+                timeout=backend_venv._IMPORT_PROBE_TIMEOUT, _probe_mode=True)
+            top = str(required).split('.')[0]
+            if rc == 0 or f"No module named '{top}'" not in (err or ''):
+                return
         logger.warning(
-            "[venv] %s: the install failed and '%s' does not import from its "
-            "venv; removing the venv so the next install starts clean",
-            engine, required)
-        wipe_venv(engine)
+            "[venv] %s: the install failed and its venv holds no '%s' (%s); "
+            "removing the venv so the next install starts clean",
+            engine, required,
+            'made by this install' if created_here else 'its interpreter says so')
+        backend_venv.wipe_venv(engine)
+        if backend_venv.venv_path(engine).exists():
+            # wipe_venv ignores what it cannot delete (a file held open on
+            # Windows): say so, the folder is still half-built.
+            logger.warning("[venv] %s: its venv could not be removed whole; "
+                           "what is left is not a voice", engine)
     except Exception as exc:
         logger.warning("[venv] %s: could not clear its venv after a failed "
                        "install: %s", engine, exc)
@@ -2366,11 +2379,18 @@ def install_backend_full(backend: str,
                     f"Step 1/2: Creating dedicated venv for {display_name} "
                     f"({len(venv_pkgs)} packages)..."
                 )
+            from tts import backend_venv as _bv
             from tts.backend_venv import ensure_venv, install_into_venv
+            # Was there a venv before this install?  One made here holds
+            # nothing a failed pip step could have left working.
+            try:
+                _venv_was_there = _bv._python_exe_in(_bv.venv_path(engine)).is_file()
+            except Exception:
+                _venv_was_there = True
             venv_python = ensure_venv(engine)
             venv_ok, venv_msg = install_into_venv(engine, venv_pkgs)
             if not venv_ok:
-                _clear_half_built_venv(engine)
+                _clear_half_built_venv(engine, created_here=not _venv_was_there)
                 return False, f"venv install failed: {venv_msg}"
             pkg_ok, pkg_msg = True, venv_msg
             # Drop the "cannot run" answers cached before this install, as
