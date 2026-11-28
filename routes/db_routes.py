@@ -676,6 +676,10 @@ def get_all_prompts():
         try:
             with open(f, encoding='utf-8') as fh:
                 data = json.load(fh)
+            # One its creator made private is no public agent (HARTOS
+            # _stamp_agent_public; the rule of HARTOS GET /prompts/public).
+            if isinstance(data, dict) and data.get('is_public') is False:
+                continue
             results.append({
                 "prompt_id": f.stem,
                 "name": data.get('name', f.stem),

@@ -402,6 +402,17 @@ class TestChatPayloadOptionalFields:
         assert 'open_mic' not in self._payload(open_mic=False)
         assert self._payload(open_mic=True)['open_mic'] is True
 
+    def test_the_creators_public_choice_reaches_hartos_only_as_a_bool(self):
+        """The create form's "Make this agent public" (owner 2026-11-28, "Bring
+        it back now"): HARTOS keeps it on the agent's record from a creation
+        turn (_stamp_agent_public).  A string or a number is no choice, and a
+        turn without one sends no key."""
+        assert 'is_public' not in self._payload()
+        assert self._payload(is_public=False)['is_public'] is False
+        assert self._payload(is_public=True)['is_public'] is True
+        for not_a_choice in ('false', 0, 1, None):
+            assert 'is_public' not in self._payload(is_public=not_a_choice)
+
 
 class TestProxyChatKeepsAvatarAndAgentApart:
     """teacher_avatar_id is the avatar, shared by many agents; the proxy /chat

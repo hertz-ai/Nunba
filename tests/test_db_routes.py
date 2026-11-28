@@ -584,6 +584,21 @@ class TestGetPromptByUser:
 
 class TestGetAllPrompts:
 
+    def test_an_agent_its_creator_made_private_is_not_listed(self, client, db_mod):
+        """The create form's "Make this agent public" (owner 2026-11-28), kept
+        on the record as is_public by HARTOS: an unticked one is no public
+        agent here either.  A record that names no choice is listed, as before."""
+        prompts_dir = db_mod._get_prompts_dir()
+        prompts_dir.mkdir(parents=True, exist_ok=True)
+        for stem, choice in (("8801", False), ("8802", True), ("8803", None)):
+            record = {"user_id": 7, "name": f"agent {stem}", "goal": "g"}
+            if choice is not None:
+                record["is_public"] = choice
+            (prompts_dir / f"{stem}.json").write_text(json.dumps(record), encoding="utf-8")
+        listed = {p["prompt_id"] for p in client.get("/getprompt_all/").get_json()}
+        assert "8801" not in listed
+        assert {"8802", "8803"} <= listed
+
     def test_returns_all_prompts(self, client):
         client.post("/createpromptlist", json={
             "listprompts": [

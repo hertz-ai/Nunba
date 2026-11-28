@@ -847,6 +847,7 @@ def chat(
     attachments=None,
     goal_tags=None,
     open_mic=False,
+    is_public=None,
     **kwargs
 ) -> dict[str, Any]:
     """
@@ -947,6 +948,11 @@ def chat(
     # into that avatar's recorded voice.  Sent only when a caller has one.
     if teacher_avatar_id is not None:
         payload["teacher_avatar_id"] = teacher_avatar_id
+    # The creator's public/private choice for an agent being made (Nunba's
+    # create form): HARTOS keeps it on the agent's record from a creation
+    # turn, as it keeps the face.  Sent only as a true bool.
+    if isinstance(is_public, bool):
+        payload["is_public"] = is_public
     # The device the turn came from: HARTOS stamps it on the mirrored turn so
     # that device drops its own turns from the cross-device feed.
     if device_id:

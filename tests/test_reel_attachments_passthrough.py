@@ -387,6 +387,16 @@ def test_the_chat_route_hands_hartos_the_same_fields(client, hartos):
     assert body['request_id'] == PHONE_RID
 
 
+def test_the_chat_route_hands_hartos_the_creators_public_choice(client, hartos):
+    """The create form's "Make this agent public" (owner 2026-11-28), named
+    on a creation turn like the goal tags, reaches HARTOS /chat as sent."""
+    client.post('/chat', json={
+        'text': 'Create an agent named "Maxwell". Explains fields.',
+        'user_id': '10202', 'create_agent': True, 'is_public': False,
+        'media_mode': 'text'})
+    assert hartos.seen[0]['is_public'] is False
+
+
 def test_a_turn_without_reel_fields_sends_hartos_no_new_keys(client, hartos):
     """Every other caller's /chat body is what it was."""
     client.post('/chat/custom_gpt', json=PLAIN_CUSTOM_BOT_TURN)
@@ -395,6 +405,7 @@ def test_a_turn_without_reel_fields_sends_hartos_no_new_keys(client, hartos):
     for body in hartos.seen:
         assert 'attachments' not in body
         assert 'goal_tags' not in body
+        assert 'is_public' not in body
 
 
 # ── attachments: only the contract's shape crosses ───────────────────

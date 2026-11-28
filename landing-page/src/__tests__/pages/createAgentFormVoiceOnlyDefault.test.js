@@ -51,8 +51,19 @@ describe('CreateAgentForm (Nunba)', () => {
     expect(global.fetch).not.toHaveBeenCalled(); // nothing to central, nothing uploaded
     const seed = onSubmit.mock.calls[0][0];
     expect(seed).toMatchObject(
-      {fromCreateForm: true, name: 'Arun', prompt: 'Speech practice', media: 'voice', voice_clone: false});
+      {fromCreateForm: true, name: 'Arun', prompt: 'Speech practice', media: 'voice', voice_clone: false,
+       is_public: false});
     expect(seed).not.toHaveProperty('teacher_avatar_id');
+  });
+
+  it('"Make this agent public" goes with the agent (owner 2026-11-28: "Bring it back now")', async () => {
+    const onSubmit = jest.fn();
+    render(<CreateAgentForm onClose={() => {}} onSubmit={onSubmit} userId="u1" />);
+    fill();
+    fireEvent.click(screen.getByLabelText('Make this agent public'));
+    fireEvent.click(screen.getByText('Create Agent'));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    expect(onSubmit.mock.calls[0][0]).toMatchObject({fromCreateForm: true, is_public: true});
   });
 
   it('a chosen face uploads on Create, with the final name, and the agent is made with it', async () => {

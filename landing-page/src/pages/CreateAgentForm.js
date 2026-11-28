@@ -15,6 +15,7 @@ const CreateAgentForm = ({onClose, onSubmit, userId}) => {
   const [imageFile, setImageFile] = useState(null);
   const [audioFile, setAudioFile] = useState(null);
   const [imagePreview, setImagePreview] = useState('');
+  const [isPublic, setIsPublic] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [requestId, setRequestId] = useState('');
   // Defaults (owner, 2026-11-26): a voice-only agent with a stock voice. A face (a video
@@ -108,6 +109,7 @@ const CreateAgentForm = ({onClose, onSubmit, userId}) => {
         fromCreateForm: true,
         name: agentName,
         prompt: prompt,
+        is_public: isPublic,
         media: teacherAvatarId ? 'video' : 'voice',
         voice_clone: Boolean(voice),
         ...(teacherAvatarId ? {teacher_avatar_id: teacherAvatarId} : {}),
@@ -284,9 +286,21 @@ const CreateAgentForm = ({onClose, onSubmit, userId}) => {
           />
         </div>
 
-        {/* No "Make this agent public" choice: the agent is made on this desktop, and
-            neither its record nor its sync to central carries one yet (review M1 of the
-            local create: shown, it was dropped, so a ticked agent came out private). */}
+        {/* Public or private (owner 2026-11-28, "Bring it back now"): named on each
+            creation turn, kept on the agent's record by HARTOS, and sent with it to
+            central's agent list. */}
+        <div className="mb-6 flex items-center">
+          <input
+            type="checkbox"
+            id="isPublic"
+            checked={isPublic}
+            onChange={(e) => setIsPublic(e.target.checked)}
+            className="w-4 h-4 rounded bg-gray-700 border-gray-600 focus:ring-blue-500 focus:ring-2"
+          />
+          <label htmlFor="isPublic" className="ml-2 text-white">
+            Make this agent public
+          </label>
+        </div>
 
         {/* Submit Button */}
         <button

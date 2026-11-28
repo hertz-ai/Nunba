@@ -2897,6 +2897,9 @@ def _run_chat_turn(data):
     # A19).  The cloud leg never has them.
     attachments = data.get('attachments')
     goal_tags = data.get('goal_tags')
+    # The create form's public/private choice, named on each creation turn
+    # like the hint above; HARTOS keeps it on the agent's record.
+    is_public = data.get('is_public')
     conversation_id = data.get('conversation_id')
     video_req = data.get('video_req', False)
     # The body's id names the turn only when a client may name one (the rule
@@ -3642,6 +3645,7 @@ def _run_chat_turn(data):
                     attachments=attachments,
                     goal_tags=goal_tags,
                     open_mic=open_mic,
+                    is_public=is_public,
                 )
                 # Surface explicit LangChain errors (guardrails, prompt injection, etc.)
                 if result.get('error') and not (result.get('text') or result.get('response')):

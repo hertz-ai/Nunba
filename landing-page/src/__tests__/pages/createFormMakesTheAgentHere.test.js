@@ -70,7 +70,7 @@ function chatPage({signedIn = true, guest = false} = {}) {
 }
 
 const SEED = {fromCreateForm: true, name: 'Maxwell', prompt: 'Explains electromagnetism as a story.',
-              media: 'video', voice_clone: false, teacher_avatar_id: 1000000017};
+              is_public: false, media: 'video', voice_clone: false, teacher_avatar_id: 1000000017};
 
 describe('the create form makes the agent here', () => {
   test('the page mounts the click handler as the form\'s submit', () => {
@@ -81,7 +81,8 @@ describe('the create form makes the agent here', () => {
     const page = chatPage();
     page.run(`${CLICK}\nreturn handleCreateAgentClick;`)(SEED);
     expect(page.open).toMatchObject({name: 'Maxwell', type: 'local', create_agent: true,
-                                     agent_status: 'Creation Mode', teacher_avatar_id: 1000000017});
+                                     agent_status: 'Creation Mode', teacher_avatar_id: 1000000017,
+                                     is_public: false});
     expect(page.input).toBe('Create an agent named "Maxwell". Explains electromagnetism as a story.');
     expect(page.formShown).toBe(false);
     expect(page.urls).toEqual([]); // nothing made on central, no page to go to yet
@@ -177,5 +178,13 @@ describe("a turn names the agent's face", () => {
 
   test('never for an agent with no face', () => {
     expect(fields('video', {create_agent: true})).toEqual({});
+  });
+
+  test("a creation turn names the creator's public/private choice, and only a creation turn", () => {
+    expect(fields('audio', {create_agent: true, is_public: false})).toEqual({is_public: false});
+    expect(fields('video', {create_agent: true, is_public: true, ...face}))
+      .toEqual({...face, is_public: true});
+    expect(fields('video', {is_public: false, ...face})).toEqual(face); // a made agent's turn
+    expect(fields('audio', {create_agent: true, is_public: 'no'})).toEqual({}); // not a choice
   });
 });

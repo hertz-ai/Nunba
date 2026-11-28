@@ -2019,6 +2019,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         // the agent's record (_stamp_agent_face); a face agent opens in video.
         ...(fromForm && seed.teacher_avatar_id
           ? { teacher_avatar_id: seed.teacher_avatar_id } : {}),
+        // Public or private, as the form chose: named on each creation turn too.
+        ...(fromForm && typeof seed.is_public === 'boolean'
+          ? { is_public: seed.is_public } : {}),
       };
 
       if (currentAgent?.prompt_id && messages.length > 0) {
@@ -4709,6 +4712,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               // (HARTOS _stamp_agent_face).  Other audio turns stay as they were.
               ...((mediaMode === 'video' || turnAgent?.create_agent) && turnAgent?.teacher_avatar_id
                 ? { teacher_avatar_id: turnAgent.teacher_avatar_id } : {}),
+              // The creator's public/private choice, on creation turns only (HARTOS keeps
+              // it on the agent's record and sends it with the agent to central).
+              ...(turnAgent?.create_agent && typeof turnAgent?.is_public === 'boolean'
+                ? { is_public: turnAgent.is_public } : {}),
               create_agent: turnAgent?.create_agent || false,
               autonomous_creation: turnAgent?.autonomous_creation || false,
               image_url: userImage || null,
