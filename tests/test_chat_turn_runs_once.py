@@ -184,7 +184,10 @@ def test_an_id_the_node_does_not_take_from_a_client_is_never_joined(app):
 
 
 def test_the_id_runs_again_once_its_turn_has_answered(app):
-    """Only a RUNNING turn is waited on; nothing is kept after it answers."""
+    """Only a RUNNING turn is waited on.  A run that ended with no reply (it
+    raised, as this one does) keeps nothing, so its id runs again; a run that
+    answered is kept for the page's give-up window and its reply answers a
+    late copy (test_a_resent_turn_holds_one_thread)."""
     gate = _Gate()
     gate.release.set()
     outcome = []

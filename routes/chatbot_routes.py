@@ -2716,9 +2716,17 @@ def chat_route():
 
 
 #: The turns running now, by (user_id, request_id), each with the outcome its
-#: run ends with: an arrival whose turn is here waits for it (_chat_turn).
+#: run ends with, the ONE copy of it that waits for that outcome, and whether
+#: a later copy was answered at once (_chat_turn).
 _RUNNING_TURNS = {}
 _RUNNING_TURNS_LOCK = threading.Lock()
+#: Turns that have answered, by (user_id, request_id): their reply, for a copy
+#: the page sends after the run ended, and until when it is kept.
+_FINISHED_TURNS = {}
+#: How long a finished reply answers a late copy of its request: the chat
+#: page's give-up on a silent chat (landing-page socialApi.js
+#: CHAT_DEADLINE_MS, 180 s), after which its retry loop sends the same id.
+_PAGE_GIVE_UP_S = 180.0
 
 
 def _chat_turn(data):
@@ -2739,19 +2747,52 @@ def _chat_turn(data):
     the id before they hand the turn here, and an id minted from the clock
     is the same for two different turns sent within one tick.  A turn with
     another id, with no id, or with an id the node does not take from a
-    client runs as before; nothing is kept once the run has answered.  The
-    turn itself is _run_chat_turn.
+    client runs as before.  The turn itself is _run_chat_turn.
+
+    At most ONE copy of a running turn waits for it; every later copy is
+    answered at once with the hold's kept line, and the run's reply then also
+    goes to the person as the agent's message (core.peer_link.crossbar_
+    publish.publish_agent_message), since by then the page has given up on
+    every earlier copy.  Measured 2026-11-26 12:14-12:17 IST: :5000 stopped
+    answering every route, health included, with 118 CLOSE_WAIT sockets,
+    each a copy waiting here after the page had gone.  And a copy that comes
+    after its run answered (the page's give-up window, _PAGE_GIVE_UP_S) gets
+    that reply at once instead of a second run: 12:12-12:17 msa3sk, v07kbv,
+    v70pq8, zt1897 and gs4kgc were re-sent after their runs ended and ran
+    again, and an open-mic final the agent had judged not for it was judged
+    again and answered.
     """
     request_id = _turn_request_id(data, str(int(time.time())))
     data = {**data, 'request_id': request_id}
     if not (has_request_context() and g.get('turn_id_from_client')):
         return _run_chat_turn(data)
     key = (str(data.get('user_id', 'guest')), request_id)
+    now = time.monotonic()
     with _RUNNING_TURNS_LOCK:
+        for old in [k for k, f in _FINISHED_TURNS.items() if f['until'] <= now]:
+            del _FINISHED_TURNS[old]
+        finished = _FINISHED_TURNS.get(key)
         running = _RUNNING_TURNS.get(key)
-        mine = running is None
+        mine = running is None and finished is None
+        waits = False
         if mine:
-            running = _RUNNING_TURNS[key] = {'done': threading.Event()}
+            running = _RUNNING_TURNS[key] = {'done': threading.Event(), 'waiting': 0,
+                                             'answered_early': False}
+        elif running is not None:
+            waits = running['waiting'] < 1
+            if waits:
+                running['waiting'] += 1
+            else:
+                running['answered_early'] = True
+    if finished is not None:
+        logger.info("[CHAT] turn received again after it answered: user_id=%s "
+                    "request_id=%s; this arrival gets that reply", *key)
+        return _reply_copy(finished['result'])
+    if not mine and not waits:
+        logger.info("[CHAT] turn received again while it runs and a copy already "
+                    "waits: user_id=%s request_id=%s; answered at once, the run's "
+                    "reply goes as the agent's message", *key)
+        return _a_copy_answered_at_once(request_id)
     if not mine:
         logger.info("[CHAT] turn received again while it runs: user_id=%s "
                     "request_id=%s; this arrival waits for that run's reply",
@@ -2773,7 +2814,45 @@ def _chat_turn(data):
     finally:
         with _RUNNING_TURNS_LOCK:
             _RUNNING_TURNS.pop(key, None)
+            if 'result' in running:
+                _FINISHED_TURNS[key] = {'result': running['result'],
+                                        'until': time.monotonic() + _PAGE_GIVE_UP_S}
+            early = running['answered_early']
         running['done'].set()
+        if early and 'result' in running:
+            _publish_the_runs_reply(running['result'], data, request_id)
+
+
+def _a_copy_answered_at_once(request_id):
+    """The answer of a copy of a running turn that does not wait for it (the
+    one copy that may wait already does): the hold's kept line, as the person
+    reads it, so the page shows it and stops sending the turn again."""
+    from core.agent_tools import held_for_another_turn_reply, held_reply_as_the_person_reads_it
+    line = held_reply_as_the_person_reads_it(held_for_another_turn_reply(kept=True))
+    return jsonify({'text': line, 'response': line, 'request_id': request_id,
+                    'agent_type': 'local', 'source': 'langchain_local',
+                    'success': True})
+
+
+def _publish_the_runs_reply(result, data, request_id):
+    """A run's reply, as the agent's message to the person: once a copy of
+    its turn was answered at once, no copy is left that the page waits on.
+    Never raises."""
+    try:
+        response, _status = _reply_and_status(result)
+        body = response.get_json(silent=True) if isinstance(response, Response) else None
+        text = (body or {}).get('text') or (body or {}).get('response')
+        if not isinstance(text, str) or not text.strip():
+            return
+        from core.peer_link.crossbar_publish import publish_agent_message
+        if not publish_agent_message(text=text, user_id=str(data.get('user_id', 'guest')),
+                                     request_id=request_id,
+                                     prompt_id=data.get('prompt_id') or data.get('agent_id')):
+            logger.warning("[CHAT] the reply of request_id %s could not be published",
+                           request_id)
+    except Exception:
+        logger.warning("[CHAT] the reply of request_id %s was not published", request_id,
+                       exc_info=True)
 
 
 def _reply_and_status(result):
