@@ -1331,6 +1331,16 @@ class LlamaConfig:
             self.api_base = existing['base_url'] + '/v1'
             self.config['llm_mode'] = 'local'
             self.config['custom_api_base'] = existing['base_url']
+            # This machine's own LLM, found serving on its main port: the model it
+            # serves is the choice, so a wrong saved choice heals here instead of
+            # loading at the next cold start (review of 6d332d89, P2: the 2B stayed
+            # saved while the 4B served).  Another program's server is not ours to
+            # record, and a model not identified leaves the choice as it was.
+            from urllib.parse import urlsplit
+            if _main_port and urlsplit(existing['base_url']).port == int(_main_port):
+                _served_idx = self._served_preset_index(_main_port)
+                if _served_idx is not None:
+                    self.config['selected_model_index'] = _served_idx
             self._save_config()
             if progress_callback:
                 progress_callback('ready', 1.0)
@@ -1498,16 +1508,33 @@ class LlamaConfig:
         # nothing runs as the next launch's model: live 27 Nov 2026 11:55-
         # 11:56 IST, the 2B was saved, its start timed out ("Server start by
         # another process timed out"), and the 4B kept serving (D20).
+        # The run mode is set for the start to read (start_server takes the GPU or
+        # CPU path from config['use_gpu']) and is kept only when a server serves:
+        # a start that fails puts these back as they were, and saves that, since
+        # the start path saves the config on its own along the way (a port
+        # change, a fallback model, the GPU auto-enable).  Saved before the
+        # start, a failed CPU-mode start left use_gpu=False for the next launch
+        # although nothing ever served on the CPU (review of 6d332d89, P1).
+        _kept_keys = ('first_run', 'llm_mode', 'use_gpu', 'selected_model_index')
+        _before_start = {k: self.config[k] for k in _kept_keys if k in self.config}
         self.config['first_run'] = False
         self.config['llm_mode'] = 'local'
         self.config['use_gpu'] = (diag['run_mode'] == 'gpu')
-        self._save_config()
 
         # ── 7. Start server ────────────────────────────────────────
         if progress_callback:
             progress_callback('starting', 0.85)
 
         started = self.start_server(model_preset=preset)
+        if started:
+            self._save_config()
+        else:
+            for k in _kept_keys:
+                if k in _before_start:
+                    self.config[k] = _before_start[k]
+                else:
+                    self.config.pop(k, None)
+            self._save_config()
 
         # ── 7b. Keep as the choice what the server actually serves ──
         # start_server is also True when it reused a server already on the
@@ -1518,12 +1545,10 @@ class LlamaConfig:
         # was, never set to a preset nothing was seen serving.
         if started:
             _serve_port = self.config.get('server_port')
-            _served = None
+            _served_idx = None
             if _serve_port and self._wait_until_serving(_serve_port,
                                                         timeout=MODEL_LOAD_WAIT_S):
-                _served = self.serving_model_file(_serve_port)
-            _served_idx = next((i for i, p in enumerate(MODEL_PRESETS)
-                                if _served and p.file_name == _served), None)
+                _served_idx = self._served_preset_index(_serve_port)
             if _served_idx is not None:
                 if _served_idx != model_idx:
                     logger.info(f"Auto-setup: :{_serve_port} serves "
@@ -1536,7 +1561,7 @@ class LlamaConfig:
                 self._save_config()
             else:
                 logger.info(f"Auto-setup: the model served on :{_serve_port} was not "
-                            f"identified ({_served or 'no answer'}); the saved model "
+                            f"identified as a known model; the saved model "
                             f"choice is left unchanged")
 
         # ── 8. Register VRAM allocation (so TTS/vision see the LLM's reservation) ──
@@ -3707,6 +3732,17 @@ class LlamaConfig:
         except Exception as exc:
             logger.debug("serving_model_file: no answer on %s (%r)", port, exc)
             return None
+
+    def _served_preset_index(self, port) -> int | None:
+        """The MODEL_PRESETS index of the model the server on ``port`` serves,
+        or None when it does not answer or serves no known preset.  The one
+        "served model -> choice" reading auto_setup uses, after a start and
+        when it finds this machine's own server already serving."""
+        served = self.serving_model_file(port)
+        if not served:
+            return None
+        return next((i for i, p in enumerate(MODEL_PRESETS)
+                     if p.file_name == served), None)
 
     def get_current_model_name(self) -> str:
         """Get the display name of the currently selected model."""

@@ -76,7 +76,7 @@ def cfg(tmp_path, monkeypatch):
 
 
 def _run(c, *, main_answers, start_returns, served_index=None, scan_after_wait=None,
-         model_index=DOWNGRADE):
+         model_index=DOWNGRADE, on_start=None):
     """Run auto_setup.  ``main_answers`` is the sequence the main port gives
     check_server_type (the last repeats); ``served_index`` is the preset
     /v1/models names (None: no answer)."""
@@ -106,7 +106,8 @@ def _run(c, *, main_answers, start_returns, served_index=None, scan_after_wait=N
          patch.object(lc, 'scan_openai_compatible_ports', return_value=None), \
          patch.object(c, 'diagnose', return_value=c.diag) as diagnose, \
          patch.object(c, '_get_vram_manager', return_value=c.ledger), \
-         patch.object(c, 'start_server', return_value=start_returns) as start, \
+         patch.object(c, 'start_server', return_value=start_returns,
+                      side_effect=on_start) as start, \
          patch.object(c, '_save_config', side_effect=save):
         result = c.auto_setup(model_index=model_index)
     return result, asked_ports, saves, diagnose, start
@@ -194,3 +195,80 @@ def test_only_the_main_port_is_waited_on(cfg):
                              start_returns=False)
     assert asked and set(asked) == {MAIN_PORT}
     assert CAPTION_PORT not in asked
+
+
+# Review of 6d332d89 by running (avatar-lowvram, 27 Nov 2026 21:36 IST), two
+# Mediums against the design the commit accepted; their probes, pinned.
+
+def test_a_failed_start_saves_no_run_mode_either(cfg):
+    """P1: a diagnosis that puts the model on the CPU, then a start that fails.
+    Before: step 6 had saved use_gpu=False ahead of the start, so the next
+    launch ran the owner's GPU model on the CPU though nothing ever served
+    there.  The run mode is set for the start to read and put back after."""
+    cfg.config['use_gpu'] = True
+    cfg.diag['compute_budget_mb'] = 100  # the chosen model does not fit: CPU mode
+    _, _, saves, _, start = _run(
+        cfg, main_answers=[(ServerType.NOT_RUNNING, None)], start_returns=False)
+    start.assert_called_once()
+    assert cfg.config['use_gpu'] is True
+    assert all(s.get('use_gpu') is not False for s in saves), (
+        'a start that failed saved use_gpu=False: the next launch runs on the CPU')
+    assert all(s.get('selected_model_index') == SAVED for s in saves)
+
+
+def test_a_start_reads_the_run_mode_and_a_served_start_keeps_it(cfg):
+    """start_server takes the GPU or CPU path from config['use_gpu'], so the
+    mode is in the config when the start runs, and saved once it serves."""
+    cfg.config['use_gpu'] = True
+    cfg.diag['compute_budget_mb'] = 100
+    seen = {}
+
+    def start(model_preset=None):
+        seen['use_gpu'] = cfg.config.get('use_gpu')
+        return True
+
+    serving = (ServerType.NUNBA_MANAGED, {'status': 'ok'})
+    _, _, saves, _, _ = _run(
+        cfg, main_answers=[(ServerType.NOT_RUNNING, None), serving], start_returns=True,
+        served_index=DOWNGRADE, on_start=start)
+    assert seen['use_gpu'] is False
+    assert cfg.config['use_gpu'] is False
+    assert saves and saves[-1].get('use_gpu') is False
+
+
+def test_reusing_this_machines_server_keeps_its_model_as_the_choice(cfg):
+    """P2: the saved choice is the 2B (the state ~/.nunba/llama_config.json was
+    left in at 11:55), the main port serves the 4B, setup reuses it.  Before:
+    the early return never recorded the served model, so the next cold start
+    loaded the 2B."""
+    cfg.config['selected_model_index'] = DOWNGRADE
+    serving = (ServerType.EXTERNAL_LLAMA, {'status': 'ok'})
+    existing = {'name': 'llama.cpp', 'base_url': f'http://127.0.0.1:{MAIN_PORT}'}
+    result, _, saves, _, _ = _run(cfg, main_answers=[serving], start_returns=True,
+                                  served_index=SAVED, scan_after_wait=existing,
+                                  model_index=None)
+    assert result['diagnosis']['action'] == 'reuse_existing'
+    assert cfg.config['selected_model_index'] == SAVED
+    assert saves[-1]['selected_model_index'] == SAVED
+
+
+def test_reusing_another_programs_server_records_no_choice(cfg):
+    """A server found on another port (LM Studio, Ollama) is not this machine's
+    model: the saved choice stays as it was."""
+    cfg.config['selected_model_index'] = DOWNGRADE
+    serving = (ServerType.EXTERNAL_LLAMA, {'status': 'ok'})
+    existing = {'name': 'LM Studio', 'base_url': 'http://127.0.0.1:1234'}
+    result, _, _, _, _ = _run(cfg, main_answers=[serving], start_returns=True,
+                              served_index=SAVED, scan_after_wait=existing,
+                              model_index=None)
+    assert result['diagnosis']['action'] == 'reuse_existing'
+    assert cfg.config['selected_model_index'] == DOWNGRADE
+
+
+def test_reusing_this_machines_server_with_an_unknown_model_keeps_the_choice(cfg):
+    cfg.config['selected_model_index'] = DOWNGRADE
+    serving = (ServerType.EXTERNAL_LLAMA, {'status': 'ok'})
+    existing = {'name': 'llama.cpp', 'base_url': f'http://127.0.0.1:{MAIN_PORT}'}
+    _run(cfg, main_answers=[serving], start_returns=True, served_index=None,
+         scan_after_wait=existing, model_index=None)
+    assert cfg.config['selected_model_index'] == DOWNGRADE
