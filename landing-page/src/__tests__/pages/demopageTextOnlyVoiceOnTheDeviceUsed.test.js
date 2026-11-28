@@ -34,13 +34,18 @@ const BRANCH = (() => {
 const guards = require('../../utils/ttsGuards');
 const {rememberOwnTurn} = require('../../utils/chatRetry');
 const {repeatsShownMessage} = require('../../constants/chatBubble');
+const clipPlayer = require('../../services/ttsClipPlayer');
 
 const TABLET_TURN = '0507de59-6788-4b36-8a07-7a1ffed3c5f3';
 
-function page({currentTurn = null, ttsEnabled = true} = {}) {
+function page({currentTurn = null, ttsEnabled = true, element = audioElement()} = {}) {
   const spoken = [];
   const shown = [];
+  const timers = [];
   const scope = {
+    claimForPage: clipPlayer.claimForPage,
+    queueForTurn: clipPlayer.queueForTurn,
+    getTtsAudioElement: () => element,
     speaksPushedText: guards.speaksPushedText,
     repeatsShownMessage, // the branch shows a message once (demopageReplyShowsOnce)
     ttsEnabled,
@@ -53,7 +58,8 @@ function page({currentTurn = null, ttsEnabled = true} = {}) {
     setWaitingText: () => {},
     setLoading: () => {},
     setIsRequestInFlight: () => {},
-    setTimeout: () => 0,
+    // The page's audio race: callbacks run when the test says the race ended.
+    setTimeout: (fn) => { timers.push(fn); return timers.length; },
     clearTimeout: () => {},
   };
   const names = Object.keys(scope);
@@ -62,15 +68,27 @@ function page({currentTurn = null, ttsEnabled = true} = {}) {
   return {
     spoken,
     shown,
-    receive(requestId, text) {
-      run(...names.map((n) => scope[n]), {request_id: requestId, text: [text]}, text, true, false);
+    receive(requestId, text, extra = {}) {
+      run(...names.map((n) => scope[n]), {request_id: requestId, text: [text], ...extra}, text, true, false);
+    },
+    raceEnds() {
+      timers.splice(0).forEach((fn) => fn());
     },
   };
 }
 
 beforeEach(() => {
   try { window.localStorage.clear(); } catch (_) { /* no storage */ }
+  clipPlayer._resetTtsClipPlayer();
 });
+
+function audioElement() {
+  return {
+    src: '', paused: true, ended: false, onended: null, onerror: null, played: [],
+    play() { this.paused = false; this.ended = false; this.played.push(this.src); return Promise.resolve(); },
+    finish() { this.paused = true; this.ended = true; if (this.onended) this.onended(); },
+  };
+}
 
 describe("a text-only agent message is spoken only where its turn started", () => {
   test("the tablet turn's mid-turn sends are shown on the desktop but not spoken there", () => {
@@ -141,5 +159,104 @@ describe('one rule for both kinds of voice', () => {
       {generated_audio_url: '/tts/audio/x.wav', request_id: 'daemon_goal_7'}, 'desk-turn-4', true);
     expect(clip).toBe(false);
     expect(guards.speaksPushedText('daemon_goal_7', 'desk-turn-4')).toBe(true);
+  });
+});
+
+// Owner, 2026-11-24: "a text reaching the tablet shd also get the audio
+// delivered as and when it was fanned out isnt?"; 2026-11-27, after a demo
+// turn whose questions were shown and never heard: "only final reply is ever
+// spoke wtf we have send user to message as a tool, why are they not spoken".
+// HARTOS now speaks each send as it is sent, its own clip under the send's id,
+// and marks the message `voiced`.  The page leaves such a message to that clip
+// (played by shouldPlayPushedClip, the same device rule), so it is heard once.
+describe('a message HARTOS speaks itself is left to its clip', () => {
+  test('a voiced send of a turn this page started is shown, not spoken by the page', () => {
+    rememberOwnTurn('desk-turn-6');
+    const desktop = page({currentTurn: 'desk-turn-6'});
+    desktop.receive('desk-turn-6-intermediate-1', 'What is her name?', {voiced: true});
+    expect(desktop.spoken).toEqual([]);
+    expect(desktop.shown).toEqual(['What is her name?']);
+    const clip = guards.shouldPlayPushedClip(
+      {generated_audio_url: '/tts/audio/q.wav', request_id: 'desk-turn-6-intermediate-1'},
+      'desk-turn-6', true);
+    expect(clip).toBe(true);
+  });
+
+  test('a send without the mark is spoken by the page as before', () => {
+    rememberOwnTurn('desk-turn-7');
+    const desktop = page({currentTurn: 'desk-turn-7'});
+    desktop.receive('desk-turn-7-intermediate-1', 'What is her name?', {voiced: false});
+    desktop.receive('desk-turn-7-intermediate-2', 'And her age?');
+    expect(desktop.spoken).toEqual(['What is her name?', 'And her age?']);
+  });
+});
+
+// rv_voice gap (c): HARTOS marked the message voiced, then its clip never came
+// (the synthesis failed on the TTS worker), and nobody heard it.  The page
+// waits the same audio race; no clip by then, it says the message itself, and
+// a clip that comes later is not played, so it is heard once either way.
+describe('a voiced message whose clip never comes is said by the page', () => {
+  test('no clip by the end of the race: the page says it, once', () => {
+    rememberOwnTurn('desk-turn-8');
+    const desktop = page({currentTurn: 'desk-turn-8'});
+    desktop.receive('desk-turn-8-intermediate-1', 'What is her name?', {voiced: true});
+    expect(desktop.spoken).toEqual([]);
+    desktop.raceEnds();
+    expect(desktop.spoken).toEqual(['What is her name?']);
+    expect(clipPlayer.playTtsClip(audioElement(), '/tts/audio/q.wav',
+      {requestId: 'desk-turn-8-intermediate-1'})).toBe('spoken-by-page');
+  });
+
+  test('its clip came: the page leaves it to the clip', () => {
+    rememberOwnTurn('desk-turn-9');
+    const desktop = page({currentTurn: 'desk-turn-9'});
+    desktop.receive('desk-turn-9-intermediate-1', 'What is her name?', {voiced: true});
+    expect(clipPlayer.playTtsClip(audioElement(), '/tts/audio/q.wav',
+      {requestId: 'desk-turn-9-intermediate-1'})).toBe('played');
+    desktop.raceEnds();
+    expect(desktop.spoken).toEqual([]);
+  });
+
+  test("another device's voiced message is still not said here", () => {
+    rememberOwnTurn('desk-turn-10');
+    const desktop = page({currentTurn: 'desk-turn-10'});
+    desktop.receive(`${TABLET_TURN}-intermediate-1`, 'What is her name?', {voiced: true});
+    desktop.raceEnds();
+    expect(desktop.spoken).toEqual([]);
+  });
+});
+
+// rv_voice R3-2: two sends back to back.  The race starts when the text comes,
+// but send 2's clip waits behind send 1's synthesis, so past the race the page
+// claimed send 2 while send 1's clip played and its own speech set the shared
+// element's src: send 1 was cut mid-sentence.  The page's saying now waits its
+// place in the turn.
+describe("the page's own saying never cuts a clip of its turn", () => {
+  test("send 2's race ends while send 1 is heard: it waits, its clip comes, the page says nothing", () => {
+    rememberOwnTurn('desk-turn-11');
+    const el = audioElement();
+    const desktop = page({currentTurn: 'desk-turn-11', element: el});
+    clipPlayer.playTtsClip(el, '/tts/audio/a1.wav', {requestId: 'desk-turn-11-intermediate-1'});
+    desktop.receive('desk-turn-11-intermediate-2', 'And her age?', {voiced: true});
+    desktop.raceEnds();
+    expect(desktop.spoken).toEqual([]);
+    expect(clipPlayer.playTtsClip(el, '/tts/audio/a2.wav',
+      {requestId: 'desk-turn-11-intermediate-2'})).toBe('queued');
+    el.finish();
+    expect(desktop.spoken).toEqual([]);
+    expect(el.played).toEqual(['/tts/audio/a1.wav', '/tts/audio/a2.wav']);
+  });
+
+  test("send 2's clip never comes: the page says it after send 1 ends, not over it", () => {
+    rememberOwnTurn('desk-turn-12');
+    const el = audioElement();
+    const desktop = page({currentTurn: 'desk-turn-12', element: el});
+    clipPlayer.playTtsClip(el, '/tts/audio/b1.wav', {requestId: 'desk-turn-12-intermediate-1'});
+    desktop.receive('desk-turn-12-intermediate-2', 'And her age?', {voiced: true});
+    desktop.raceEnds();
+    expect(desktop.spoken).toEqual([]);
+    el.finish();
+    expect(desktop.spoken).toEqual(['And her age?']);
+    expect(el.played).toEqual(['/tts/audio/b1.wav']);
   });
 });

@@ -91,10 +91,71 @@ export function makeMsgId() {
  * from the previous one, whatever the ref already holds.
  */
 export function startTurn(currentTurnRef) {
+  const id = mintTurn();
+  takeTurn(currentTurnRef, id);
+  return id;
+}
+
+// An open-mic final is minted as a turn of this page but takes the current
+// turn only once HARTOS treats it as one (its first trace or clip, or a reply
+// that is not not_addressed): promoteHeardTurn.  Until then the turn the
+// person is in stays current, so its reply keeps playing and is not skipped
+// as "another turn's clip".  Live 2026-11-27/28: 515 clips reached the page,
+// 27 played, 276 were skipped that way (audit K6; review rv_gaps B).  Every
+// minted id carries a sequence number, and a final is promoted only when it
+// was minted after the turn that is current then, so a late answer to an
+// older kept final never takes the turn from a newer typed send (B3).
+let turnSeq = 0;
+const TURN_SEQ_KEPT = 200;
+const turnSeqOf = new Map();
+const heardTurns = new Set();
+
+function mintTurn() {
   const id = makeMsgId();
+  turnSeq += 1;
+  turnSeqOf.set(id, turnSeq);
+  while (turnSeqOf.size > TURN_SEQ_KEPT) turnSeqOf.delete(turnSeqOf.keys().next().value);
+  return id;
+}
+
+function takeTurn(currentTurnRef, id) {
   currentTurnRef.current = id;
   rememberOwnTurn(id);
+  const now = turnSeqOf.get(id) || 0;
+  // A final minted before the turn just taken can never be promoted.
+  heardTurns.forEach((heard) => {
+    if ((turnSeqOf.get(heard) || 0) <= now) heardTurns.delete(heard);
+  });
+}
+
+/**
+ * Mint the id of an open-mic final without taking the current turn.  It is
+ * this window's turn (rememberOwnTurn last: false), not the desktop's last
+ * one, so the floating companion's quick prompt keeps its voice (B6).
+ */
+export function mintHeardTurn() {
+  const id = mintTurn();
+  heardTurns.add(id);
+  rememberOwnTurn(id, { last: false });
   return id;
+}
+
+/**
+ * Make an open-mic final the current turn, once HARTOS treats it as one.
+ * True when it took the turn; false for an id that is no pending final, or
+ * one minted before the current turn (the current turn never moves back).
+ */
+export function promoteHeardTurn(currentTurnRef, turnId) {
+  const id = turnId ? String(turnId) : '';
+  if (!heardTurns.has(id)) return false;
+  const current = currentTurnRef.current ? turnSeqOf.get(String(currentTurnRef.current)) || 0 : 0;
+  if ((turnSeqOf.get(id) || 0) <= current) {
+    heardTurns.delete(id);
+    return false;
+  }
+  heardTurns.delete(id);
+  takeTurn(currentTurnRef, id);
+  return true;
 }
 
 // The turns this desktop started, so a turn's voice plays only on the device

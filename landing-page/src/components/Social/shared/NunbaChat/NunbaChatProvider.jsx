@@ -981,6 +981,7 @@ export default function NunbaChatProvider({children}) {
 
       const el = getTtsAudioElement();
       const outcome = playTtsClip(el, data.generated_audio_url, {
+        requestId: data.request_id, // one turn's clips play in order
         onError: (err) => {
           console.error('[TTS] Play FAILED (autoplay blocked or network):',
                         err && err.message);

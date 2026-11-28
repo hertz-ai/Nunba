@@ -72,7 +72,10 @@ import {useTTS} from '../hooks/useTTS';
 import {setCameraConsent, useConsentedCameraStream} from '../hooks/useCameraConsent';
 import {sttConfigMessage, startContinuousRecognition, addressedToNunba, micTurnText, OPEN_MIC_CUE, MIC_STOPPED_CUE, openSttLink, agentVoiceTailMs, hearsAgentVoice} from '../hooks/useSpeechRecognition';
 import {getTtsAudioElement} from '../services/ttsAudioElement';
-import {playTtsClip} from '../services/ttsClipPlayer';
+import {
+  playTtsClip, claimForPage, queueForTurn, faceCameFor, faceStarted, faceEnded,
+  turnFaceIsPlaying,
+} from '../services/ttsClipPlayer';
 
 // ── Local engine readiness — gates messageQueue while local LLM is booting.
 //    Returns true in steady-state and on health-endpoint failure (optimistic),
@@ -2149,9 +2152,12 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       }
       return;
     }
-    stopLiveAvatar(); // a reply heard as audio takes over from a live avatar reply
+    // A clip of another turn takes over from a live face; a clip of the turn
+    // whose face is speaking waits for it (ttsClipPlayer queues it).
+    if (!turnFaceIsPlaying(data.request_id)) stopLiveAvatar();
     const el = getTtsAudioElement();
     const outcome = playTtsClip(el, data.generated_audio_url, {
+      requestId: data.request_id, // one turn's clips play in order
       onStart: () => {
         // Wire to audioRef so VoiceVisualizer can animate
         audioRef.current = el;
@@ -2183,40 +2189,61 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   const lastAvatarClipRef = useRef(null);
   const idleVideoUrlRef = useRef(null);
   useEffect(() => { idleVideoUrlRef.current = idleVideoUrl; }, [idleVideoUrl]);
+  // One spoken message's face: starts the live stream in the agent's <video>, or,
+  // when no stream can start, plays the message's audio in its place.
+  const startFace = useCallback((data, stream) => {
+    const id = data.request_id;
+    const live = startLiveAvatar({streamUrl: stream, seconds: data.video_seconds});
+    if (!live) {
+      playPushedTts(data);
+      return;
+    }
+    faceStarted(id); // the turn is speaking until this face is over
+    live.requestId = id;
+    getTtsAudioElement().pause(); // another turn's clip yields to this face
+    live.fallback = () => {
+      faceEnded(id, {stopped: true});
+      playPushedTts(data); // its own audio takes its place in the turn
+    };
+    live.onEarlyStop = () => { // stopped before the element took it
+      if (liveAvatarRef.current === live) liveAvatarRef.current = null;
+      faceEnded(id, {stopped: true});
+      setIsPlayingResponse(false);
+      setVideoUrl(idleVideoUrlRef.current || null);
+    };
+    liveAvatarRef.current = live;
+    setIsPlayingResponse(true);
+    setVideoUrl(live.url);
+    // The element must take the stream soon; if it never does, the message is heard.
+    setTimeout(() => {
+      if (!live.attached && live.active && liveAvatarRef.current === live) {
+        live.stop();
+        liveAvatarRef.current = null;
+        setVideoUrl(idleVideoUrlRef.current || null);
+        live.fallback();
+      }
+    }, 2500);
+  }, [playPushedTts]);
   const playReply = useCallback((data) => {
     const stream = data && data.generated_video_url;
     // Only where the agent's <video> is on the page (video mode); anywhere else the
-    // reply is heard, as before.
+    // message is heard, as before.  Every spoken message of a video turn carries its
+    // own face (HARTOS _speak_send, rv_voice R3-1).  One turn's faces and clips play
+    // in order: a face whose turn is still saying an earlier message starts when that
+    // ends (ttsClipPlayer.queueForTurn), never over it (rv_voice F7).
     if (stream && mediaModeRef.current === 'video'
         && shouldPlayPushedClip(data, requestIdRef.current, ttsEnabledRef.current)) {
       if (lastAvatarClipRef.current === stream) return;
       lastAvatarClipRef.current = stream;
-      const live = startLiveAvatar({streamUrl: stream, seconds: data.video_seconds});
-      if (live) {
-        getTtsAudioElement().pause(); // an earlier reply's clip yields to this one
-        live.fallback = () => playPushedTts(data);
-        live.onEarlyStop = () => { // stopped before the element took it
-          if (liveAvatarRef.current === live) liveAvatarRef.current = null;
-          setIsPlayingResponse(false);
-          setVideoUrl(idleVideoUrlRef.current || null);
-        };
-        liveAvatarRef.current = live;
-        setIsPlayingResponse(true);
-        setVideoUrl(live.url);
-        // The element must take the stream soon; if it never does, the reply is heard.
-        setTimeout(() => {
-          if (!live.attached && live.active && liveAvatarRef.current === live) {
-            live.stop();
-            liveAvatarRef.current = null;
-            setVideoUrl(idleVideoUrlRef.current || null);
-            live.fallback();
-          }
-        }, 2500);
+      if (!faceCameFor(data.request_id)) { // the page already said this message
+        console.log('[TTS] Face after the page said it, not played:', data.request_id);
         return;
       }
+      queueForTurn(getTtsAudioElement(), data.request_id, () => startFace(data, stream));
+      return;
     }
     playPushedTts(data);
-  }, [playPushedTts]);
+  }, [playPushedTts, startFace]);
   useEffect(() => {
     const live = liveAvatarRef.current;
     if (live && !live.attached && videoUrl === live.url && videoRef.current) {
@@ -2229,9 +2256,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           done();
           // Ended early (no 'ended' event): handleMediaEnded will not bring the idle face back.
           if (!natural) setVideoUrl(idleVideoUrlRef.current || null);
+          faceEnded(live.requestId); // the turn's next message, if one is waiting
         },
         onFail: () => {
-          // Nothing of it could play: back to the idle face, and the reply is heard.
+          // Nothing of it could play: back to the idle face, and the message is heard.
           done();
           setVideoUrl(idleVideoUrlRef.current || null);
           live.fallback();
@@ -2241,6 +2269,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           // and the face goes back to idle instead of freezing mid-word.
           done();
           setVideoUrl(idleVideoUrlRef.current || null);
+          faceEnded(live.requestId, {stopped: true});
         },
       });
     }
@@ -2703,7 +2732,13 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         // Speak + typewriter: whichever comes first — audio arrival or 5s timeout.
         // Only the device that started a person's turn speaks it; the words
         // show everywhere.  A background agent's message is spoken as before
-        // (ttsGuards.speaksPushedText).
+        // (ttsGuards.speaksPushedText).  A message HARTOS speaks itself
+        // (`voiced`: its own clip follows under its request id, owner
+        // 2026-11-24 "audio delivered as and when it was fanned out") is
+        // left to that clip, so it is heard once; when no clip has come for
+        // it by the end of the same race, the page says it itself and a clip
+        // that comes later is not played (services/ttsClipPlayer
+        // .claimForPage; rv_voice gap c: a failed clip was silent).
         if (ttsEnabled && tts.isAvailable && extractedText
             && speaksPushedText(parsed.request_id, requestIdRef.current)) {
           const wordCount = extractedText.split(/\s+/).length;
@@ -2716,10 +2751,23 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
           };
           // Race: audio arrival vs 5s timeout
           const timeout = setTimeout(startTypewriter, 5000);
-          tts.speak(extractedText).then(() => {
+          const speakHere = () => tts.speak(extractedText).then(() => {
             clearTimeout(timeout);
             startTypewriter();
           });
+          if (!parsed.voiced) {
+            speakHere();
+          } else {
+            // After the race the page's own saying takes its place in the turn: while
+            // an earlier message of the turn is still being said it waits, so it never
+            // cuts that clip, and by then this message's own clip has usually come
+            // (rv_voice R3-2: a clip queued behind a slow synthesis lost the race).
+            const voicedId = parsed.request_id;
+            setTimeout(() => {
+              queueForTurn(getTtsAudioElement(), voicedId,
+                () => (claimForPage(voicedId) ? speakHere() : undefined));
+            }, 5000);
+          }
         }
 
         setWaitingText(null);

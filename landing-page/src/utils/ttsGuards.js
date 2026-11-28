@@ -133,7 +133,7 @@ export function speaksPushedText(requestId, currentRequestId,
 const NO_ID_WORDS = new Set(['none', 'null', 'undefined']);
 
 /** The person's turn a clip names (its request id cut at the send mark), or '' for none. */
-function clipTurnOf(requestId) {
+export function clipTurnOf(requestId) {
   const turn = turnIdOf(typeof requestId === 'string' ? requestId.trim() : requestId).trim();
   return !turn || NO_ID_WORDS.has(turn.toLowerCase()) ? '' : turn;
 }
