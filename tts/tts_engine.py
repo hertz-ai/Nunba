@@ -3539,9 +3539,11 @@ class TTSEngine:
                     pass
             # A sung part nothing could sing is spoken in its place, never
             # dropped (owner 28 Nov 2026).  A <music> part has no words.
+            # A sung part marked with its language is spoken in that one.
             if not made and seg_type in ('sing', 'lyrics'):
                 wav_parts.extend(self._speak_unsung_words(
-                    text, spoken_lang, warm_up=warm_up, **kwargs))
+                    text, seg.get('lang') or spoken_lang,
+                    warm_up=warm_up, **kwargs))
 
         if not wav_parts:
             return None
@@ -3975,7 +3977,7 @@ class TTSEngine:
         # and media tags (<music>, <sing>, <lyrics>), synth each segment
         # with the right engine, concatenate into one audio file.
         try:
-            from tts.language_segmenter import segment
+            from tts.language_segmenter import has_language_mark, segment
             # The requested language is kept for every part written in its
             # script; the script guess (latin->en, cjk->zh, arabic->ur)
             # only names parts in another script.
@@ -3999,8 +4001,12 @@ class TTSEngine:
                 and speech_segs[0].get('lang')
                 and speech_segs[0].get('lang') != (language or self._language or 'en')
             )
+            # A reply that holds a language mark (<es>...</es>) is always
+            # spoken from its segments: their text has no mark, while the
+            # single-language path below would say the text as written,
+            # marks and all (a Spanish reply marked 'es' and asked in 'es').
             if (has_media or has_multi_lang or len(segments) > 1
-                    or detected_lang_mismatch):
+                    or detected_lang_mismatch or has_language_mark(text)):
                 return self._synthesize_multilingual(
                     segments, output_path, voice, speed, warm_up=warm_up,
                     language=language or self._language, **kwargs)

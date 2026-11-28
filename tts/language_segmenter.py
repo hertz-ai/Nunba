@@ -126,6 +126,26 @@ _SING_RE = re.compile(
 _LYRICS_RE = re.compile(
     r'<lyrics\b[^>]*>(.*?)</lyrics>', re.DOTALL | re.IGNORECASE)
 
+# ── Language marks ────────────────────────────────────────────────
+# The model marks a part written in another language the way it marks a
+# sung part (speech design Part A, review 1 MUST 2, 28 Nov 2026). One
+# grammar, read the same by HARTOS tts_text_normalizer (which takes the
+# marks out of every text a person reads) and pinned in both repos by
+# tests/fixtures/speech_tags_cases.json:
+#   <es>Hola</es>            the tag name is a language code, no attributes
+#   <pt-BR>Olá</pt-BR>       a region may follow the code
+#   <lang es>Hola</lang>     also <lang=es>, <lang="es">, <lang='es'>
+# A bare tag counts only when its code is a language in LANG_SCRIPTS,
+# written in small letters with nothing else inside the brackets, so <b>,
+# <i>, <p>, <a>, <br>, <em> or <BR> are never taken for a language.
+_LANG_REGION = r'(?:-[A-Za-z]{2,4})?'
+_LANG_MARK_RE = re.compile(
+    r'<(?P<close>/?)(?P<bare>(?:' + '|'.join(sorted(LANG_SCRIPTS)) + r')'
+    + _LANG_REGION + r')>'
+    r'|<(?i:lang)(?:\s*=\s*|\s+)["\']?(?P<named>[A-Za-z]{2,3}' + _LANG_REGION
+    + r')["\']?\s*>'
+    r'|(?P<end></(?i:lang)\s*>)')
+
 _ATTR_RE = re.compile(r"""(\w+)\s*=\s*['"]([^'"]*?)['"]""")
 
 MAX_MEDIA_DURATION_S = 120  # Cap to prevent abuse via tag injection
@@ -311,6 +331,74 @@ def _extract_media_tags(text: str) -> list:
     return parts
 
 
+def has_language_mark(text: str) -> bool:
+    """True when ``text`` holds a language mark, open or close: such text is
+    spoken from its segments, never as written."""
+    return bool(text) and _LANG_MARK_RE.search(text) is not None
+
+
+def _read_language_marks(text: str, open_marks: list) -> list:
+    """Cut ``text`` at its language marks: [(words, language or None), ...]
+    in order, no mark left in any words.
+
+    ``open_marks`` is the marks still open, carried across the parts of one
+    message. An open mark runs to its close or to the end of the message;
+    '</lang>' closes the nearest open mark, '</es>' the nearest open 'es'
+    and whatever opened inside it; a close with no open is dropped. A
+    <lang xx> whose code is not in LANG_SCRIPTS marks nothing: its words are
+    read as unmarked text."""
+    runs = []
+    last = 0
+    for mark in _LANG_MARK_RE.finditer(text):
+        if mark.start() > last:
+            runs.append((text[last:mark.start()],
+                         open_marks[-1] if open_marks else None))
+        last = mark.end()
+        code = mark.group('bare') or mark.group('named')
+        if code and not mark.group('close'):
+            base, _, region = code.partition('-')
+            base = base.lower()
+            open_marks.append(base + ('-' + region if region else '')
+                              if base in LANG_SCRIPTS else None)
+        elif mark.group('end'):
+            if open_marks:
+                open_marks.pop()
+        else:
+            base = code.partition('-')[0]
+            for at in range(len(open_marks) - 1, -1, -1):
+                if (open_marks[at] or '').partition('-')[0] == base:
+                    del open_marks[at:]
+                    break
+    if last < len(text):
+        runs.append((text[last:], open_marks[-1] if open_marks else None))
+    return runs
+
+
+def _add_speech(result: list, words: str, mark, language) -> None:
+    """Add one run of a marked message to ``result``. Marked words are one
+    speech segment in the marked language, whatever alphabet they are
+    written in; unmarked words are split as any text is. A run next to a
+    speech segment in the same language joins it."""
+    if not words.strip():
+        return
+    if not any(ch.isalnum() for ch in words):
+        # Only punctuation between two marks: it stays with the words
+        # before it, never a segment with nothing to say.
+        if result and result[-1].get('type') == 'speech':
+            result[-1]['text'] += words.strip()
+        return
+    if mark:
+        segs = [{'type': 'speech', 'lang': mark, 'text': words.strip()}]
+    else:
+        segs = _segment_speech(words, language)
+    for seg in segs:
+        if (result and result[-1].get('type') == 'speech'
+                and result[-1]['lang'] == seg['lang']):
+            result[-1]['text'] += ' ' + seg['text']
+        else:
+            result.append(seg)
+
+
 def segment(text: str, language=None) -> list:
     """Split text into typed segments for TTS/music/singing routing.
 
@@ -318,6 +406,11 @@ def segment(text: str, language=None) -> list:
     speech run written in that language's script keeps it; without it,
     or for a run in another script, the language is guessed from the
     script.
+
+    A part inside a language mark (<es>...</es>, <lang es>...</lang>) is
+    spoken in that language whatever alphabet it is written in, and the
+    mark is in no segment's text. A sung part inside a mark, or holding
+    one around all its words, carries that language as 'lang'.
 
     Returns list of segment dicts. Each has 'type' key:
       speech: {'type': 'speech', 'lang': str, 'text': str}
@@ -329,14 +422,28 @@ def segment(text: str, language=None) -> list:
         return []
 
     parts = _extract_media_tags(text)
+    marked = has_language_mark(text)
+    open_marks = []
 
     result = []
     for kind, data in parts:
-        if kind == 'text':
-            # Plain text → split by language into speech segments
-            result.extend(_segment_speech(data, language))
+        if not marked:
+            if kind == 'text':
+                # Plain text → split by language into speech segments
+                result.extend(_segment_speech(data, language))
+            else:
+                # Media tag: already a complete segment dict
+                result.append(data)
+        elif kind == 'text':
+            for words, mark in _read_language_marks(data, open_marks):
+                _add_speech(result, words, mark, language)
         else:
-            # Media tag — already a complete segment dict
+            runs = _read_language_marks(data['text'], open_marks)
+            data['text'] = ' '.join(w.strip() for w, _ in runs if w.strip())
+            marks = {mark for words, mark in runs
+                     if any(ch.isalnum() for ch in words)}
+            if kind != 'music' and len(marks) == 1 and None not in marks:
+                data['lang'] = marks.pop()
             result.append(data)
 
     return result
