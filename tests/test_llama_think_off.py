@@ -27,6 +27,7 @@ import pytest
 
 from llama.llama_config import (
     _LLAMA_THINK_OFF_ENV,
+    _LLAMA_THINK_OFF_ENVS,
     _LLAMA_THINK_OFF_VALUE,
     llama_child_env,
 )
@@ -34,9 +35,38 @@ from llama.llama_config import (
 _CONFIG_PATH = Path(__file__).resolve().parents[1] / 'llama' / 'llama_config.py'
 
 
+def _without_think_off(env):
+    return {k: v for k, v in env.items() if k not in _LLAMA_THINK_OFF_ENVS}
+
+
 def test_env_sets_thinking_off():
     env = llama_child_env()
     assert env[_LLAMA_THINK_OFF_ENV] == _LLAMA_THINK_OFF_VALUE
+
+
+def test_env_sets_thinking_off_under_every_build_spelling():
+    """llama.cpp renamed the env var: build 9174 (the one Nunba's installer
+    shipped, measured 2026-11-28) reads LLAMA_CHAT_TEMPLATE_KWARGS and ignores
+    LLAMA_ARG_CHAT_TEMPLATE_KWARGS, so every reply was all thinking with an
+    empty content; build 10330 reads the LLAMA_ARG_ spelling.  Each build
+    ignores the name it does not know, so both are set."""
+    assert set(_LLAMA_THINK_OFF_ENVS) == {
+        'LLAMA_ARG_CHAT_TEMPLATE_KWARGS', 'LLAMA_CHAT_TEMPLATE_KWARGS'}
+    env = llama_child_env(_without_think_off(os.environ))
+    for name in _LLAMA_THINK_OFF_ENVS:
+        assert env[name] == _LLAMA_THINK_OFF_VALUE, name
+
+
+@pytest.mark.parametrize('operator_name', [
+    'LLAMA_ARG_CHAT_TEMPLATE_KWARGS', 'LLAMA_CHAT_TEMPLATE_KWARGS'])
+def test_operator_choice_under_either_spelling_wins_for_both(operator_name):
+    """An operator who sets ONE spelling must not get our default under the
+    other: whichever the binary reads, it must see the operator's value."""
+    base = _without_think_off(os.environ)
+    base[operator_name] = '{"enable_thinking":true}'
+    env = llama_child_env(base)
+    for name in _LLAMA_THINK_OFF_ENVS:
+        assert env[name] == '{"enable_thinking":true}', name
 
 
 def test_value_is_valid_json_llama_can_parse():
