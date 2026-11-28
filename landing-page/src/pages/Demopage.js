@@ -32,7 +32,7 @@ import { CHAT_BUBBLE_PRIORITY, CHAT_ACTION_THINKING, CHAT_ACTION_STATUS, isOther
 import {animateScroll as scrollLibrary} from 'react-scroll';
 
 import autobahn from 'autobahn';
-import { classifyError, getBackoff, startTurn, MAX_RETRIES, turnHasReply, EMPTY_REPLY_REASON, PUSHED_REPLY_MISSING_REASON, retryingText, gaveUpText, interruptedText } from '../utils/chatRetry';
+import { classifyError, getBackoff, startTurn, mintHeardTurn, promoteHeardTurn, MAX_RETRIES, turnHasReply, EMPTY_REPLY_REASON, PUSHED_REPLY_MISSING_REASON, retryingText, gaveUpText, interruptedText } from '../utils/chatRetry';
 import { shouldSpeakLocalReply, isDraftReply, hasServerAudioPayload, shouldPlayPushedClip, speaksPushedText, initialTtsEnabled } from '../utils/ttsGuards';
 import { startLiveAvatar, stopLiveAvatar } from '../utils/liveAvatar';
 import { afterVideoError, idleLinkOf } from '../utils/idleFace';
@@ -2138,6 +2138,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
   // (services/ttsClipPlayer.js).  Two inline players aborted each other's
   // play() and the reply was never heard.
   const playPushedTts = useCallback((data) => {
+    // An open-mic final whose clip arrives is a turn HARTOS answered: it
+    // takes the current turn now (chatRetry.promoteHeardTurn), so its own
+    // clip is this turn's and plays.
+    if (data && promoteHeardTurn(requestIdRef, data.request_id)) setRequestId(String(data.request_id));
     // Only the current turn's clip plays (utils/ttsGuards.shouldPlayPushedClip):
     // an earlier turn of this page (each turn carries its own id, so a reply
     // that lands after the next send is not spoken over it) or a background
@@ -2446,6 +2450,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         // turn's late traces are dropped once a newer turn was sent: each
         // turn carries its own id, so they no longer land in the newer
         // turn's container.
+        // The first trace of an open-mic final: HARTOS is working on it, so
+        // it takes the current turn now (chatRetry.promoteHeardTurn).
+        if (promoteHeardTurn(requestIdRef, parsed.request_id)) setRequestId(String(parsed.request_id));
         const currentReqId = requestIdRef.current;
         if (isOtherTurnEnvelope(parsed.request_id, currentReqId)) {
           logger.log(`Dropping another turn's thinking trace (req=${traceRequestId}, current=${currentReqId})`);
@@ -4588,8 +4595,14 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     // the thinking container keyed on `_after_user_N` to tell them apart;
     // measured 2026-10-11, two voice turns 29 s apart reached HARTOS under
     // one id.
-    const msgId = startTurn(requestIdRef);
-    setRequestId(msgId);
+    // An open-mic final is minted as a turn of this page but does NOT take
+    // the current turn here: room speech the agent judges not meant for it
+    // would otherwise make the turn the person is in "another turn", and
+    // its remaining clips were skipped (live 2026-11-27/28: 276 of 515
+    // clips; review of cbaa6e68).  It takes the turn when HARTOS treats it
+    // as one: its first trace, its clip, or a reply that is addressed.
+    const msgId = openMic ? mintHeardTurn() : startTurn(requestIdRef);
+    if (!openMic) setRequestId(msgId);
     const userMessage = {
       type: 'user',
       content: turnText,
@@ -4906,6 +4919,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             // stays, marked heard (shown muted, HEARD_NOT_FOR_ME), so the
             // whole session is kept and the page shows what the agent decided.
             const notAddressed = openMic && resultData.not_addressed === true;
+            if (openMic && !notAddressed && promoteHeardTurn(requestIdRef, msgId)) setRequestId(msgId);
             if (notAddressed) {
               console.log('[STT] open mic: turn judged not addressed, no reply');
               updateMessageStatus(msgId, {
