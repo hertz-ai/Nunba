@@ -2314,8 +2314,11 @@ def _clear_half_built_venv(engine: str, created_here: bool = False) -> None:
             rc, _out, err = backend_venv.invoke_in_venv(
                 engine, required, [],
                 timeout=backend_venv._IMPORT_PROBE_TIMEOUT, _probe_mode=True)
+            # The file's one reading of the interpreter's own line
+            # (_MISSING_MODULE_RE, as the heal step reads it).
             top = str(required).split('.')[0]
-            if rc == 0 or f"No module named '{top}'" not in (err or ''):
+            missing = _MISSING_MODULE_RE.search(err or '')
+            if rc == 0 or not missing or missing.group(1).split('.')[0] != top:
                 return
         logger.warning(
             "[venv] %s: the install failed and its venv holds no '%s' (%s); "
