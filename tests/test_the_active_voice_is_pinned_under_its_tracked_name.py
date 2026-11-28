@@ -49,8 +49,9 @@ class _Process:
 
 @pytest.fixture
 def node(monkeypatch):
-    from integrations.service_tools import model_lifecycle as ml
     from integrations.service_tools import mms_tts_tool
+    from integrations.service_tools import model_lifecycle as ml
+
     from tts import tts_engine as mod
 
     mgr = ml.ModelLifecycleManager()

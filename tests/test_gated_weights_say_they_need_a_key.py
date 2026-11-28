@@ -9,16 +9,16 @@ the vault keeps it as HEVOLVE_HF_TOKEN, a name huggingface_hub does not read.
 Real _download_model_weights and install_backend_full's answer; faked: the
 hub download (no network) and request_credential (recorded, no card).
 """
+import huggingface_hub
 import pytest
 import requests
-
-import huggingface_hub
 from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError
 
 
 @pytest.fixture
 def hub(monkeypatch):
     import hartos.ai_key_vault as akv
+
     import tts.package_installer as pi
     monkeypatch.delenv('HEVOLVE_HF_TOKEN', raising=False)
     monkeypatch.delenv('HF_TOKEN', raising=False)

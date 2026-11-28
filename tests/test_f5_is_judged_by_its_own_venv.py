@@ -96,7 +96,7 @@ def machine(monkeypatch):
     def install_into_venv(name, packages):
         seen.venv_filled.append((name, list(packages)))
         seen.installed.add(name)
-        return True, 'installed %d packages' % len(packages)
+        return True, f'installed {len(packages)} packages'
 
     held = set()
 
@@ -107,7 +107,7 @@ def machine(monkeypatch):
         return True
 
     monkeypatch.setattr(backend_venv, 'ensure_venv',
-                        lambda name: 'C:/venvs/%s/Scripts/python.exe' % name)
+                        lambda name: 'C:/venvs/{}/Scripts/python.exe'.format(name))
     monkeypatch.setattr(backend_venv, 'install_into_venv', install_into_venv)
     monkeypatch.setattr(pi, '_acquire_file_lock', acquire)
     monkeypatch.setattr(pi, '_release_file_lock', held.discard)

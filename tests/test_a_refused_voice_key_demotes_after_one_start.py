@@ -39,6 +39,7 @@ def ladder(monkeypatch, tmp_path):
     voice raises through the real worker and adapter."""
     import hartos.ai_key_vault as akv
     from integrations.service_tools import gpu_worker as gw
+
     from tts import tts_engine as te
 
     monkeypatch.setenv('NUNBA_TTS_STATE_PATH', str(tmp_path / 'tts_state.json'))

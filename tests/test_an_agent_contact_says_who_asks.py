@@ -27,8 +27,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-import routes.chatbot_routes as cr  # noqa: E402
 from integrations.social.consent_service import agent_as_asker  # noqa: E402
+
+import routes.chatbot_routes as cr  # noqa: E402
 
 pytestmark = pytest.mark.timeout(30)
 

@@ -14,10 +14,9 @@ import json
 import os
 import re
 
+import huggingface_hub
 import pytest
 import requests
-
-import huggingface_hub
 from huggingface_hub.errors import GatedRepoError
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -26,6 +25,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 @pytest.fixture
 def hub(monkeypatch):
     import hartos.ai_key_vault as akv
+
     import tts.package_installer as pi
     monkeypatch.delenv('HEVOLVE_HF_TOKEN', raising=False)
     monkeypatch.delenv('HF_TOKEN', raising=False)

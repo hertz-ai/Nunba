@@ -43,8 +43,9 @@ class _Upstream:
 
 @pytest.fixture
 def sidecar(monkeypatch):
-    import main
     from integrations.service_tools import avatarforcing_tool
+
+    import main
     seen = {}
 
     def get(url, params=None, stream=False, timeout=None):
@@ -90,8 +91,9 @@ def test_model_not_running_is_503(app_client, monkeypatch):
 
 
 def test_unknown_session_passes_the_sidecars_404(app_client, monkeypatch):
-    import main
     from integrations.service_tools import avatarforcing_tool
+
+    import main
     up = _Upstream(status=404)
     monkeypatch.setattr(avatarforcing_tool, 'sidecar_port', lambda: 4321)
     monkeypatch.setattr(main.requests, 'get', lambda *a, **k: up)
@@ -101,9 +103,10 @@ def test_unknown_session_passes_the_sidecars_404(app_client, monkeypatch):
 
 
 def test_sidecar_unreachable_is_502(app_client, monkeypatch):
-    import main
     import requests
     from integrations.service_tools import avatarforcing_tool
+
+    import main
 
     def refuse(*a, **k):
         raise requests.ConnectionError('refused')
@@ -122,8 +125,9 @@ def test_another_machine_without_a_credential_is_refused(app_client, sidecar):
 def test_delete_tells_the_sidecar_to_stop(app_client, monkeypatch):
     """The page leaving a reply stops its generation: Hypercorn never reports a relayed
     viewer that left, so the page says it (liveAvatar.stop -> DELETE)."""
-    import main
     from integrations.service_tools import avatarforcing_tool
+
+    import main
     sent = {}
 
     class _Ok:
@@ -157,8 +161,9 @@ def phone_of(monkeypatch):
     mark tests/test_a_large_phone_frame_is_shrunk.py sets -- in place of main's before-request
     handlers for this test, so the route's own check (routes.auth.admitted_device_user) runs
     unpatched."""
-    import main
     from flask import g
+
+    import main
 
     def as_user(user):
         def _admitted_phone():
@@ -198,8 +203,9 @@ def test_another_users_stream_is_answered_like_none(app_client, sidecar, phone_o
 
 
 def test_a_phone_cannot_stop_another_users_stream(app_client, monkeypatch, phone_of, owned_by):
-    import main
     from integrations.service_tools import avatarforcing_tool
+
+    import main
     monkeypatch.setattr(avatarforcing_tool, 'sidecar_port', lambda: 4321)
     reached = []
 
@@ -236,8 +242,9 @@ def stored(monkeypatch, tmp_path):
 
 
 def test_a_gone_session_replays_its_kept_face(app_client, monkeypatch, stored):
-    import main
     from integrations.service_tools import avatarforcing_tool
+
+    import main
     up = _Upstream(status=404)
     monkeypatch.setattr(avatarforcing_tool, 'sidecar_port', lambda: 4321)
     monkeypatch.setattr(main.requests, 'get', lambda *a, **k: up)
@@ -263,8 +270,9 @@ def test_with_nothing_kept_the_answers_are_as_before(app_client, monkeypatch):
 
 
 def test_a_kept_face_is_never_replayed_by_delete(app_client, monkeypatch, stored):
-    import main
     from integrations.service_tools import avatarforcing_tool
+
+    import main
     monkeypatch.setattr(avatarforcing_tool, 'sidecar_port', lambda: None)
     monkeypatch.setattr(main.requests, 'delete', lambda *a, **k: pytest.fail('reached the sidecar'))
     assert app_client.delete('/avatar/live/abcdef012345.mp4').status_code == 503

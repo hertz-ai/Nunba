@@ -25,9 +25,9 @@ import importlib.util
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import integrations.service_tools.whisper_tool as wt
 import pytest
 
-import integrations.service_tools.whisper_tool as wt
 from models.orchestrator import STTLoader
 
 

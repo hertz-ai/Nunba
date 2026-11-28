@@ -16,8 +16,16 @@ TTS and the cloud leg are recorded or refused, so no model server is touched.
     python -m pytest tests/test_the_chat_reply_names_its_persona.py -q
 """
 from tests.test_reel_attachments_passthrough import (  # noqa: F401
-    PHONE_RID, PROMPT_ID, _built, _fresh_sessions, app, client, hartos,
-    llama_config, prompts_dir)
+    PHONE_RID,
+    PROMPT_ID,
+    _built,
+    _fresh_sessions,
+    app,
+    client,
+    hartos,
+    llama_config,
+    prompts_dir,
+)
 
 
 def _turn(client):

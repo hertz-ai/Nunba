@@ -24,8 +24,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from desktop.companion_open_ask import (  # noqa: E402
-    OPEN_AGENT_CHAT_EVENT, open_agent_chat_script)
+from desktop.companion_open_ask import OPEN_AGENT_CHAT_EVENT, open_agent_chat_script  # noqa: E402
 
 HEAD = f'window.dispatchEvent(new CustomEvent({json.dumps(OPEN_AGENT_CHAT_EVENT)}, {{detail: '
 TAIL = '}));'

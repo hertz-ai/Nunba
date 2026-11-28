@@ -27,8 +27,7 @@ from werkzeug.utils import secure_filename
 # Canonical auth gate for endpoints that accept LOCAL FILESYSTEM PATHS
 # (vs multipart uploads).  Stacked above @upload_bp.route on
 # /upload/native so the wrapped function is registered with Flask.
-from routes.auth import (
-    admitted_device_user, is_admitted_device, require_local_or_token)
+from routes.auth import admitted_device_user, is_admitted_device, require_local_or_token
 
 logger = logging.getLogger(__name__)
 

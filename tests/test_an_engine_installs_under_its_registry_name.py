@@ -64,11 +64,11 @@ def world(monkeypatch):
 
     def ensure_venv(name):
         seen.venv_built.append(name)
-        return 'C:/venvs/%s/Scripts/python.exe' % name
+        return 'C:/venvs/{}/Scripts/python.exe'.format(name)
 
     def install_into_venv(name, packages):
         seen.venv_installed.append((name, list(packages)))
-        return True, 'installed %d' % len(packages)
+        return True, f'installed {len(packages)}'
 
     real_main = pi.install_backend_packages
 

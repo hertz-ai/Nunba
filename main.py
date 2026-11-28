@@ -2323,6 +2323,7 @@ def avatar_idle_face(prompt_id):
         from core.platform_paths import get_recipe_prompts_dir
         from core.prompt_files import agent_account
         from integrations.service_tools.avatarforcing_idle import stored_clip
+
         from routes.auth import admitted_device_user
         record_path = os.path.join(get_recipe_prompts_dir(), f'{prompt_id}.json')
         with open(record_path, encoding='utf-8') as f:
@@ -2365,6 +2366,7 @@ def avatar_live_stream(sid):
     owner_checked = False
     try:
         from integrations.service_tools.avatarforcing_tool import sidecar_port, stream_owner
+
         from routes.auth import admitted_device_user
         phone_user = admitted_device_user()  # None for this machine and the local token
         if phone_user is not None and phone_user != stream_owner(sid):
@@ -3111,6 +3113,7 @@ def _gguf_install_files(repo_files, requested_file: str = '',
             from pathlib import Path
 
             from core.platform_paths import free_bytes
+
             from llama.llama_installer import LlamaInstaller
             target_storage = Path(target_dir).expanduser().resolve() if target_dir else LlamaInstaller().models_dir
             # free_bytes measures the folder's nearest existing parent: the
@@ -5834,8 +5837,7 @@ def admin_mcp_token_get():
         # Use the PUBLIC HARTOS API — was reaching into the private
         # underscore-prefix `_ensure_mcp_token` which coupled Nunba's
         # release cadence to HARTOS internal naming.
-        from integrations.coding_agent.claude_code_backend import (
-            copilot_enabled, reconcile_copilot_switch)
+        from integrations.coding_agent.claude_code_backend import copilot_enabled, reconcile_copilot_switch
         from integrations.mcp import get_mcp_token
         token = get_mcp_token()
         # The switch is shown as it is in force: an off marker that went
@@ -6889,6 +6891,7 @@ def start_background_services():
                            if _lg not in _order[_i + 1:]]
             if _can_preload:
                 import tempfile as _tf
+
                 from tts.tts_engine import _runs_on_cpu
                 from tts.verified_synth import _pick_test_phrase
                 _test_path = os.path.join(_tf.gettempdir(), '_nunba_tts_warmup.wav')

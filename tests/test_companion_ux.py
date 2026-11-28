@@ -13,7 +13,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 # NOTE: `TestWindowAcrylicBackdrop` used to live here, and it is GONE
 # rather than moved aside.  It was a partial mirror of assertions that
 # `tests/test_glass.py` already owns, and on 2026-09-22 the mirror went

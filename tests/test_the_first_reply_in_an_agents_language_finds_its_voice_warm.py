@@ -469,8 +469,9 @@ def test_the_handshakes_kept_sample_is_not_on_file(speech, monkeypatch):
 def test_piper_runs_on_the_cpu_because_the_registry_says_so(monkeypatch):
     """_runs_on_cpu reads the registry for Piper by its own name, not a
     literal: a registry without Piper gives no CPU pass."""
-    from tts import tts_engine as mod
     from integrations.channels.media.tts_router import TTSDevice
+
+    from tts import tts_engine as mod
     spec = type('Spec', (), {'device': TTSDevice.CPU_ONLY})()
     monkeypatch.setattr(mod, '_get_engine_registry', lambda: {'piper': spec})
     assert mod._runs_on_cpu(mod.BACKEND_PIPER) is True

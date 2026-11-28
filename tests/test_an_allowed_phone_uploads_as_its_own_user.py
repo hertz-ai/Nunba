@@ -79,8 +79,8 @@ def seen(tmp_path, monkeypatch):
         lambda name, url, user_id, request_id: filed.append(('voice', user_id)) or 9)
 
     # the voice routes: the recogniser, the diarizer and the event bus
-    import integrations.service_tools.whisper_tool as whisper_tool
     import core.platform.events as events
+    import integrations.service_tools.whisper_tool as whisper_tool
     monkeypatch.setattr(whisper_tool, '_faster_whisper_transcribe',
                         lambda path, language=None: json.dumps(
                             {'text': 'hello there', 'language': 'en'}))
@@ -285,6 +285,7 @@ class TestTheRealGateInFrontOfTheRoutes:
     def gated(self, seen, monkeypatch):
         import contextlib
         from unittest.mock import patch
+
         import integrations.social.auth as social_auth
         import integrations.social.models as models
         from security.middleware import _apply_api_auth

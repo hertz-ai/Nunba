@@ -30,6 +30,7 @@ def publish(monkeypatch, tmp_path):
     wav = tmp_path / 'reply.wav'
     wav.write_bytes(b'RIFF')
     import integrations.channels.media.tts_text_normalizer as norm
+
     import tts.tts_engine as engine
     monkeypatch.setattr(norm, 'normalize_for_tts', lambda text, lang, **k: text)
     monkeypatch.setattr(engine, 'synthesize_text', lambda text, language=None: str(wav))
