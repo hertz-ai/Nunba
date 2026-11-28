@@ -224,8 +224,9 @@ function cutPage(start, end) {
 
 const SWITCHER = cutPage('  const handleButtonClick = (chat) => {',
   '  useEffect(() => {\n    // Auto-scroll to bottom whenever messages change');
-const CREATE_FORM = cutPage('  const handleCreateAgentSubmit = async (agentDatafromApi) => {',
-  '  useEffect(() => {\n    // restore-on-mount');
+// The cloud create form's handler (handleCreateAgentSubmit) is gone: the form makes
+// the agent on this desktop (owner 2026-11-28), and the new agent's page is reached
+// at the end of its build (BUILD_DONE below; createFormMakesTheAgentHere.test.js).
 const BUILD_DONE = cutPage("              if (resultData.agent_status === 'completed' && ",
   '\n            }\n            // Track prompt_id from auto-generated creation flow');
 
@@ -297,13 +298,6 @@ describe('two agents with one name, inside the chat page', () => {
     expect(page.stopLiveAvatar).toHaveBeenCalledTimes(1); // the first agent's live face ends
   });
 
-  test('the cloud create form opens the agent it made, not an older one of that name', async () => {
-    const page = chatPage(FIRST);
-    await page.run(`${CREATE_FORM}\nreturn handleCreateAgentSubmit;`)(SECOND);
-
-    expect(page.settlesOn().prompt_id).toBe(SECOND.prompt_id);
-    expect(page.urls).toEqual(['/agents/speech-therapy-companion?id=95568353503']);
-  });
 
   test('after a build completes, the page stays on the new agent, not an older one of that name', () => {
     // The create-mode agent of the turn; the server names the finished agent

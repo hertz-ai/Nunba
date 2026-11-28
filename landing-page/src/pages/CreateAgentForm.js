@@ -1,7 +1,6 @@
 import {
   UPLOAD_IMAGE_URL,
   UPLOAD_AUDIO_URL,
-  CREATE_PROMPT_URL,
 } from '../config/apiBase';
 import {logger} from '../utils/logger';
 
@@ -16,7 +15,6 @@ const CreateAgentForm = ({onClose, onSubmit, userId}) => {
   const [imageFile, setImageFile] = useState(null);
   const [audioFile, setAudioFile] = useState(null);
   const [imagePreview, setImagePreview] = useState('');
-  const [isPublic, setIsPublic] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [requestId, setRequestId] = useState('');
   // Defaults (owner, 2026-11-26): a voice-only agent with a stock voice. A face (a video
@@ -63,7 +61,11 @@ const CreateAgentForm = ({onClose, onSubmit, userId}) => {
     if (!response.ok) {
       throw new Error('Failed to upload image');
     }
-    logger.log('Image uploaded successfully:', await response.json());
+    // Its teacher_avatar_id is the face (and, with the recording of the same request_id,
+    // the voice) the agent speaks with.
+    const result = await response.json();
+    logger.log('Image uploaded successfully:', result);
+    return result;
   };
 
   const uploadAudio = async (file) => {
@@ -85,44 +87,31 @@ const CreateAgentForm = ({onClose, onSubmit, userId}) => {
     // An upload that fails leaves the agent voice-only / in a stock voice: it is still made.
     const face = withFace && imageFile;
     const voice = cloneVoice && audioFile;
+    let teacherAvatarId = null;
     if (face) {
-      try { await uploadImage(imageFile); } catch (error) { console.error('Error uploading image:', error); }
+      try {
+        teacherAvatarId = (await uploadImage(imageFile))?.teacher_avatar_id ?? null;
+      } catch (error) { console.error('Error uploading image:', error); }
     }
     if (voice) {
       try { await uploadAudio(audioFile); } catch (error) { console.error('Error uploading audio:', error); }
     }
 
     try {
-      const createPromptData = {
-        prompt: prompt,
-        request_id: requestId,
+      // The agent is made on this desktop (owner 2026-11-28, "Create locally, sync up"):
+      // the page's own conversational creation, seeded with this form's name and
+      // description and the face just uploaded, which HARTOS keeps on the agent's record.
+      // It reaches central by that creation's own sync, as every desktop agent does.
+      // NOT CARRIED YET: voice_clone (the local creation has no field for it; a recording
+      // speaks through the face of the same request_id).
+      onSubmit({
+        fromCreateForm: true,
         name: agentName,
-        user_id: userId,
-        isPublic: isPublic,
-        image_url: '',
-        // The agent's media and voice as the creator chose them (owner 2026-11-27: "Face agents
-        // open in video").  NOT STORED YET: the per-agent media field is task 17's; today an
-        // agent's face comes only from its teacher_avatar_id.
-        media: face ? 'video' : 'voice',
+        prompt: prompt,
+        media: teacherAvatarId ? 'video' : 'voice',
         voice_clone: Boolean(voice),
-      };
-
-      const response = await fetch(CREATE_PROMPT_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(createPromptData),
+        ...(teacherAvatarId ? {teacher_avatar_id: teacherAvatarId} : {}),
       });
-
-      if (!response.ok) {
-        throw new Error('Failed to create agent');
-      }
-
-      const result = await response.json();
-      logger.log('Agent created successfully:', result);
-
-      onSubmit(result);
 
       onClose();
     } catch (error) {
@@ -295,19 +284,9 @@ const CreateAgentForm = ({onClose, onSubmit, userId}) => {
           />
         </div>
 
-        {/* isPublic Checkbox */}
-        <div className="mb-6 flex items-center">
-          <input
-            type="checkbox"
-            id="isPublic"
-            checked={isPublic}
-            onChange={(e) => setIsPublic(e.target.checked)}
-            className="w-4 h-4 rounded bg-gray-700 border-gray-600 focus:ring-blue-500 focus:ring-2"
-          />
-          <label htmlFor="isPublic" className="ml-2 text-white">
-            Make this agent public
-          </label>
-        </div>
+        {/* No "Make this agent public" choice: the agent is made on this desktop, and
+            neither its record nor its sync to central carries one yet (review M1 of the
+            local create: shown, it was dropped, so a ticked agent came out private). */}
 
         {/* Submit Button */}
         <button

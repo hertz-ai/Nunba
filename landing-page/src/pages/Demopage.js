@@ -1268,41 +1268,6 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     }
   }, [allAgents, agentName, location.search]);
 
-  const handleCreateAgentSubmit = async (agentDatafromApi) => {
-    try {
-      logger.log('1. Agent data received:', agentDatafromApi);
-
-      if (currentAgent?.prompt_id && messages.length > 0) {
-        logger.log(
-          `💾 Saving ${messages.length} messages before creating new agent`
-        );
-        saveMessagesToStorage(messages, currentAgent.prompt_id || currentAgent.id, currentAgent.name);
-      }
-
-      logger.log(
-        `🧹 Clearing messages for new agent: ${agentDatafromApi.name}`
-      );
-      setMessages((prev) => prev.filter(isGlobalSetupCard));
-
-      setAllAgents((prevAgents) => {
-        const newAgents = [...prevAgents, agentDatafromApi];
-        logger.log('Updated allAgents:', newAgents.length);
-        return newAgents;
-      });
-
-      setCurrentAgent(agentDatafromApi);
-
-      setShowCreateAgentForm(false);
-      navigate(agentPath(agentDatafromApi));
-
-      logger.log(
-        `✨ New agent created with fresh chat: ${agentDatafromApi.name}`
-      );
-    } catch (error) {
-      console.error('Error creating agent:', error);
-    }
-  };
-
   useEffect(() => {
     // restore-on-mount: the stored chat for the last active agent is in
     // localStorage already; waiting for /prompts + /agents/sync to return
@@ -2027,24 +1992,33 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     changeMediaMode(cycle[mediaMode] || 'audio');
   };
 
-  const handleCreateAgentClick = () => {
+  const handleCreateAgentClick = (seed) => {
+    // A seed is the create form's (CreateAgentForm onSubmit): the agent it describes is
+    // made on this desktop (owner 2026-11-28, "Create locally, sync up") by the same
+    // conversational creation a guest's agent is made by, with the face the form
+    // uploaded, and syncs as any desktop agent does.  A click passes an event, never a seed.
+    const fromForm = seed?.fromCreateForm === true;
     if (!isAuthenticated) {
       setIsModalOpen(true);
       return;
     }
 
-    const useLocal = isGuestMode || !navigator.onLine;
+    const useLocal = fromForm || isGuestMode || !navigator.onLine;
     if (useLocal) {
       // Local mode: Start conversational agent creation via autogen
       const newPromptId = Date.now();
       const newAgent = {
         id: String(newPromptId),
         prompt_id: newPromptId,
-        name: 'New Agent',
+        name: (fromForm && seed.name) || 'New Agent',
         type: 'local',
         _isLocal: true,
         create_agent: true,
         agent_status: 'Creation Mode',
+        // The face it speaks with: named on each creation turn, so HARTOS keeps it on
+        // the agent's record (_stamp_agent_face); a face agent opens in video.
+        ...(fromForm && seed.teacher_avatar_id
+          ? { teacher_avatar_id: seed.teacher_avatar_id } : {}),
       };
 
       if (currentAgent?.prompt_id && messages.length > 0) {
@@ -2061,11 +2035,21 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       if (newPromptId && /^\d+$/.test(String(newPromptId))) {
         localStorage.setItem('active_agent_id', String(newPromptId));
       }
+      // The form's description is this conversation's first turn, sent as a typed one is
+      // (the message queue's drain below: put in the box, then the page's own send on the
+      // next tick, when this agent is the one the page holds).  Left in the box, the open
+      // mic's first words would have been the creation turn instead (review M2).
+      if (fromForm && seed.prompt) {
+        setInputMessage(`Create an agent named "${seed.name}". ${seed.prompt}`);
+        setTimeout(() => {
+          if (handleSendRef.current) handleSendRef.current();
+        }, 50);
+      }
       setShowCreateAgentForm(false);
       return;
     }
 
-    // Cloud mode: Show form (existing behavior)
+    // Signed in and online: the create form, which makes the agent here too (above).
     setShowCreateAgentForm(true);
   };
   const handleAgentSelect = (agent) => {
@@ -4716,8 +4700,10 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
               prompt_id: _promptIdForBackend,
               // A video turn names the avatar this agent speaks as, for its face (and its
               // voice) in the live reply (HARTOS core/teacher_avatar): the key Android
-              // already sends.  Audio turns stay as they were.
-              ...(mediaMode === 'video' && turnAgent?.teacher_avatar_id
+              // already sends.  A creation turn names it in any mode, as a client names
+              // an agent's goal tags, so the turn that saves the agent keeps its face
+              // (HARTOS _stamp_agent_face).  Other audio turns stay as they were.
+              ...((mediaMode === 'video' || turnAgent?.create_agent) && turnAgent?.teacher_avatar_id
                 ? { teacher_avatar_id: turnAgent.teacher_avatar_id } : {}),
               create_agent: turnAgent?.create_agent || false,
               autonomous_creation: turnAgent?.autonomous_creation || false,
@@ -6336,7 +6322,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       {showCreateAgentForm && (
         <CreateAgentForm
           onClose={() => setShowCreateAgentForm(false)}
-          onSubmit={handleCreateAgentSubmit}
+          onSubmit={handleCreateAgentClick}
           userId={decryptedUserId}
         />
       )}

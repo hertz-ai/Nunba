@@ -92,7 +92,6 @@ export const UPLOAD_IMAGE_URL = `${API_BASE_URL}/upload/image`;
 export const UPLOAD_AUDIO_URL = `${API_BASE_URL}/upload/audio`;
 export const UPLOAD_FILE_URL = `${API_BASE_URL}/upload/file`;
 export const VISION_INFERENCE_URL = `${API_BASE_URL}/upload/vision`;
-export const CREATE_PROMPT_URL = `${CLOUD_API_URL}/db/create_prompt`;
 export const BOOK_PARSING_URL = `${API_BASE_URL}/upload/parse_pdf`;
 export const BOOK_PARSING_STATUS_URL = `${API_BASE_URL}/upload/parse_pdf/status`;
 export const UPLOAD_NATIVE_URL = `${API_BASE_URL}/upload/native`;
