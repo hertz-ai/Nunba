@@ -355,11 +355,15 @@ _FALLBACK_ENGINE_CAPABILITIES = {
             # HARTOS spec.  Keeping symmetry with that registry; if the
             # catalog isn't loaded yet, fallback selection still routes
             # to mms_tts as the universal coverage engine.
-            'en', 'es', 'fr', 'de', 'it', 'pt', 'pl', 'tr', 'ru', 'nl',
-            'cs', 'hu', 'sv', 'fi', 'el', 'ro', 'bg', 'uk', 'cy', 'is',
-            'zh', 'ja', 'ko', 'vi', 'th', 'id', 'ms', 'km', 'lo', 'my',
+            # Checked 2026-11-28 (header request per facebook/mms-tts-<code>
+            # repo): MMS has no model for it, cs, zh, ja, ne, sd, sa or si,
+            # so they are not listed.  A Japanese line that picked mms_tts
+            # started its worker cold (15 s) and then failed.
+            'en', 'es', 'fr', 'de', 'pt', 'pl', 'tr', 'ru', 'nl',
+            'hu', 'sv', 'fi', 'el', 'ro', 'bg', 'uk', 'cy', 'is',
+            'ko', 'vi', 'th', 'id', 'ms', 'km', 'lo', 'my',
             'hi', 'bn', 'ta', 'te', 'mr', 'gu', 'kn', 'ml', 'pa', 'or',
-            'ne', 'as', 'sd', 'sa', 'ur', 'si',
+            'as', 'ur',
             'ar', 'fa', 'he', 'sw',
             # Additional codes in core.constants.SUPPORTED_LANG_DICT.
             # MMS-TTS upstream ships per-language VITS checkpoints for
@@ -414,10 +418,12 @@ _LANG_CAPABLE_BACKENDS: dict[str, frozenset[str]] = {
     'es': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
     'fr': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
     'de': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
-    'it': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
-    'ja': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    # No MMS-TTS for it, ja, zh (and cs below): MMS has no model for them
+    # (checked 2026-11-28, see the mms_tts 'languages' list above).
+    'it': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_XTTS_V2}),
+    'ja': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MELOTTS, BACKEND_XTTS_V2}),
     'ko': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
-    'zh': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_F5, BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'zh': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_F5, BACKEND_MELOTTS, BACKEND_XTTS_V2}),
     'ru': frozenset({BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
     # Extra Chatterbox-ML-only European langs — now augmented with
     # XTTS-v2 (where supported) + MMS-TTS as universal 1 GB tier.
@@ -430,7 +436,7 @@ _LANG_CAPABLE_BACKENDS: dict[str, frozenset[str]] = {
     'hu': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
     'el': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS}),
     'tr': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
-    'cs': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_XTTS_V2, BACKEND_MMS_TTS}),
+    'cs': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_XTTS_V2}),
     'ro': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS}),
     'bg': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS}),
     'hr': frozenset({BACKEND_CHATTERBOX_ML}),
@@ -453,6 +459,10 @@ _LANG_CAPABLE_BACKENDS: dict[str, frozenset[str]] = {
     'lv': frozenset({BACKEND_MMS_TTS}),
     'sr': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS}),
     'ks': frozenset({BACKEND_MMS_TTS}),
+    # Sinhala — no backend in this file lists it, and MMS has no Sinhala
+    # model (checked 2026-11-28).  Its own row, so it does not take the
+    # English set (which names mms_tts) as an unlisted language does.
+    'si': frozenset(),
     # Indian English — exact-code key so en-IN routes through Indic
     # Parler (which speaks English with Indian phonemes) before the
     # generic 'en' Chatterbox-Turbo ladder.  Includes every backend
@@ -482,11 +492,14 @@ for _lang in _INDIC_LANGS:
     # tight VRAM (< 4 GB) still get audio without falling all the way
     # to Piper (which has no Indic voice files).  XTTS-v2 only ships
     # 'hi' among Indic, added explicitly in the per-lang map below.
+    # MMS-TTS only for the Indic languages it lists itself: it has no
+    # model for ne, sd or sa (checked 2026-11-28).
     _LANG_CAPABLE_BACKENDS[_lang] = frozenset({
         BACKEND_INDIC_PARLER,
         BACKEND_CHATTERBOX_ML,
-        BACKEND_MMS_TTS,
-    })
+    }) | (frozenset({BACKEND_MMS_TTS})
+          if _lang in _FALLBACK_ENGINE_CAPABILITIES[BACKEND_MMS_TTS]['languages']
+          else frozenset())
 # XTTS-v2 only adds Hindi among Indic — extend explicitly.
 _LANG_CAPABLE_BACKENDS['hi'] = _LANG_CAPABLE_BACKENDS['hi'] | frozenset({BACKEND_XTTS_V2})
 
@@ -617,10 +630,12 @@ _FALLBACK_LANG_ENGINE_PREFERENCE = {
     'es': [BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
     'fr': [BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
     'de': [BACKEND_XTTS_V2, BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
-    'ja': [BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    # ja, zh, it (and cs below) do not end on MMS-TTS: it has no model
+    # for them (checked 2026-11-28).
+    'ja': [BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML],
     'ko': [BACKEND_MELOTTS, BACKEND_XTTS_V2, BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
-    'zh': [BACKEND_MELOTTS, BACKEND_F5, BACKEND_XTTS_V2, BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
-    'it': [BACKEND_XTTS_V2, BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'zh': [BACKEND_MELOTTS, BACKEND_F5, BACKEND_XTTS_V2, BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML],
+    'it': [BACKEND_XTTS_V2, BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML],
     'ru': [BACKEND_XTTS_V2, BACKEND_COSYVOICE3, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
     # Portuguese — XTTS-v2 covers pt; Chatterbox ML covers pt natively.
     # CosyVoice3's 9-lang set excludes pt, so we skip it here to avoid
@@ -632,7 +647,7 @@ _FALLBACK_LANG_ENGINE_PREFERENCE = {
     'nl': [BACKEND_XTTS_V2, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
     'pl': [BACKEND_XTTS_V2, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
     'tr': [BACKEND_XTTS_V2, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
-    'cs': [BACKEND_XTTS_V2, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
+    'cs': [BACKEND_XTTS_V2, BACKEND_CHATTERBOX_ML],
     'hu': [BACKEND_XTTS_V2, BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
     'sv': [BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS],
     'fi': [BACKEND_MMS_TTS],
@@ -674,8 +689,13 @@ _FALLBACK_LANG_ENGINE_PREFERENCE = {
 # Add all Indic languages → Indic Parler TTS, then mms_tts as 1 GB-tier
 # universal fallback so every Indic code has at least one engine ≤3 GB
 # (Indic Parler is 2 GB, mms_tts is 1 GB — both safely within budget).
+# mms_tts only where it lists the language itself: it has no model for
+# ne, sd or sa (checked 2026-11-28), and those keep Indic Parler alone.
 for _lang in _INDIC_LANGS:
-    _FALLBACK_LANG_ENGINE_PREFERENCE[_lang] = [BACKEND_INDIC_PARLER, BACKEND_MMS_TTS]
+    _FALLBACK_LANG_ENGINE_PREFERENCE[_lang] = [BACKEND_INDIC_PARLER] + (
+        [BACKEND_MMS_TTS]
+        if _lang in _FALLBACK_ENGINE_CAPABILITIES[BACKEND_MMS_TTS]['languages']
+        else [])
 # XTTS-v2 covers Hindi specifically — promote it for hi as a voice-clone option.
 _FALLBACK_LANG_ENGINE_PREFERENCE['hi'] = [BACKEND_INDIC_PARLER, BACKEND_XTTS_V2, BACKEND_MMS_TTS]
 
