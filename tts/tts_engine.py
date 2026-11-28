@@ -3476,11 +3476,18 @@ class TTSEngine:
                 pass
 
         wav_parts = []
+        # The language a sung part's words are spoken in when nothing can
+        # sing them: the speech around it, else the engine's own language.
+        spoken_lang = next((s.get('lang') for s in segments
+                            if s.get('type', 'speech') == 'speech' and s.get('lang')),
+                           None) or getattr(self, '_language', None)
         for seg in segments:
             seg_type = seg.get('type', 'speech')
             text = seg.get('text', '').strip()
             if not text:
                 continue
+            if seg_type == 'speech' and seg.get('lang'):
+                spoken_lang = seg['lang']
 
             # Check ledger: if task was paused/cancelled, stop generating
             if ledger and task_id:
@@ -3495,6 +3502,7 @@ class TTSEngine:
             tmp = tempfile.NamedTemporaryFile(suffix='.wav', delete=False,
                                               prefix=f'_tts_{seg_type}_')
             tmp.close()
+            made = False
             try:
                 result = None
                 if seg_type == 'speech':
@@ -3514,6 +3522,7 @@ class TTSEngine:
 
                 if result and os.path.isfile(result) and os.path.getsize(result) > 100:
                     wav_parts.append(result)
+                    made = True
                 else:
                     try:
                         os.unlink(tmp.name)
@@ -3525,6 +3534,11 @@ class TTSEngine:
                     os.unlink(tmp.name)
                 except OSError:
                     pass
+            # A sung part nothing could sing is spoken in its place, never
+            # dropped (owner 28 Nov 2026).  A <music> part has no words.
+            if not made and seg_type in ('sing', 'lyrics'):
+                wav_parts.extend(self._speak_unsung_words(
+                    text, spoken_lang, warm_up=warm_up, **kwargs))
 
         if not wav_parts:
             return None
@@ -3769,6 +3783,47 @@ class TTSEngine:
         DiffRhythm routing handled inside media_agent via _select_audio_tool."""
         return self._synth_media_segment(
             'audio_music', f"Singing: {lyrics}", out_path, duration=duration)
+
+    def _speak_unsung_words(self, words, language=None, *, warm_up=False, **kwargs):
+        """Speak the words of a sung part that no singer could make.
+
+        Owner, 28 Nov 2026: a sung part is never dropped.  On a machine where
+        nothing can sing (no singing model, the composer down, failed or slow)
+        a reply that was all <sing> played nothing, and a rhyme between two
+        spoken lines lost its words.  The words are split by the segmenter like
+        any spoken text, with ``language`` (the reply's own: the speech around
+        the sung part, else the engine's) kept where its script fits, so
+        Spanish words are spoken by the Spanish voice and Tamil by the Tamil
+        one.  Returns the spoken part files in order; [] when none could be
+        spoken.
+        """
+        import tempfile
+
+        from tts.language_segmenter import segment
+        logger.info("A sung part could not be sung; speaking its words")
+        parts = []
+        for seg in segment(words, language=language):
+            text = seg.get('text', '').strip()
+            if seg.get('type') != 'speech' or not text:
+                continue
+            tmp = tempfile.NamedTemporaryFile(suffix='.wav', delete=False,
+                                              prefix='_tts_unsung_')
+            tmp.close()
+            try:
+                result = self._synth_speech_segment(
+                    text, seg.get('lang', 'en'), tmp.name,
+                    warm_up=warm_up, **kwargs)
+            except Exception as e:
+                logger.warning(f"Speaking a sung part failed: {e}")
+                result = None
+            if result and os.path.isfile(result) and os.path.getsize(result) > 100:
+                parts.append(result)
+            else:
+                try:
+                    os.unlink(tmp.name)
+                except OSError:
+                    pass
+        return parts
 
     def _ensure_initialized(self):
         if not self._initialized and self.auto_init:
