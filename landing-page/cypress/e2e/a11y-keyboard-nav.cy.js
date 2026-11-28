@@ -21,6 +21,12 @@ const installBaselineStubs = () => {
   cy.intercept('GET', '**/api/social/encounters/suggestions', {statusCode: 200, body: {success: true, data: []}});
   cy.intercept('GET', '**/backend/health', {statusCode: 200, body: {healthy: true, local: {available: true}, loading: false}});
   cy.intercept('GET', '**/api/guest-id', {statusCode: 200, body: {guest_id: 'g_a11y_fixture'}});
+  // Past the first-run language picker ("What language feels like home?"),
+  // as chat-llm-status.cy.js's setLocalStorage does: without it /local shows
+  // the picker and every chat-surface assertion here times out.
+  cy.on('window:before:load', (win) => {
+    win.localStorage.setItem('hart_sealed', 'true');
+  });
 };
 
 describe('a11y: keyboard navigation + focus management', () => {
