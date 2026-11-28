@@ -2286,6 +2286,40 @@ def _self_heal_missing_transitives(
     return False, healed
 
 
+def _clear_half_built_venv(engine: str) -> None:
+    """After a venv install's pip step failed: remove the venv, unless its
+    engine still imports.
+
+    Live 28 Nov 2026: melotts' pip step failed and left a venv folder with
+    python.exe and no ``melo``.  A reply's fallback later took the folder for
+    a voice and stopped Whisper to start it.  Owner, the same day: clear and
+    install from scratch when something half-built is in the way.  A failed
+    repair of a voice that still imports keeps the voice; when the engine's
+    import name cannot be read, nothing is removed.  Never raises.
+    """
+    try:
+        spec = (_hartos_engine_registry() or {}).get(engine)
+        required = getattr(spec, 'required_package', None)
+        if not required:
+            return
+        from tts.backend_venv import (
+            invalidate_venv_probe_cache,
+            is_venv_healthy,
+            wipe_venv,
+        )
+        invalidate_venv_probe_cache(engine)   # ask the venv as it is now
+        if is_venv_healthy(engine, required):
+            return
+        logger.warning(
+            "[venv] %s: the install failed and '%s' does not import from its "
+            "venv; removing the venv so the next install starts clean",
+            engine, required)
+        wipe_venv(engine)
+    except Exception as exc:
+        logger.warning("[venv] %s: could not clear its venv after a failed "
+                       "install: %s", engine, exc)
+
+
 def install_backend_full(backend: str,
                           progress_cb: Callable | None = None) -> tuple[bool, str]:
     """Full install: pip packages + model weights for a backend.
@@ -2336,6 +2370,7 @@ def install_backend_full(backend: str,
             venv_python = ensure_venv(engine)
             venv_ok, venv_msg = install_into_venv(engine, venv_pkgs)
             if not venv_ok:
+                _clear_half_built_venv(engine)
                 return False, f"venv install failed: {venv_msg}"
             pkg_ok, pkg_msg = True, venv_msg
             # Drop the "cannot run" answers cached before this install, as
