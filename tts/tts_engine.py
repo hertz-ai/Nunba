@@ -4451,6 +4451,25 @@ class TTSEngine:
                     logger.info(f"Voice {c} left out: its venv is missing or "
                                 f"built by another interpreter")
                     continue
+            if c not in self._backends:
+                # The runnable check's saved answer (_can_run_backend and the
+                # auto-install probe fill it) says this voice's packages do
+                # not import, and it has not spoken in this run: its worker
+                # would die at import, after a model was stopped to make room
+                # for it (live 28 Nov: an install that failed at pip left a
+                # venv folder; Whisper was stopped for it mid-reply).  Read
+                # as _can_speak_now reads it; nothing is probed here, and a
+                # voice nobody has checked is tried as before.
+                required_pkg = self._get_required_package(c)
+                cache_key = f'venv:{c}' if _is_venv_backend(c) else required_pkg
+                if (required_pkg
+                        and TTSEngine._import_check_cache.get(cache_key) is False):
+                    with self._state_lock:
+                        spoke = c in self._stamped_this_run
+                    if not (spoke or _spoke_this_session(c)):
+                        logger.info(f"Voice {c} left out: its packages do not "
+                                    f"import ('{required_pkg}')")
+                        continue
             voices.append(c)
         return voices
 
