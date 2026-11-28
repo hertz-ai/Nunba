@@ -3449,7 +3449,8 @@ class TTSEngine:
             return None
 
     def _synthesize_multilingual(self, segments, output_path=None, voice=None,
-                                  speed=1.0, *, warm_up=False, **kwargs):
+                                  speed=1.0, *, warm_up=False, language=None,
+                                  **kwargs):
         """Synthesize multi-type segments: speech, music, singing, lyrics.
 
         Segments from language_segmenter.segment():
@@ -3478,9 +3479,11 @@ class TTSEngine:
         wav_parts = []
         # The language a sung part's words are spoken in when nothing can
         # sing them: the speech around it, else the engine's own language.
+        # ``language`` is the one synthesize() was asked for (review of
+        # 1b55bfd2: an all-<sing> reply asked in 'es' fell to the engine's 'en').
         spoken_lang = next((s.get('lang') for s in segments
                             if s.get('type', 'speech') == 'speech' and s.get('lang')),
-                           None) or getattr(self, '_language', None)
+                           None) or language or getattr(self, '_language', None)
         for seg in segments:
             seg_type = seg.get('type', 'speech')
             text = seg.get('text', '').strip()
@@ -4000,7 +4003,7 @@ class TTSEngine:
                     or detected_lang_mismatch):
                 return self._synthesize_multilingual(
                     segments, output_path, voice, speed, warm_up=warm_up,
-                    **kwargs)
+                    language=language or self._language, **kwargs)
         except Exception:
             pass  # Fallback to single-language path
 

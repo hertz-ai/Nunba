@@ -102,6 +102,17 @@ def test_a_reply_that_is_all_singing_is_spoken_in_the_engines_language(engine, t
     assert engine.spoken == [('la cucaracha', 'es')]
 
 
+def test_an_all_singing_reply_asked_in_spanish_is_spoken_in_spanish_by_an_english_engine(
+        engine, tmp_path):
+    """Review of 1b55bfd2: the language synthesize() was asked for reaches the
+    unsung words even when the engine's own language is another."""
+    from tts.language_segmenter import segment
+    engine._language = 'en'
+    engine._synthesize_multilingual(segment('<sing>la cucaracha</sing>', language='es'),
+                                    output_path=str(tmp_path / 'line.wav'), language='es')
+    assert engine.spoken == [('la cucaracha', 'es')]
+
+
 @pytest.mark.parametrize('singer', ['none', 'raise', 'empty'])
 def test_a_reply_that_is_all_singing_is_spoken_when_nothing_can_sing(engine, tmp_path, singer):
     engine.singer = singer
