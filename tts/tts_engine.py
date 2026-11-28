@@ -3918,7 +3918,10 @@ class TTSEngine:
         # with the right engine, concatenate into one audio file.
         try:
             from tts.language_segmenter import segment
-            segments = segment(text)
+            # The requested language is kept for every part written in its
+            # script; the script guess (latin->en, cjk->zh, arabic->ur)
+            # only names parts in another script.
+            segments = segment(text, language=language or self._language)
             has_media = any(s.get('type') != 'speech' for s in segments)
             has_multi_lang = len(set(s.get('lang') for s in segments
                                      if s.get('type') == 'speech')) > 1

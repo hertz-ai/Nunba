@@ -54,7 +54,7 @@ def _make_stub_engine(active_lang='en'):
 def _patch_segment(monkeypatch, segments):
     """Patch tts.language_segmenter.segment to return given segments."""
     import tts.language_segmenter as ls
-    monkeypatch.setattr(ls, 'segment', lambda _t: segments)
+    monkeypatch.setattr(ls, 'segment', lambda _t, language=None: segments)
 
 
 def test_pure_tamil_response_routes_through_multilingual(monkeypatch):

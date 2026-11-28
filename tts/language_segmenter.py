@@ -19,6 +19,7 @@ Example:
 
 import re
 import string
+import unicodedata
 
 # ── Unicode script ranges ─────────────────────────────────────────
 SCRIPT_RANGES = {
@@ -37,7 +38,31 @@ SCRIPT_RANGES = {
     'hangul':     (0xAC00, 0xD7AF),
     'katakana':   (0x30A0, 0x30FF),
     'hiragana':   (0x3040, 0x309F),
+    # Scripts named only so a requested language can be matched to its
+    # letters (LANG_SCRIPTS); none has a SCRIPT_TO_LANG guess, so text with
+    # no requested language still falls back to 'en' as before.
+    'sinhala':    (0x0D80, 0x0DFF),
+    'thai':       (0x0E00, 0x0E7F),
+    'lao':        (0x0E80, 0x0EFF),
+    'myanmar':    (0x1000, 0x109F),
+    'khmer':      (0x1780, 0x17FF),
+    'ol_chiki':   (0x1C50, 0x1C7F),
+    'meetei':     (0xABC0, 0xABFF),
+    'greek':      (0x0370, 0x03FF),
+    'cyrillic':   (0x0400, 0x04FF),
+    'hebrew':     (0x0590, 0x05FF),
 }
+
+# Letters of a script that sit outside its block above. Without the Latin
+# ones, 'é', 'ñ', 'ş' or Vietnamese 'ộ' read as an unknown script and cut a
+# French, Spanish, Turkish or Vietnamese word in two ("caf é").
+_EXTRA_RANGES = (
+    ('latin',  0x00C0, 0x024F),   # Latin-1 Supplement, Extended-A and -B
+    ('latin',  0x1E00, 0x1EFF),   # Latin Extended Additional (Vietnamese)
+    ('cjk',    0x3005, 0x3007),   # 々 〆 〇
+    ('cjk',    0x3400, 0x4DBF),   # CJK Extension A
+    ('hangul', 0x3130, 0x318F),   # Hangul compatibility jamo (ㅋㅋ)
+)
 
 SCRIPT_TO_LANG = {
     'bengali': 'bn', 'tamil': 'ta', 'gurmukhi': 'pa', 'gujarati': 'gu',
@@ -45,6 +70,45 @@ SCRIPT_TO_LANG = {
     'latin': 'en', 'arabic': 'ur', 'cjk': 'zh', 'hangul': 'ko',
     'katakana': 'ja', 'hiragana': 'ja',
 }
+
+# The scripts each supported language is written in: every language of
+# HARTOS tts_router LANG_ENGINE_PREFERENCE. A run of letters in one of these
+# scripts keeps the language the caller asked for. The script guess above
+# applies only to a run the requested language is not written in, such as
+# an English name inside Tamil. Without this, Spanish became 'en', Japanese
+# 'zh', Arabic 'ur' and Russian 'en', and the wrong voice read them.
+_LATIN = frozenset({'latin'})
+_DEVANAGARI = frozenset({'devanagari'})
+LANG_SCRIPTS = {
+    **{c: _LATIN for c in ('en', 'de', 'es', 'fr', 'it', 'pt', 'nl', 'pl', 'sv',
+                           'tr', 'id', 'vi', 'cs', 'hu', 'fi', 'ro', 'cy', 'is',
+                           'ms', 'sw', 'lv')},
+    **{c: _DEVANAGARI for c in ('hi', 'mr', 'ne', 'sa', 'brx', 'doi', 'kok',
+                                'mai')},
+    'bn': frozenset({'bengali'}), 'as': frozenset({'bengali'}),
+    'mni': frozenset({'bengali', 'meetei'}),
+    'pa': frozenset({'gurmukhi'}), 'gu': frozenset({'gujarati'}),
+    'ta': frozenset({'tamil'}), 'te': frozenset({'telugu'}),
+    'kn': frozenset({'kannada'}), 'ml': frozenset({'malayalam'}),
+    'or': frozenset({'odia'}), 'si': frozenset({'sinhala'}),
+    'ur': frozenset({'arabic'}), 'ar': frozenset({'arabic'}),
+    'fa': frozenset({'arabic'}),
+    'sd': frozenset({'arabic', 'devanagari'}),
+    'ks': frozenset({'arabic', 'devanagari'}),
+    'zh': frozenset({'cjk'}),
+    'ja': frozenset({'cjk', 'hiragana', 'katakana'}),
+    'ko': frozenset({'hangul', 'cjk'}),
+    'ru': frozenset({'cyrillic'}), 'uk': frozenset({'cyrillic'}),
+    'bg': frozenset({'cyrillic'}), 'sr': frozenset({'cyrillic', 'latin'}),
+    'el': frozenset({'greek'}), 'he': frozenset({'hebrew'}),
+    'th': frozenset({'thai'}), 'lo': frozenset({'lao'}),
+    'km': frozenset({'khmer'}), 'my': frozenset({'myanmar'}),
+    'sat': frozenset({'ol_chiki'}),
+}
+
+# Marks a run of letters in the requested language while the text is cut
+# into runs (never a real script name).
+_REQUESTED = '<requested>'
 
 _MARATHI_PATTERNS = [r'आहे', r'माझ', r'तुम्ह', r'मी', r'आम्ह', r'पण', r'मध्ये']
 _HINDI_PATTERNS = [r'है', r'मैं', r'हम', r'आप', r'में', r'और', r'का', r'की', r'के', r'हूँ']
@@ -89,11 +153,32 @@ def _parse_attrs(attr_str: str) -> dict:
 def _get_script(char: str) -> str:
     if char in _PUNCTUATION:
         return 'punctuation'
+    category = unicodedata.category(char)
+    if category[0] in 'PSM' or category == 'Cf':
+        # Punctuation, symbols, combining marks and joiners of any script
+        # ('。', '¿', '€', an accent typed as its own mark, the zero-width
+        # joiner inside a Malayalam or Sinhala word) stay with the run they
+        # sit in: only letters decide a run's script.
+        return 'punctuation'
     code = ord(char)
     for script, (start, end) in SCRIPT_RANGES.items():
         if start <= code <= end:
             return script
+    for script, start, end in _EXTRA_RANGES:
+        if start <= code <= end:
+            return script
     return 'other'
+
+
+def _scripts_of(language) -> frozenset:
+    """The scripts the requested language is written in; empty when no
+    language was asked for or it is not a supported one. 'zh-CN' and
+    'pt_BR' are looked up by their base code."""
+    code = (language or '').strip().lower().replace('_', '-')
+    if not code:
+        return frozenset()
+    return LANG_SCRIPTS.get(code) or LANG_SCRIPTS.get(code.split('-')[0],
+                                                      frozenset())
 
 
 def _detect_devanagari_lang(text: str) -> str:
@@ -110,11 +195,17 @@ def _script_to_lang(text: str, script: str) -> str:
 
 # ── Core segmentation ────────────────────────────────────────────
 
-def _segment_speech(text: str) -> list:
-    """Split plain text into speech segments by script/language."""
+def _segment_speech(text: str, language=None) -> list:
+    """Split plain text into speech segments by script/language.
+
+    With ``language``, every run of letters written in that language's
+    script (LANG_SCRIPTS) is one segment in that language, even across
+    scripts the language mixes (Japanese kanji and kana). Other runs get
+    the script guess, as they do with no language."""
     if not text or not text.strip():
         return []
 
+    requested_scripts = _scripts_of(language)
     script_chunks = []
     current_chunk = ''
     current_script = None
@@ -135,6 +226,9 @@ def _segment_speech(text: str) -> list:
             current_chunk += char
             continue
 
+        if script in requested_scripts:
+            script = _REQUESTED
+
         if current_script is None:
             current_script = script
             current_chunk = char
@@ -147,11 +241,17 @@ def _segment_speech(text: str) -> list:
             current_chunk += char
 
     if current_chunk.strip():
-        script_chunks.append((current_chunk.strip(), current_script or 'latin'))
+        # No letters at all ('123', '!!'): nothing contradicts the
+        # requested language, so it keeps it.
+        script_chunks.append((current_chunk.strip(), current_script or (
+            _REQUESTED if requested_scripts else 'latin')))
 
     result = []
     for chunk_text, script in script_chunks:
-        lang = _script_to_lang(chunk_text, script)
+        if script == _REQUESTED:
+            lang = language.strip()
+        else:
+            lang = _script_to_lang(chunk_text, script)
         if result and result[-1]['lang'] == lang:
             result[-1]['text'] += ' ' + chunk_text
         else:
@@ -211,8 +311,13 @@ def _extract_media_tags(text: str) -> list:
     return parts
 
 
-def segment(text: str) -> list:
+def segment(text: str, language=None) -> list:
     """Split text into typed segments for TTS/music/singing routing.
+
+    ``language`` is the language the caller asked to hear (e.g. 'es'). A
+    speech run written in that language's script keeps it; without it,
+    or for a run in another script, the language is guessed from the
+    script.
 
     Returns list of segment dicts. Each has 'type' key:
       speech: {'type': 'speech', 'lang': str, 'text': str}
@@ -229,7 +334,7 @@ def segment(text: str) -> list:
     for kind, data in parts:
         if kind == 'text':
             # Plain text → split by language into speech segments
-            result.extend(_segment_speech(data))
+            result.extend(_segment_speech(data, language))
         else:
             # Media tag — already a complete segment dict
             result.append(data)
