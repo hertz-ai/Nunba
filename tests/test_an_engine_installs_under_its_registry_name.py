@@ -64,7 +64,7 @@ def world(monkeypatch):
 
     def ensure_venv(name):
         seen.venv_built.append(name)
-        return 'C:/venvs/{}/Scripts/python.exe'.format(name)
+        return f'C:/venvs/{name}/Scripts/python.exe'
 
     def install_into_venv(name, packages):
         seen.venv_installed.append((name, list(packages)))

@@ -107,7 +107,7 @@ def machine(monkeypatch):
         return True
 
     monkeypatch.setattr(backend_venv, 'ensure_venv',
-                        lambda name: 'C:/venvs/{}/Scripts/python.exe'.format(name))
+                        lambda name: f'C:/venvs/{name}/Scripts/python.exe')
     monkeypatch.setattr(backend_venv, 'install_into_venv', install_into_venv)
     monkeypatch.setattr(pi, '_acquire_file_lock', acquire)
     monkeypatch.setattr(pi, '_release_file_lock', held.discard)
