@@ -17,9 +17,23 @@ export const MAX_BACKOFF_MS = 30000;
 // can manually retry rather than an invisible never-ending loop.
 export const MAX_RETRIES = 10;
 
-/** Classify an error into a user-readable reason + retryable flag. */
+/**
+ * What a message reads while the page has given up waiting on a silent turn
+ * and sends it again.  The page's own deadline (socialApi CHAT_DEADLINE_MS,
+ * 180 s with no trace) aborts the POST; axios rejects with its CanceledError
+ * ("canceled"), and the bubble read "canceled - retrying in 4s...", then
+ * "gave up after 10 attempts", while the agent was still working on it: a
+ * resend of the same id joins the running turn (Nunba _chat_turn).  Live
+ * 2026-11-27/28: 888 resends of 149 messages (audit K10).
+ */
+export const STILL_WORKING_REASON = 'Still working on it';
+
+/** Classify an error into a user-readable reason + retryable flag.  `working`
+ * marks the page's own give-up on a turn that is still running. */
 export function classifyError(error) {
   if (!navigator.onLine) return {reason: 'You are offline', retryable: true};
+  if (error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError' || error?.name === 'AbortError')
+    return {reason: STILL_WORKING_REASON, retryable: true, working: true};
   if (error?.code === 'ECONNABORTED' || error?.message?.includes('timeout'))
     return {reason: 'Request timed out', retryable: true};
   if (
@@ -34,6 +48,26 @@ export function classifyError(error) {
   if (error?.response?.status >= 500)
     return {reason: `Server error (${error.response.status})`, retryable: true};
   return {reason: error?.message || 'Unknown error', retryable: true};
+}
+
+/** The bubble text while a message waits to be sent again: a still-working
+ * turn shows no countdown, any other reason shows when the next try goes. */
+export function retryingText(reason, sec) {
+  if (reason === STILL_WORKING_REASON) return `${STILL_WORKING_REASON}...`;
+  return `${reason} — retrying in ${sec}s...`;
+}
+
+/** The bubble text once the tries are used up. */
+export function gaveUpText(reason, attempts) {
+  if (reason === STILL_WORKING_REASON) return `No answer came after ${attempts} tries`;
+  return `${reason || 'Backend unreachable'} — gave up after ${attempts} attempts`;
+}
+
+/** The text a message restored after a reload shows when it was mid-send:
+ * the countdown is dropped, and a still-working wait reads as interrupted. */
+export function interruptedText(error) {
+  if (!error || error.startsWith(STILL_WORKING_REASON)) return 'Send interrupted';
+  return error.replace(/\s*—?\s*retrying in \d+s\.\.\.?/i, '').trim() || 'Send interrupted';
 }
 
 /** Compute backoff delay for a given retry count (0-indexed). Capped at MAX_BACKOFF_MS. */

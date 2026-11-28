@@ -32,7 +32,7 @@ import { CHAT_BUBBLE_PRIORITY, CHAT_ACTION_THINKING, CHAT_ACTION_STATUS, isOther
 import {animateScroll as scrollLibrary} from 'react-scroll';
 
 import autobahn from 'autobahn';
-import { classifyError, getBackoff, startTurn, MAX_RETRIES, turnHasReply, EMPTY_REPLY_REASON, PUSHED_REPLY_MISSING_REASON } from '../utils/chatRetry';
+import { classifyError, getBackoff, startTurn, MAX_RETRIES, turnHasReply, EMPTY_REPLY_REASON, PUSHED_REPLY_MISSING_REASON, retryingText, gaveUpText, interruptedText } from '../utils/chatRetry';
 import { shouldSpeakLocalReply, isDraftReply, hasServerAudioPayload, shouldPlayPushedClip, speaksPushedText, initialTtsEnabled } from '../utils/ttsGuards';
 import { startLiveAvatar, stopLiveAvatar } from '../utils/liveAvatar';
 import { afterVideoError, idleLinkOf } from '../utils/idleFace';
@@ -1885,10 +1885,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             return {
               ...m,
               status: 'failed',
-              error: m.error
-                ? m.error.replace(/\s*—?\s*retrying in \d+s\.\.\.?/i, '')
-                  .trim() || 'Send interrupted'
-                : 'Send interrupted',
+              error: interruptedText(m.error),
               retryCount: undefined,
             };
           }
@@ -4617,7 +4614,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
             for (let sec = totalSec; sec > 0; sec--) {
               updateMessageStatus(msgId, {
                 status: 'retrying',
-                error: `${lastLocalReason} — retrying in ${sec}s...`,
+                error: retryingText(lastLocalReason, sec),
                 retryCount,
               });
               await new Promise((r) => setTimeout(r, 1000));
@@ -5018,7 +5015,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
       // handleRetryMessage button.
       updateMessageStatus(msgId, {
         status: 'failed',
-        error: `${lastLocalReason || 'Backend unreachable'} — gave up after ${MAX_RETRIES} attempts`,
+        error: gaveUpText(lastLocalReason, MAX_RETRIES),
       });
       setLoading(false);
       setIsRequestInFlight(false);

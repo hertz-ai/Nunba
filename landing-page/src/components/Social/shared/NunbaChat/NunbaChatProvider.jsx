@@ -23,6 +23,7 @@ import {
   getBackoff,
   makeMsgId,
   rememberOwnTurn,
+  retryingText,
 } from '../../../../utils/chatRetry';
 import {getStableDeviceIdOnce} from '../../../../utils/deviceId';
 import {rememberServerPromptId} from '../../../../utils/promptId';
@@ -826,7 +827,7 @@ export default function NunbaChatProvider({children}) {
           for (let sec = totalSec; sec > 0; sec--) {
             updateMsgById(msgId, {
               status: 'retrying',
-              error: `${lastReason} — retrying in ${sec}s...`,
+              error: retryingText(lastReason, sec),
               retryCount,
             });
             await new Promise((r) => setTimeout(r, 1000));
