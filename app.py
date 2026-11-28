@@ -4786,15 +4786,19 @@ def _import_main_app():
         if hasattr(h, 'flush'):
             h.flush()
 
-    # Clear stale SQLAlchemy metadata to prevent "Table already defined" errors
-    # in frozen builds where import order differs from dev.
-    try:
-        from sql.models import Base as _sql_base
-        from sqlalchemy.orm import declarative_base
-        if hasattr(_sql_base, 'metadata'):
-            _sql_base.metadata.clear()
-    except Exception:
-        pass
+    # Do NOT clear the shared SQLAlchemy metadata here. It used to be cleared
+    # (after importing sql.models) to dodge "Table already defined" errors,
+    # but sql.models stays cached in sys.modules, so its ~160 tables were never
+    # registered again: only classes defined later (HARTOS's SitePage) were.
+    # Every create_all then failed on "site_pages.author_id could not find
+    # table 'users'", which aborted HARTOS run_migrations before its column
+    # steps, so an existing DB was never upgraded (no notifications.read_at,
+    # no site_pages table). The duplicate-'users' error the clear worked
+    # around came from loading HARTOS's _models_local next to sql.models;
+    # HARTOS now loads it only as the facade's fallback when sql.models is
+    # absent (guarded by its test_models_local_is_imported_only_by_the_facade)
+    # and defines SitePage on the facade.
+    # Regression guard: tests/test_shared_metadata_not_cleared.py
 
     # Load main.py as a module
     spec = importlib.util.spec_from_file_location("main_module", main_path)

@@ -173,7 +173,19 @@ def embeddings_args(spec_args) -> list:
 #
 # ONE authority for both spawn sites (main server + caption/draft server) so
 # the two can never drift on whether thinking is suppressed.
+#
+# The env var's NAME changed between llama.cpp builds.  Build 9174 (59778f019),
+# the one Nunba's installer put on the owner's desktop, documents
+#   --chat-template-kwargs STRING  ... (env: LLAMA_CHAT_TEMPLATE_KWARGS)
+# and ignores the LLAMA_ARG_ spelling.  Measured 2026-11-28 on that binary,
+# same flags as the spawn, prompt "Tell me a short joke.", max_tokens 200:
+#   LLAMA_ARG_CHAT_TEMPLATE_KWARGS  -> finish=length, content 0, reasoning 668
+#   LLAMA_CHAT_TEMPLATE_KWARGS      -> finish=stop,  content 88, reasoning 0
+# and the live app sent empty replies ("can you see my message?").  An
+# unknown env var is ignored, so BOTH spellings are set: each build reads
+# the one it knows.
 _LLAMA_THINK_OFF_ENV = 'LLAMA_ARG_CHAT_TEMPLATE_KWARGS'
+_LLAMA_THINK_OFF_ENVS = (_LLAMA_THINK_OFF_ENV, 'LLAMA_CHAT_TEMPLATE_KWARGS')
 _LLAMA_THINK_OFF_VALUE = '{"enable_thinking":false}'
 
 # The prompt cache each llama-server keeps in host RAM.  Build 10330's own
@@ -203,7 +215,12 @@ def llama_child_env(base: dict | None = None) -> dict:
     override an explicit choice.
     """
     env = dict(base) if base is not None else os.environ.copy()
-    env.setdefault(_LLAMA_THINK_OFF_ENV, _LLAMA_THINK_OFF_VALUE)
+    # An operator's value under EITHER spelling applies to both, so the
+    # binary sees it whichever name it reads.
+    think = next((env[n] for n in _LLAMA_THINK_OFF_ENVS if n in env),
+                 _LLAMA_THINK_OFF_VALUE)
+    for name in _LLAMA_THINK_OFF_ENVS:
+        env.setdefault(name, think)
     env.setdefault(_LLAMA_CACHE_RAM_ENV, _LLAMA_CACHE_RAM_MIB)
     return env
 
