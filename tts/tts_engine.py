@@ -4001,7 +4001,7 @@ class TTSEngine:
                 and speech_segs[0].get('lang')
                 and speech_segs[0].get('lang') != (language or self._language or 'en')
             )
-            # A reply that holds a language mark (<es>...</es>) is always
+            # A reply that holds a language mark (<lang es>...</lang>) is always
             # spoken from its segments: their text has no mark, while the
             # single-language path below would say the text as written,
             # marks and all (a Spanish reply marked 'es' and asked in 'es').

@@ -3,9 +3,12 @@
 Speech design Part A (D:\\claude_scratch\\66e67cad\\speech_out_1128\\design.md,
 review 1 MUST 2; owner 28 Nov 2026: the model tags a language the way it
 tags singing). The model will mark a part written in another language as
-<es>...</es> (or <lang es>...</lang>). The alphabet cannot tell Spanish from
-English or Japanese from Chinese; the mark can. This file pins the speaking
-half, which ships before any model is told about the marks:
+<lang es>...</lang>. The alphabet cannot tell Spanish from English or
+Japanese from Chinese; the mark can. One form only, under a name that is
+ours: a bare <es>, <tr>, <id>, <it> or <my-app> is ordinary text (review of
+714d77c0, where the bare form took a web page table, a path placeholder and
+a C++ type for languages). This file pins the speaking half, which ships
+before any model is told about the marks:
 
 1. One grammar: tests/fixtures/speech_tags_cases.json is the same file in
    HARTOS, where the text a person reads is run against it; its sha256 is
@@ -40,12 +43,12 @@ if PROJECT_ROOT not in sys.path:
 import pytest  # noqa: E402
 
 from tts.language_segmenter import (  # noqa: E402
-    LANG_SCRIPTS, _segment_speech, has_language_mark, segment)
+    _segment_speech, has_language_mark, segment)
 
 FIXTURE = os.path.join(PROJECT_ROOT, 'tests', 'fixtures', 'speech_tags_cases.json')
 # The same constant is in HARTOS tests/unit/
 # test_a_part_marked_with_its_language_keeps_its_words_and_loses_its_mark.py.
-FIXTURE_SHA256 = '173e565573587d4515aedd56a09217059455e529d301e715f33c4a46cbc2bde9'
+FIXTURE_SHA256 = '0f227d3144f54754a33a1de835a75e839ec9f9cc8f8b21cb6e7b0efed8dafe49'
 
 with open(FIXTURE, 'rb') as _f:
     # line ends as git stores them, whatever the checkout wrote
@@ -66,11 +69,6 @@ def test_the_shared_cases_are_the_same_file_as_in_hartos():
     assert hashlib.sha256(_BYTES).hexdigest() == FIXTURE_SHA256, (
         'tests/fixtures/speech_tags_cases.json changed: make the same change '
         'in HARTOS and set the new sha256 in both tests')
-
-
-def test_every_shared_bare_code_is_a_language_the_segmenter_knows():
-    assert set(_SHARED['bare_codes']) <= set(LANG_SCRIPTS), (
-        sorted(set(_SHARED['bare_codes']) - set(LANG_SCRIPTS)))
 
 
 @pytest.mark.parametrize('case', CASES, ids=_IDS)
@@ -97,47 +95,87 @@ def test_a_reply_marked_whole_is_all_in_that_language(case):
 @pytest.mark.parametrize('language', [None, 'en', 'ta', 'ja'])
 def test_a_marked_part_in_the_latin_alphabet_is_spoken_as_its_language(language):
     """Whatever was asked for, and whatever the alphabet guess says."""
-    assert _parts('<hi>namaste dost</hi>', language) == [
+    assert _parts('<lang hi>namaste dost</lang>', language) == [
         ['hi', 'speech', 'namaste dost']]
 
 
 def test_a_marked_part_is_one_segment_across_alphabets():
-    assert _parts('<ja>Zoey は公園に行きました</ja>', 'en') == [
+    assert _parts('<lang ja>Zoey は公園に行きました</lang>', 'en') == [
         ['ja', 'speech', 'Zoey は公園に行きました']]
 
 
 def test_a_mark_left_open_runs_to_the_end_across_a_sung_part():
-    assert _parts('Hi. <es>Escucha <sing>la cucaracha</sing> amigo', 'en') == [
+    assert _parts('Hi. <lang es>Escucha <sing>la cucaracha</sing> amigo', 'en') == [
         ['en', 'speech', 'Hi.'], ['es', 'speech', 'Escucha'],
         ['es', 'sing', 'la cucaracha'], ['es', 'speech', 'amigo']]
 
 
 def test_a_sung_part_marked_in_two_languages_has_no_one_language():
-    assert _parts('<sing><es>hola</es> <fr>salut</fr></sing>', 'en') == [
+    assert _parts(
+        '<sing><lang es>hola</lang> <lang fr>salut</lang></sing>', 'en') == [
         [None, 'sing', 'hola salut']]
 
 
 def test_a_sung_part_keeps_its_length_inside_a_mark():
-    segs = segment('<es><sing duration="15">la la la</sing></es>')
+    segs = segment('<lang es><sing duration="15">la la la</sing></lang>')
     assert segs == [{'type': 'sing', 'text': 'la la la', 'duration': 15,
                      'lang': 'es'}]
 
 
 def test_only_marks_and_nothing_to_say_is_no_segment():
-    assert segment('<es></es>', language='en') == []
+    assert segment('<lang es></lang>', language='en') == []
     assert segment('</lang>', language='en') == []
 
 
+@pytest.mark.parametrize('mark,language', [
+    ('<lang pt-BR>', 'pt'), ('<lang zh-Hans>', 'zh'), ('<lang es-419>', 'es'),
+    ('<lang=en-IN>', 'en'), ('<lang ZH-cn>', 'zh'), ('<lang cs>', 'cs'),
+])
+def test_a_code_with_a_region_is_spoken_by_its_base_language(mark, language):
+    assert _parts(mark + 'abc</lang>', 'ta') == [[language, 'speech', 'abc']]
+
+
+@pytest.mark.parametrize('mark', [
+    '<lang zz>', '<lang español>', '<lang>', '<lang code="es" x>', '<lang e>',
+    '<lang 12>',
+])
+def test_a_mark_that_names_no_language_marks_nothing_and_is_not_spoken(mark):
+    """The words are split as text with no mark is: by the language asked
+    for where its alphabet fits."""
+    assert _parts(mark + 'Hola amigo</lang>', 'es') == [
+        ['es', 'speech', 'Hola amigo']]
+
+
 @pytest.mark.parametrize('text,marked', [
-    ('<es>Hola</es>', True), ('<lang es>Hola', True), ('Hello </lang>', True),
-    ('<lang="pt-BR">Olá</lang>', True),
+    ('<lang es>Hola</lang>', True), ('<lang es>Hola', True),
+    ('Hello </lang>', True), ('<lang="pt-BR">Olá</lang>', True),
+    ('<LANG ES>Hola', True), ('<lang español>Hola', True),
+    ('<es>Hola</es>', False), ('<tr><th>Name</th></tr>', False),
+    ('/users/<id>', False), ('use the <it> tag', False),
+    ('vector<it> x', False), ('<my-app></my-app>', False),
+    ('<en-dash> <or-else> <id-num>', False), ('<pt-BR>Olá</pt-BR>', False),
     ('<b>bold</b>', False), ('line<br>line', False), ('<em>x</em>', False),
-    ('<i>x</i> <p>y</p> <a>z</a>', False), ('<ES>Hola</ES>', False),
-    ('<sing>la</sing>', False), ('a < es > b', False), ('', False),
+    ('<i>x</i> <p>y</p> <a>z</a>', False), ('<language>', False),
+    ('<sing>la</sing>', False), ('a < lang es > b', False), ('', False),
     (None, False),
 ])
 def test_what_counts_as_a_language_mark(text, marked):
     assert has_language_mark(text) is marked
+
+
+@pytest.mark.parametrize('language,text', [
+    # measured on 714d77c0 by its reviewer: each of these lost a tag and
+    # most turned the rest of the reply into another language
+    ('en', 'The page is <table><tr><th>Name</th></tr><tr><td>Zoey</td></tr></table>'),
+    ('en', 'GET /users/<id> returns the user'), ('en', 'use the <it> tag'),
+    ('en', 'vector<it> x'), ('en', 'Add <my-app></my-app> to the page'),
+    ('en', 'Write <en-dash> then <or-else> and <id-num>'),
+    ('en', 'Say <es>Hola</es>'), ('es', 'Di <en>hello</en> ahora'),
+    (None, 'A <tr>Merhaba</tr> row'),
+])
+def test_a_bare_code_in_brackets_is_spoken_as_before(language, text):
+    assert segment(text, language=language) == _segment_speech(text, language)
+    assert _parts(text, language) == [[language or 'en', 'speech', text]]
 
 
 # ── text with no mark is split exactly as before ─────────────────────
@@ -183,7 +221,7 @@ def test_a_reply_marked_in_the_language_asked_for_is_not_said_with_its_marks():
     eng = _routing_engine('es')
     with patch.object(eng, '_synthesize_multilingual',
                       return_value='/tmp/x.wav') as m_multi:
-        assert eng.synthesize('<es>Hola amigo</es>', language='es',
+        assert eng.synthesize('<lang es>Hola amigo</lang>', language='es',
                               speed=1.0) == '/tmp/x.wav'
     assert [(s['lang'], s['text']) for s in m_multi.call_args[0][0]] == [
         ('es', 'Hola amigo')]
@@ -193,7 +231,7 @@ def test_a_stray_closing_mark_is_not_said():
     eng = _routing_engine('en')
     with patch.object(eng, '_synthesize_multilingual',
                       return_value='/tmp/x.wav') as m_multi:
-        eng.synthesize('Hello </es> world', language='en', speed=1.0)
+        eng.synthesize('Hello </lang> world', language='en', speed=1.0)
     assert [(s['lang'], s['text']) for s in m_multi.call_args[0][0]] == [
         ('en', 'Hello world')]
 
@@ -251,7 +289,8 @@ def engine(monkeypatch, tmp_path):
 
 def test_each_marked_part_goes_to_the_voice_of_its_language(engine, tmp_path):
     engine._synthesize_multilingual(
-        segment('Hi there. <es>Hola amigo</es> <fr>Salut</fr> Bye.', language='en'),
+        segment('Hi there. <lang es>Hola amigo</lang> <lang fr>Salut</lang> Bye.',
+                language='en'),
         output_path=str(tmp_path / 'line.wav'), language='en')
     assert engine.spoken == [('Hi there.', 'en'), ('Hola amigo', 'es'),
                              ('Salut', 'fr'), ('Bye.', 'en')]
@@ -261,7 +300,7 @@ def test_a_marked_sung_part_nothing_can_sing_is_spoken_in_its_language(
         engine, tmp_path):
     """The speech around it is English; the sung words are marked Spanish."""
     engine._synthesize_multilingual(
-        segment('Listen. <sing><es>la cucaracha ya no puede caminar</es></sing>',
+        segment('Listen. <sing><lang es>la cucaracha ya no puede caminar</lang></sing>',
                 language='en'),
         output_path=str(tmp_path / 'line.wav'), language='en')
     assert engine.sung == ['la cucaracha ya no puede caminar'], 'no mark is sung'

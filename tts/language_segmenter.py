@@ -132,19 +132,17 @@ _LYRICS_RE = re.compile(
 # grammar, read the same by HARTOS tts_text_normalizer (which takes the
 # marks out of every text a person reads) and pinned in both repos by
 # tests/fixtures/speech_tags_cases.json:
-#   <es>Hola</es>            the tag name is a language code, no attributes
-#   <pt-BR>Olá</pt-BR>       a region may follow the code
 #   <lang es>Hola</lang>     also <lang=es>, <lang="es">, <lang='es'>
-# A bare tag counts only when its code is a language in LANG_SCRIPTS,
-# written in small letters with nothing else inside the brackets, so <b>,
-# <i>, <p>, <a>, <br>, <em> or <BR> are never taken for a language.
-_LANG_REGION = r'(?:-[A-Za-z]{2,4})?'
-_LANG_MARK_RE = re.compile(
-    r'<(?P<close>/?)(?P<bare>(?:' + '|'.join(sorted(LANG_SCRIPTS)) + r')'
-    + _LANG_REGION + r')>'
-    r'|<(?i:lang)(?:\s*=\s*|\s+)["\']?(?P<named>[A-Za-z]{2,3}' + _LANG_REGION
-    + r')["\']?\s*>'
-    r'|(?P<end></(?i:lang)\s*>)')
+# One form only, under a name that is ours. A bare <es>, <tr>, <id>, <it>
+# or <my-app> is ordinary text: a table row, a placeholder, a C++ type
+# (review of 714d77c0: the bare form took all of those for languages).
+# A <lang ...> or </lang> tag is never spoken, whatever is inside it; the
+# code is read from inside, and one that cannot be read, or that is no
+# language in LANG_SCRIPTS, marks nothing.
+_LANG_MARK_RE = re.compile(r'<(?P<close>/?)lang\b(?P<inside>[^<>]*)>',
+                           re.IGNORECASE)
+_LANG_CODE_RE = re.compile(
+    r'(?:\s*=\s*|\s+)["\']?(?P<code>[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*)["\']?\s*')
 
 _ATTR_RE = re.compile(r"""(\w+)\s*=\s*['"]([^'"]*?)['"]""")
 
@@ -342,11 +340,12 @@ def _read_language_marks(text: str, open_marks: list) -> list:
     in order, no mark left in any words.
 
     ``open_marks`` is the marks still open, carried across the parts of one
-    message. An open mark runs to its close or to the end of the message;
-    '</lang>' closes the nearest open mark, '</es>' the nearest open 'es'
-    and whatever opened inside it; a close with no open is dropped. A
-    <lang xx> whose code is not in LANG_SCRIPTS marks nothing: its words are
-    read as unmarked text."""
+    message. An open mark runs to its '</lang>' or to the end of the
+    message; '</lang>' closes the nearest open mark; a close with no open
+    is dropped. The language is the code where LANG_SCRIPTS has it, else
+    its base ('pt-BR' is 'pt', 'zh-Hans' is 'zh'). A mark whose code cannot
+    be read or is no language there marks nothing: its words are read as
+    unmarked text."""
     runs = []
     last = 0
     for mark in _LANG_MARK_RE.finditer(text):
@@ -354,21 +353,15 @@ def _read_language_marks(text: str, open_marks: list) -> list:
             runs.append((text[last:mark.start()],
                          open_marks[-1] if open_marks else None))
         last = mark.end()
-        code = mark.group('bare') or mark.group('named')
-        if code and not mark.group('close'):
-            base, _, region = code.partition('-')
-            base = base.lower()
-            open_marks.append(base + ('-' + region if region else '')
-                              if base in LANG_SCRIPTS else None)
-        elif mark.group('end'):
+        if mark.group('close'):
             if open_marks:
                 open_marks.pop()
-        else:
-            base = code.partition('-')[0]
-            for at in range(len(open_marks) - 1, -1, -1):
-                if (open_marks[at] or '').partition('-')[0] == base:
-                    del open_marks[at:]
-                    break
+            continue
+        read = _LANG_CODE_RE.fullmatch(mark.group('inside'))
+        code = read.group('code').lower() if read else ''
+        base = code.partition('-')[0]
+        open_marks.append(code if code in LANG_SCRIPTS
+                          else base if base in LANG_SCRIPTS else None)
     if last < len(text):
         runs.append((text[last:], open_marks[-1] if open_marks else None))
     return runs
@@ -407,7 +400,7 @@ def segment(text: str, language=None) -> list:
     or for a run in another script, the language is guessed from the
     script.
 
-    A part inside a language mark (<es>...</es>, <lang es>...</lang>) is
+    A part inside a language mark (<lang es>...</lang>) is
     spoken in that language whatever alphabet it is written in, and the
     mark is in no segment's text. A sung part inside a mark, or holding
     one around all its words, carries that language as 'lang'.
