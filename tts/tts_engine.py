@@ -367,11 +367,12 @@ _FALLBACK_ENGINE_CAPABILITIES = {
             'ar', 'fa', 'he', 'sw',
             # Additional codes in core.constants.SUPPORTED_LANG_DICT.
             # MMS-TTS upstream ships per-language VITS checkpoints for
-            # 1100+ langs (Pratap et al., Meta, 2023); these are within
-            # that catalogue and supported by the mms_tts_tool wrapper.
+            # 1100+ langs (Pratap et al., Meta, 2023).  Listed here only
+            # when facebook/mms-tts-<code> is there (checked 2026-11-28):
+            # Latvian (lav) and Maithili (mai) are; Serbian (srp) and
+            # Kashmiri (kas) are not, so they are not listed.
             'lv',  # Latvian
-            'sr',  # Serbian
-            'ks',  # Kashmiri
+            'mai',  # Maithili
         },
         'paralinguistic': [],
         'emotion_tags': [],
@@ -457,8 +458,10 @@ _LANG_CAPABLE_BACKENDS: dict[str, frozenset[str]] = {
     'lo': frozenset({BACKEND_MMS_TTS}),
     'my': frozenset({BACKEND_MMS_TTS}),
     'lv': frozenset({BACKEND_MMS_TTS}),
-    'sr': frozenset({BACKEND_CHATTERBOX_ML, BACKEND_MMS_TTS}),
-    'ks': frozenset({BACKEND_MMS_TTS}),
+    'sr': frozenset({BACKEND_CHATTERBOX_ML}),
+    # Kashmiri: MMS has no model for it (checked 2026-11-28) and no other
+    # backend in this file lists it.  Its own row, as Sinhala below.
+    'ks': frozenset(),
     # Sinhala — no backend in this file lists it, and MMS has no Sinhala
     # model (checked 2026-11-28).  Its own row, so it does not take the
     # English set (which names mms_tts) as an unlisted language does.
@@ -672,8 +675,7 @@ _FALLBACK_LANG_ENGINE_PREFERENCE = {
     'lo': [BACKEND_MMS_TTS],
     'my': [BACKEND_MMS_TTS],
     'lv': [BACKEND_MMS_TTS],
-    'sr': [BACKEND_MMS_TTS, BACKEND_CHATTERBOX_ML],
-    'ks': [BACKEND_MMS_TTS],
+    'sr': [BACKEND_CHATTERBOX_ML],
     # NB: 'zh-cn' is intentionally NOT keyed here. _normalize_lang()
     # collapses 'zh-cn' / 'zh-CN' / 'zh_TW' to 'zh' before the ladder
     # lookup, so any 'zh-cn' entry would be dead-code AND would also

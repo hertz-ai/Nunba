@@ -20,8 +20,10 @@ import pytest
 
 from tts import tts_engine as te
 
-NO_MODEL = ('it', 'cs', 'zh', 'ja', 'ne', 'sd', 'sa', 'si')
-HAS_MODEL = ('ta', 'hi')
+# Serbian (srp) and Kashmiri (kas) answered 401 too; Latvian (lav) and
+# Maithili (mai) answered 307.
+NO_MODEL = ('it', 'cs', 'zh', 'ja', 'ne', 'sd', 'sa', 'si', 'sr', 'ks')
+HAS_MODEL = ('ta', 'hi', 'lv', 'mai')
 MMS = te.BACKEND_MMS_TTS
 
 
