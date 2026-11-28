@@ -442,7 +442,7 @@ jobs:
   # macOS Build
   # ============================================================
   build-macos:
-    runs-on: macos-14  # Apple Silicon (M1) runner
+    runs-on: macos-15  # Apple Silicon runner; the macos-14 image is retired (every build-macos since 11-10 was cancelled: "The configuration 'macos-14-arm64-us-default' is not supported")
     timeout-minutes: 60
 
     steps:
