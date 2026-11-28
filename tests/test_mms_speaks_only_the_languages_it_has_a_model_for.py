@@ -47,3 +47,32 @@ def test_mms_still_speaks_a_language_it_has_a_model_for(lang):
     assert MMS in te._capable_backends_for(lang)
     assert MMS in te._FALLBACK_LANG_ENGINE_PREFERENCE[lang]
     assert lang in te._FALLBACK_ENGINE_CAPABILITIES[MMS]['languages']
+
+
+@pytest.fixture
+def no_catalog(monkeypatch):
+    """The HARTOS catalog cannot be read, so the tables here decide."""
+    import models.catalog as catalog
+
+    def unreadable():
+        raise RuntimeError('catalog unreadable')
+    monkeypatch.setattr(catalog, 'get_catalog', unreadable)
+    monkeypatch.setattr(te, '_filter_ladder_by_vram_budget', lambda ladder: ladder)
+
+
+@pytest.mark.parametrize('lang', NO_MODEL)
+def test_the_ladder_actually_used_never_offers_mms_without_a_model(no_catalog, lang):
+    """Review of 5aec5932 (rv_fwd, 2026-11-28): Kashmiri and Sinhala have no
+    ladder row, so they fell to the default chain, which starts with MMS.
+    The rows above checked the table, not the ladder a line is given."""
+    assert MMS not in te._get_lang_preference(lang)
+
+
+@pytest.mark.parametrize('lang', HAS_MODEL)
+def test_the_ladder_actually_used_still_offers_mms_with_a_model(no_catalog, lang):
+    assert MMS in te._get_lang_preference(lang)
+
+
+def test_a_language_with_no_row_at_all_keeps_the_default_chain(no_catalog):
+    assert 'xx' not in te._LANG_CAPABLE_BACKENDS
+    assert te._get_lang_preference('xx') == list(te._DEFAULT_PREFERENCE)

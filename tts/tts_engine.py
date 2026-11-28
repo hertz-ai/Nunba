@@ -1158,8 +1158,18 @@ def _get_lang_preference(language: str) -> list[str]:
     # instead of forking a "regional" one.
     if prefs is None:
         prefs = (_FALLBACK_LANG_ENGINE_PREFERENCE.get(language)
-                 or _FALLBACK_LANG_ENGINE_PREFERENCE.get(_normalize_lang(language))
-                 or _DEFAULT_PREFERENCE)
+                 or _FALLBACK_LANG_ENGINE_PREFERENCE.get(_normalize_lang(language)))
+        if not prefs:
+            # No ladder of its own: the default chain, which starts with
+            # MMS-TTS.  A language that has its own capable row (Kashmiri
+            # and Sinhala: no backend here speaks them, MMS has no model)
+            # keeps only what that row names, so the default chain never
+            # offers it a voice that cannot speak it (review of 5aec5932).
+            # A language with no row at all gets the default chain whole.
+            prefs = _DEFAULT_PREFERENCE
+            capable = _LANG_CAPABLE_BACKENDS.get(_normalize_lang(language))
+            if capable is not None:
+                prefs = [b for b in prefs if b in capable]
 
     return _filter_ladder_by_vram_budget(list(prefs))
 
