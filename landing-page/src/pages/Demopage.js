@@ -33,7 +33,7 @@ import {animateScroll as scrollLibrary} from 'react-scroll';
 
 import autobahn from 'autobahn';
 import { classifyError, getBackoff, startTurn, mintHeardTurn, promoteHeardTurn, MAX_RETRIES, turnHasReply, EMPTY_REPLY_REASON, PUSHED_REPLY_MISSING_REASON, retryingText, gaveUpText, interruptedText } from '../utils/chatRetry';
-import { shouldSpeakLocalReply, isDraftReply, hasServerAudioPayload, shouldPlayPushedClip, speaksPushedText, initialTtsEnabled } from '../utils/ttsGuards';
+import { shouldSpeakLocalReply, isDraftReply, hasServerAudioPayload, shouldPlayPushedClip, speaksPushedText, initialTtsEnabled, clipTurnOf } from '../utils/ttsGuards';
 import { startLiveAvatar, stopLiveAvatar } from '../utils/liveAvatar';
 import { afterVideoError, idleLinkOf } from '../utils/idleFace';
 import { agentKey, openingMode, rememberChoice } from '../utils/agentMediaMode';
@@ -2125,7 +2125,9 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
     // An open-mic final whose clip arrives is a turn HARTOS answered: it
     // takes the current turn now (chatRetry.promoteHeardTurn), so its own
     // clip is this turn's and plays.
-    if (data && promoteHeardTurn(requestIdRef, data.request_id)) setRequestId(String(data.request_id));
+    // A send's clip names its turn with a send mark after it (ttsGuards
+    // .clipTurnOf cuts it), so a heard turn's first SEND promotes it too.
+    if (data && promoteHeardTurn(requestIdRef, clipTurnOf(data.request_id))) setRequestId(clipTurnOf(data.request_id));
     // Only the current turn's clip plays (utils/ttsGuards.shouldPlayPushedClip):
     // an earlier turn of this page (each turn carries its own id, so a reply
     // that lands after the next send is not spoken over it) or a background
@@ -2436,7 +2438,7 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         // turn's container.
         // The first trace of an open-mic final: HARTOS is working on it, so
         // it takes the current turn now (chatRetry.promoteHeardTurn).
-        if (promoteHeardTurn(requestIdRef, parsed.request_id)) setRequestId(String(parsed.request_id));
+        if (promoteHeardTurn(requestIdRef, clipTurnOf(parsed.request_id))) setRequestId(clipTurnOf(parsed.request_id));
         const currentReqId = requestIdRef.current;
         if (isOtherTurnEnvelope(parsed.request_id, currentReqId)) {
           logger.log(`Dropping another turn's thinking trace (req=${traceRequestId}, current=${currentReqId})`);
@@ -2730,6 +2732,8 @@ const ChatInterface = ({agentData, embeddedMode, onReady, chatActive = true}) =>
         // it by the end of the same race, the page says it itself and a clip
         // that comes later is not played (services/ttsClipPlayer
         // .claimForPage; rv_voice gap c: a failed clip was silent).
+        // A heard turn's send arriving as text is HARTOS answering it.
+        if (promoteHeardTurn(requestIdRef, clipTurnOf(parsed.request_id))) setRequestId(clipTurnOf(parsed.request_id));
         if (ttsEnabled && tts.isAvailable && extractedText
             && speaksPushedText(parsed.request_id, requestIdRef.current)) {
           const wordCount = extractedText.split(/\s+/).length;

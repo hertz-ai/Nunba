@@ -67,7 +67,8 @@ describe('Demopage starts a turn per send', () => {
       /const (\w+) = (?:openMic \? mintHeardTurn\(\) : )?startTurn\(requestIdRef\);[^\n]*\n\s*(?:if \(!openMic\) )?setRequestId\(\1\);/g) || [];
     // ...or an open-mic final taking the turn through the tested helper,
     // whose answer guards the write on the same line.
-    const promoted = SRC.match(/promoteHeardTurn\(requestIdRef, [^)]+\)\) setRequestId\(/g) || [];
+    const promoted = SRC.match(
+      /promoteHeardTurn\(requestIdRef, (?:clipTurnOf\([^)]+\)|[^)]+)\)\) setRequestId\(/g) || [];
     expect(writes.length).toBeGreaterThan(0);
     expect(paired.length + promoted.length).toBe(writes.length);
     // The upload flow used to hand the upload's id to the page, so the next
@@ -103,16 +104,25 @@ describe('an open-mic final takes the turn only when HARTOS treats it as one', (
   test('its clip, its first trace and its addressed reply each promote it', () => {
     const player = SRC.indexOf('const playPushedTts = useCallback(');
     const guard = SRC.indexOf('shouldPlayPushedClip(data, requestIdRef.current', player);
-    const clip = SRC.indexOf('promoteHeardTurn(requestIdRef, data.request_id)', player);
+    const clip = SRC.indexOf('promoteHeardTurn(requestIdRef, clipTurnOf(data.request_id))', player);
     expect(clip).toBeGreaterThan(player);
     expect(clip).toBeLessThan(guard);          // before the clip is judged
 
-    const trace = SRC.indexOf('promoteHeardTurn(requestIdRef, parsed.request_id)');
+    const trace = SRC.indexOf('promoteHeardTurn(requestIdRef, clipTurnOf(parsed.request_id))');
     const traceGate = SRC.indexOf('if (isOtherTurnEnvelope(parsed.request_id, currentReqId))');
     expect(trace).toBeGreaterThan(-1);
     expect(trace).toBeLessThan(traceGate);     // before the trace is judged
 
     expect(SRC).toMatch(/if \(openMic && !notAddressed && promoteHeardTurn\(requestIdRef, msgId\)\) setRequestId\(msgId\);/);
+
+    // rv_voice on 873f5a06: a send's clip and text name the turn with a
+    // send mark after it ('<turn>-intermediate-<n>'), so the exact id never
+    // promoted.  Every envelope promotion goes through clipTurnOf, and a
+    // send's text promotes before its speech is judged.
+    expect(SRC).not.toMatch(/promoteHeardTurn\(requestIdRef, (?:data|parsed)\.request_id\)/);
+    const sendText = SRC.indexOf('speaksPushedText(parsed.request_id, requestIdRef.current)');
+    expect(SRC.lastIndexOf('promoteHeardTurn(requestIdRef, clipTurnOf(parsed.request_id))', sendText))
+      .toBeGreaterThan(traceGate);
   });
 
   test('a pipeline status line does not promote it', () => {
