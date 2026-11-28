@@ -86,17 +86,83 @@ test("the floating window asks the agent's question, naming the agent", () => {
   const card = screen.getByTestId('companion-question');
   expect(card.textContent).toContain('Agent Speech Buddy asks');
   expect(card.textContent).toContain('What does the family call the child at home?');
-  expect(screen.getByRole('button', {name: 'Open'})).toBeInTheDocument();
+  expect(screen.getByRole('button', {name: 'Open in chat'})).toBeInTheDocument();
   expect(screen.getByRole('button', {name: 'Later'})).toBeInTheDocument();
   // The window shows the whole card, as for a consent ask: born hidden in
   // the companion, a card nobody can see would ask nothing.
   expect(screen.getByTestId('voice-orb').getAttribute('data-presence')).toBe('shown');
 });
 
-test("Open brings the main window to that agent's chat at the question", () => {
+// Owner, 2026-11-27: "why are we showing open request instead of approve deny
+// or qa which can be directly answered in floating screen in desktop, only in
+// android we cannot directly show floating scren isnt".  The question is
+// answered where it is asked, through the one answer door
+// (POST /api/agent/approval {ask_id, answer}, the caller's Bearer), and the
+// card leaves this window once HARTOS has the answer.
+describe('answered in the floating window', () => {
+  let fetchMock;
+  beforeEach(() => {
+    localStorage.setItem('access_token', 'tok-test');
+    fetchMock = jest.fn(() => Promise.resolve({ok: true, status: 200, json: () => Promise.resolve({})}));
+    global.fetch = fetchMock;
+  });
+  afterEach(() => { delete global.fetch; });
+
+  const approvalPosts = () => fetchMock.mock.calls
+    .filter(([url, init]) => String(url).endsWith('/api/agent/approval') && init && init.method === 'POST')
+    .map(([, init]) => ({body: JSON.parse(init.body), auth: init.headers.Authorization}));
+
+  test('an approval is approved in place, with its options', async () => {
+    const approval = {...QUESTION, type: 'approval', fields: undefined,
+      title: 'Speech Buddy asks', description: 'May I play the red-ball rhyme now?'};
+    render(<VoiceOrbPage />);
+    act(() => uiHandler(approval));
+    expect(screen.getByRole('button', {name: 'Approve'})).toBeInTheDocument();
+    expect(screen.getByRole('button', {name: 'Deny'})).toBeInTheDocument();
+    await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Approve'})); });
+    expect(approvalPosts()).toEqual([{body: {ask_id: ASK, answer: {decision: 'approve'}}, auth: 'Bearer tok-test'}]);
+    expect(screen.queryByTestId('companion-question')).toBeNull();
+    expect(openAsk).not.toHaveBeenCalled();
+  });
+
+  test('an approval also takes a typed answer', async () => {
+    const approval = {...QUESTION, type: 'approval', fields: undefined,
+      title: 'Speech Buddy asks', description: 'Which rhyme should we sing?'};
+    render(<VoiceOrbPage />);
+    act(() => uiHandler(approval));
+    fireEvent.change(screen.getByLabelText('Type your answer'), {target: {value: ' the red ball one '}});
+    await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Send'})); });
+    expect(approvalPosts()).toEqual([{body: {ask_id: ASK, answer: {text: 'the red ball one'}}, auth: 'Bearer tok-test'}]);
+    expect(screen.queryByTestId('companion-question')).toBeNull();
+  });
+
+  test('a refused answer keeps the question on screen', async () => {
+    fetchMock.mockImplementation(() => Promise.resolve({ok: false, status: 409, json: () => Promise.resolve({reason: 'already_answered'})}));
+    const approval = {...QUESTION, type: 'approval', fields: undefined, description: 'Play now?'};
+    render(<VoiceOrbPage />);
+    act(() => uiHandler(approval));
+    await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Approve'})); });
+    expect(screen.getByTestId('companion-question')).toBeInTheDocument();
+  });
+
+  test("a question's form is filled in and sent in place", async () => {
+    render(<VoiceOrbPage />);
+    act(() => uiHandler(QUESTION));
+    fireEvent.change(screen.getByLabelText('What does the family call the child at home?'), {target: {value: 'Zoey'}});
+    const submit = screen.getAllByRole('button').find((b) => /submit|send/i.test(b.textContent || ''));
+    await act(async () => { fireEvent.click(submit); });
+    const posts = approvalPosts();
+    expect(posts).toHaveLength(1);
+    expect(posts[0].body.ask_id).toBe(ASK);
+    expect(posts[0].body.answer).toEqual({values: {home_name: 'Zoey'}});
+    expect(screen.queryByTestId('companion-question')).toBeNull();
+  });
+});
+
+test("Open in chat brings the main window to that agent's chat at the question", () => {
   render(<VoiceOrbPage />);
   act(() => uiHandler(QUESTION));
-  fireEvent.click(screen.getByRole('button', {name: 'Open'}));
+  fireEvent.click(screen.getByRole('button', {name: 'Open in chat'}));
   expect(openAsk).toHaveBeenCalledWith('95568353503', ASK, 'Speech Buddy');
   expect(screen.queryByTestId('companion-question')).toBeNull();
 });

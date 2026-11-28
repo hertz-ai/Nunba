@@ -748,6 +748,8 @@ function ApprovalOverlay({ data, onDismiss, onAction, onLater, inChat }) {
   // looked exactly like one that was.
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
+  // What the person types as the answer to an agent's ask, beside its buttons.
+  const [typed, setTyped] = useState('');
 
   // Camera consent → useCameraConsent (hooks/useCameraConsent.js) listens
   // for this event on both chat surfaces, and useConsentedCameraStream
@@ -799,6 +801,30 @@ function ApprovalOverlay({ data, onDismiss, onAction, onLater, inChat }) {
     onDismiss();
   };
 
+  // An agent's ask also takes a typed answer, beside its buttons (owner
+  // 2026-11-23: every ask card takes a typed answer as well as its options,
+  // on every client).  It goes through the same door as a button: HARTOS
+  // keeps any answer that names no secret (person_ask._answer_problem) and
+  // the step waiting on the ask reads it as given.  A plain approval (no
+  // ask_id) records only approve or deny, so it has no box.
+  const postTyped = async () => {
+    const text = typed.trim();
+    if (!text || busy || !data.ask_id) return;
+    setBusy('typed');
+    setError(null);
+    try {
+      await answerAsk(data.ask_id, { text });
+    } catch (e) {
+      console.error('[approval] typed answer not recorded', e);
+      setError(answerFailure(e));
+      setBusy(null);
+      return;
+    }
+    setBusy(null);
+    setTyped('');
+    onDismiss();
+  };
+
   // `options` labels the three choices POSITIONALLY: [approve, deny, defer].
   // A missing or non-string entry keeps that button's default label, so the
   // button SET never shrinks.  Producers use it to say what the choice
@@ -834,6 +860,18 @@ function ApprovalOverlay({ data, onDismiss, onAction, onLater, inChat }) {
           <Button variant="outlined" size="small" disabled={Boolean(busy) || act.phase === 'busy'} sx={{ color: onAction ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.5)', borderColor: 'rgba(255,255,255,0.2)', minHeight: onAction ? 44 : undefined }} onClick={onAction ? () => postDecision('later') : later}>{label(2, 'Later')}</Button>
         )}
       </Box>
+      {data.ask_id && !onAction && (
+        <Box component="form" onSubmit={(e) => { e.preventDefault(); postTyped(); }}
+          sx={{ display: 'flex', gap: 1, mt: 1 }}>
+          <TextField size="small" fullWidth placeholder="Or type your answer" value={typed}
+            disabled={Boolean(busy)} inputProps={{ 'aria-label': 'Type your answer' }}
+            onChange={(e) => { setError(null); setTyped(e.target.value); }}
+            sx={{ '& .MuiInputBase-root': { color: '#fff', background: 'rgba(255,255,255,0.05)' } }} />
+          <Button type="submit" variant="outlined" size="small" aria-busy={busy === 'typed'}
+            disabled={Boolean(busy) || !typed.trim()}
+            sx={{ color: ACCENT, borderColor: 'rgba(140,130,255,0.45)' }}>Send</Button>
+        </Box>
+      )}
       <ActionError state={act} />
     </Box>
   );

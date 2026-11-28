@@ -7,7 +7,7 @@ import realtimeService from '../../services/realtimeService';
 import { dashboardApi } from '../../services/socialApi';
 import { COMPANION_CARD_RADIUS, COMPANION_GLASS_SURFACE } from '../../theme/hartGlass';
 import { makeMsgId, rememberOwnTurn } from '../../utils/chatRetry';
-import { ASK_LATER_MS, ConsentPromptOverlay, isAgentQuestion } from '../AgentOverlay/AgentOverlay';
+import { ASK_LATER_MS, ConsentPromptOverlay, OverlayContent, isAgentQuestion } from '../AgentOverlay/AgentOverlay';
 import VoiceVisualizer from '../VoiceVisualizer';
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
@@ -567,9 +567,14 @@ export default function VoiceOrbPage() {
     };
   }, []);
   const answerAsk = useCallback(() => setAsks((prev) => prev.slice(1)), []);
+  // An agent's question answered here (its card took the answer): it leaves
+  // this window now; HARTOS's ask.answered drops it everywhere else.
+  const settleQuestion = useCallback((q) => {
+    setQuestions((prev) => prev.filter((x) => x.ask_id !== q.ask_id));
+  }, []);
   // Open: the main window comes forward on the asking agent's chat, where the
   // question is (app.py on_companion_open_ask; the page's useOpenAgentChat).
-  // It is answered there; this window lets it go.
+  // A second way to answer it; this window lets it go.
   const openQuestion = useCallback((q) => {
     setQuestions((prev) => prev.filter((x) => x.ask_id !== q.ask_id));
     companionApi('on_companion_open_ask', q.prompt_id, q.ask_id, q.agent_name);
@@ -761,13 +766,20 @@ export default function VoiceOrbPage() {
           <ConsentPromptOverlay data={asks[0]} onDismiss={answerAsk} />
         </div>
       ) : questions.length > 0 ? (
-        // An agent's question in the orb's place: who asks and what.  It is
-        // answered in its chat (Open), not here, so its answer has one door.
+        // An agent's question in the orb's place, answered HERE: the same
+        // card the main window shows (AgentOverlay's OverlayContent: its
+        // options, a typed answer, a form's fields, a file pick) through the
+        // same answer door, with its own Later.  Open stays as a second way:
+        // the main window comes forward on the agent's chat.  Owner,
+        // 2026-11-27: "why are we showing open request instead of approve
+        // deny or qa which can be directly answered in floating screen in
+        // desktop, only in android we cannot directly show floating scren
+        // isnt".  Scrolls inside the 220x310 card.
         <div
           data-testid="companion-question"
           style={{
             flex: '1 1 auto', alignSelf: 'stretch', minHeight: 0,
-            display: 'flex', flexDirection: 'column', justifyContent: 'center',
+            display: 'flex', flexDirection: 'column',
             overflow: 'auto', color: '#fff', fontSize: 12, padding: '8px 6px',
             WebkitAppRegion: 'no-drag',
           }}
@@ -775,30 +787,40 @@ export default function VoiceOrbPage() {
           <div style={{fontSize: 11, fontWeight: 700, color: '#9B94FF', marginBottom: 4}}>
             {`${askerOf(questions[0])} asks`}
           </div>
-          <div style={{fontWeight: 500, color: '#F3F4F6', lineHeight: 1.35}}>
-            {questionText(questions[0])}
-          </div>
-          <div style={{display: 'flex', gap: 8, marginTop: 10}}>
-            <button
-              type="button"
-              onClick={() => openQuestion(questions[0])}
-              style={{
-                flex: 1, padding: '6px 0', borderRadius: 10, border: 'none',
-                background: ACCENT, color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer',
-              }}
-            >
-              Open
-            </button>
+          {!(questions[0].title || questions[0].description) && (
+            <div style={{fontWeight: 500, color: '#F3F4F6', lineHeight: 1.35, marginBottom: 6}}>
+              {questionText(questions[0])}
+            </div>
+          )}
+          {/* inChat: the card leaves out its own Later; this window's row
+              below has the one Later every kind of question gets. */}
+          <OverlayContent
+            data={questions[0]}
+            onDismiss={() => settleQuestion(questions[0])}
+            inChat
+          />
+          <div style={{display: 'flex', gap: 8, marginTop: 8}}>
             <button
               type="button"
               onClick={() => putOffQuestion(questions[0])}
               style={{
-                flex: 1, padding: '6px 0', borderRadius: 10,
+                flex: 1, padding: '5px 0', borderRadius: 10,
                 border: '1px solid rgba(140, 130, 255, 0.45)', background: 'transparent',
                 color: '#D6D2FF', fontSize: 12, cursor: 'pointer',
               }}
             >
               Later
+            </button>
+            <button
+              type="button"
+              onClick={() => openQuestion(questions[0])}
+              style={{
+                flex: 1, padding: '5px 0', borderRadius: 10,
+                border: '1px solid rgba(140, 130, 255, 0.45)', background: 'transparent',
+                color: '#D6D2FF', fontSize: 12, cursor: 'pointer',
+              }}
+            >
+              Open in chat
             </button>
           </div>
         </div>
